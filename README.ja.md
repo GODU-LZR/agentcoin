@@ -101,6 +101,7 @@ agentcoin-node --config configs/node.example.json
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
+- `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -130,3 +131,19 @@ inter-node message delivery には explicit ACK も追加しました。
 - inbox は `message_id` で idempotent
 - receiver は `ack` を返す
 - outbox は有効な ACK を受けたときだけ delivered になります
+
+最小の planner dispatch も追加しました。
+
+- `POST /v1/tasks/dispatch`
+- `required_capabilities` に基づいて peer card から target を選択
+- peer が見つからず local が対応可能なら local queue に残す
+
+最小 worker pull loop:
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id worker-1 \
+  --capability worker
+```

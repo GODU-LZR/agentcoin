@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import time
+from typing import Any
+from urllib import request
+
+from agentcoin.models import utc_now
+
+LOG = logging.getLogger("agentcoin.worker")
+
+
+class WorkerLoop:
+    def __init__(
+        self,
+        node_url: str,
+        token: str,
+        worker_id: str,
+        capabilities: list[str],
+        lease_seconds: int = 60,
+    ) -> None:
+        self.node_url = node_url.rstrip("/")
+        self.token = token
+        self.worker_id = worker_id
+        self.capabilities = capabilities
+        self.lease_seconds = lease_seconds
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            f"{self.node_url}{path}",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.token}",
+            },
+            method="POST",
+        )
+        with request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def run_once(self) -> bool:
+        claimed = self._post_json(
+            "/v1/tasks/claim",
+            {
+                "worker_id": self.worker_id,
+                "worker_capabilities": self.capabilities,
+                "lease_seconds": self.lease_seconds,
+            },
+        )
+        task = claimed.get("task")
+        if not task:
+            return False
+
+        LOG.info("claimed task %s kind=%s", task["id"], task["kind"])
+        result = {
+            "worker_id": self.worker_id,
+            "handled_kind": task["kind"],
+            "handled_at": utc_now(),
+            "echo": task.get("payload", {}),
+        }
+        ack = self._post_json(
+            "/v1/tasks/ack",
+            {
+                "task_id": task["id"],
+                "worker_id": self.worker_id,
+                "lease_token": task["lease_token"],
+                "success": True,
+                "result": result,
+            },
+        )
+        LOG.info("acked task %s ok=%s", task["id"], ack.get("ok"))
+        return True
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run an AgentCoin worker loop skeleton.")
+    parser.add_argument("--node-url", required=True, help="Base URL of the AgentCoin node.")
+    parser.add_argument("--token", required=True, help="Bearer token for the node.")
+    parser.add_argument("--worker-id", required=True, help="Stable worker identifier.")
+    parser.add_argument(
+        "--capability",
+        dest="capabilities",
+        action="append",
+        default=[],
+        help="Repeatable worker capability. Example: --capability worker",
+    )
+    parser.add_argument("--lease-seconds", type=int, default=60, help="Requested lease duration.")
+    parser.add_argument("--poll-seconds", type=float, default=2.0, help="Sleep time between empty polls.")
+    parser.add_argument("--once", action="store_true", help="Claim at most one task and exit.")
+    parser.add_argument("--log-level", default="INFO", help="Python logging level.")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    loop = WorkerLoop(
+        node_url=args.node_url,
+        token=args.token,
+        worker_id=args.worker_id,
+        capabilities=args.capabilities,
+        lease_seconds=args.lease_seconds,
+    )
+
+    while True:
+        handled = loop.run_once()
+        if args.once:
+            break
+        if not handled:
+            time.sleep(args.poll_seconds)
+
+
+if __name__ == "__main__":
+    main()
+

@@ -114,6 +114,7 @@ docker compose up --build
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
+- `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -144,6 +145,22 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - inbox 按 `message_id` 做幂等去重
 - 接收端返回 `ack`
 - outbox 只有收到有效 ACK 才会标记为成功送达
+
+现在也已经有了最小版 planner 分发：
+
+- `POST /v1/tasks/dispatch`
+- 根据 `required_capabilities` 结合缓存的 peer card 自动选目标
+- 如果没有匹配 peer，但本地能力满足，则任务留在本地
+
+仓库也带了一个最小 worker pull loop：
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id worker-1 \
+  --capability worker
+```
 
 ## 通信方向
 

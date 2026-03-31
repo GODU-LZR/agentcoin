@@ -21,10 +21,10 @@ classifiers = [
 
 [project.scripts]
 agentcoin-node = "agentcoin.cli:main"
+agentcoin-worker = "agentcoin.worker:main"
 
 [tool.setuptools]
 include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["agentcoin*"]
-

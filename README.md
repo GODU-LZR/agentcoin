@@ -108,6 +108,7 @@ Key endpoints:
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
+- `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -144,6 +145,22 @@ Inter-node delivery now also uses explicit message acknowledgements:
 - inbox writes are idempotent by `message_id`
 - the receiver returns an `ack` payload
 - outbox delivery is only marked successful after a valid ack comes back
+
+Planner-style dispatch is now available too:
+
+- `POST /v1/tasks/dispatch` selects a target by `required_capabilities`
+- cached peer cards are used to choose a matching peer
+- if no peer matches and local capabilities match, the task stays local
+
+A minimal worker pull loop is included:
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id worker-1 \
+  --capability worker
+```
 
 ## Status
 

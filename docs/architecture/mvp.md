@@ -39,6 +39,7 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 - `GET /v1/peer-cards`
 - `GET /v1/outbox`
 - `POST /v1/tasks`
+- `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -53,6 +54,13 @@ It also supports capability-card synchronization from configured peers. This all
 The task queue now includes lease-based locking primitives. Workers can atomically claim work, renew the lease while executing, and explicitly acknowledge completion or failure.
 
 The message queue layer now also requires explicit delivery acknowledgement. A receiver returns an ACK payload and the sender only marks the outbox item as delivered after validating that ACK. This separates `task completion` from `message delivery`.
+
+The planner layer now has a first executable skeleton:
+
+- planners can submit `required_capabilities`
+- the node selects a peer from cached capability cards
+- dispatch falls back to local execution if local capabilities satisfy the task
+- workers can run a simple pull loop and complete claimed tasks
 
 ## Coordination Direction
 

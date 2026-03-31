@@ -57,6 +57,33 @@ class AgentCoinNode:
                 synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc)})
         return synced
 
+    def _supports_capabilities(self, capabilities: list[str]) -> bool:
+        if not capabilities:
+            return True
+        return set(capabilities).issubset(set(self.config.capabilities))
+
+    def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
+        if prefer_local and self._supports_capabilities(required_capabilities):
+            return {"target_type": "local", "target_ref": self.config.node_id}
+
+        peer_cards = self.store.list_peer_cards()
+        candidates: list[tuple[int, str]] = []
+        for peer_card in peer_cards:
+            peer_id = peer_card["peer_id"]
+            card = peer_card["card"]
+            capabilities = set(card.get("capabilities", []))
+            if set(required_capabilities).issubset(capabilities):
+                candidates.append((len(capabilities), peer_id))
+
+        if candidates:
+            _, peer_id = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
+            return {"target_type": "peer", "target_ref": peer_id}
+
+        if self._supports_capabilities(required_capabilities):
+            return {"target_type": "local", "target_ref": self.config.node_id}
+
+        return None
+
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
 
@@ -138,6 +165,35 @@ class AgentCoinNode:
                             node.store.add_task(task)
                             node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
+                        return
+                    if self.path == "/v1/tasks/dispatch":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task = TaskEnvelope.from_dict(payload)
+                        task.sender = task.sender or node.config.node_id
+                        prefer_local = bool(payload.get("prefer_local"))
+                        target = None
+                        if task.deliver_to:
+                            target = {"target_type": "explicit", "target_ref": task.deliver_to}
+                        else:
+                            target = node.select_dispatch_target(task.required_capabilities, prefer_local=prefer_local)
+                            if not target:
+                                self._json_response(
+                                    HTTPStatus.CONFLICT,
+                                    {"error": "no dispatch target found", "required_capabilities": task.required_capabilities},
+                                )
+                                return
+                            if target["target_type"] == "peer":
+                                task.deliver_to = target["target_ref"]
+                        node.store.add_task(task)
+                        if task.deliver_to:
+                            target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
+                            task.payload.setdefault("_delivery", {})
+                            task.payload["_delivery"].update({"target_ref": target_ref, "dispatch_mode": "planner"})
+                            node.store.add_task(task)
+                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
+                        self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
                         return
                     if self.path == "/v1/tasks/claim":
                         if not self._require_auth():
