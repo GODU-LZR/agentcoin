@@ -72,6 +72,7 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
 - GPL notice: [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
 - License text: [LICENSE](LICENSE)
@@ -233,6 +234,8 @@ protected merge もサポートしました。
 - merge task は `protected_branches` を宣言できる
 - 各 protected branch は merge の前に reviewer approval を要求できる
 - workflow summary は `review_task_ids`, `review_approvals`, `merge_gate_status` を返す
+- approval policy は `human reviewer` と `AI reviewer` を区別できる
+- merge policy は branch ごとに human / AI approval 数を別々に要求できる
 
 ## Test Status
 

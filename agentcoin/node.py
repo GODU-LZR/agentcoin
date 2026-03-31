@@ -250,7 +250,15 @@ class AgentCoinNode:
                         workflow_id = str(payload.get("workflow_id") or "")
                         if not workflow_id:
                             raise ValueError("workflow_id is required")
-                        reviews = [node._normalize_task(TaskEnvelope.from_dict(item), node.config) for item in list(payload.get("reviews") or [])]
+                        reviews: list[TaskEnvelope] = []
+                        attach_git_context = bool(payload.get("attach_git_context"))
+                        git_base_ref = str(payload.get("git_base_ref") or "HEAD")
+                        git_target_ref = payload.get("git_target_ref")
+                        for item in list(payload.get("reviews") or []):
+                            review = node._normalize_task(TaskEnvelope.from_dict(item), node.config)
+                            if attach_git_context:
+                                review.payload["_git"] = node._require_git().task_context(base_ref=git_base_ref, target_ref=git_target_ref)
+                            reviews.append(review)
                         created = node.store.create_review_tasks(workflow_id, reviews)
                         self._json_response(HTTPStatus.CREATED, {"items": created})
                         return
@@ -271,7 +279,13 @@ class AgentCoinNode:
                         if protected_branches:
                             merge_policy = dict(task.payload.get("_merge_policy") or {})
                             merge_policy["protected_branches"] = protected_branches
-                            merge_policy["required_approvals_per_branch"] = int(payload.get("required_approvals_per_branch") or 1)
+                            merge_policy["required_approvals_per_branch"] = int(payload.get("required_approvals_per_branch") or 0)
+                            merge_policy["required_human_approvals_per_branch"] = int(
+                                payload.get("required_human_approvals_per_branch") or 0
+                            )
+                            merge_policy["required_ai_approvals_per_branch"] = int(
+                                payload.get("required_ai_approvals_per_branch") or 0
+                            )
                             task.payload["_merge_policy"] = merge_policy
                         created = node.store.create_merge_task(workflow_id, parent_task_ids, task)
                         self._json_response(HTTPStatus.CREATED, {"task": created})

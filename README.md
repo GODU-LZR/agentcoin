@@ -76,6 +76,7 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
 - GPL notice: [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
 - License text: [LICENSE](LICENSE)
@@ -247,6 +248,8 @@ Protected merge is now supported:
 - merge tasks can declare `protected_branches`
 - each protected branch can require reviewer approval before the merge task becomes claimable
 - workflow summaries now expose `review_task_ids`, `review_approvals`, and `merge_gate_status`
+- approval policy can now distinguish `human` and `ai` reviewers
+- merge policies can require separate human and AI approval counts per protected branch
 
 ## Status
 

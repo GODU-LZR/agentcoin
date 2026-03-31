@@ -178,3 +178,99 @@ class NodeStoreTests(unittest.TestCase):
         summary = self.store.summarize_workflow("root-protected")
         self.assertIn("review-a", summary["review_task_ids"])
         self.assertTrue(summary["merge_gate_status"]["merge-protected"]["satisfied"])
+
+    def test_hybrid_merge_requires_human_and_ai_approvals(self) -> None:
+        self.store.add_task(TaskEnvelope(id="root-hybrid", kind="plan", payload={}, role="planner"))
+        self.store.create_subtasks(
+            "root-hybrid",
+            [
+                TaskEnvelope(
+                    id="branch-task",
+                    kind="code",
+                    payload={"_git": {"repo_root": "repo", "changed_files": ["app.py"]}},
+                    role="worker",
+                    branch="feature/hybrid",
+                ),
+                TaskEnvelope(
+                    id="branch-helper",
+                    kind="code",
+                    payload={},
+                    role="worker",
+                    branch="feature/helper",
+                ),
+            ],
+        )
+        self.store.create_review_tasks(
+            "root-hybrid",
+            [
+                TaskEnvelope(
+                    id="review-human",
+                    kind="review",
+                    payload={"_review": {"target_task_id": "branch-task", "reviewer_type": "human"}},
+                    role="reviewer",
+                ),
+                TaskEnvelope(
+                    id="review-ai",
+                    kind="review",
+                    payload={"_review": {"target_task_id": "branch-task", "reviewer_type": "ai"}},
+                    role="reviewer",
+                ),
+            ],
+        )
+        merge = self.store.create_merge_task(
+            "root-hybrid",
+            ["branch-task", "branch-helper"],
+            TaskEnvelope(
+                id="merge-hybrid",
+                kind="merge",
+                payload={
+                    "_merge_policy": {
+                        "protected_branches": ["feature/hybrid"],
+                        "required_human_approvals_per_branch": 1,
+                        "required_ai_approvals_per_branch": 1,
+                    }
+                },
+                role="reviewer",
+                branch="main",
+            ),
+        )
+        self.assertEqual(merge["payload"]["_merge_policy"]["required_human_approvals_per_branch"], 1)
+
+        branch_claim = self.store.claim_task(worker_id="worker-hybrid", worker_capabilities=["worker"], lease_seconds=30)
+        assert branch_claim is not None
+        self.store.ack_task(
+            task_id="branch-task",
+            worker_id=branch_claim["locked_by"],
+            lease_token=branch_claim["lease_token"],
+            success=True,
+            result={"done": True},
+        )
+
+        human_review = self.store.claim_task(worker_id="review-human-worker", worker_capabilities=["reviewer"], lease_seconds=30)
+        assert human_review is not None
+        self.assertEqual(human_review["payload"]["_review"]["reviewer_type"], "human")
+        self.assertIn("_git", human_review["payload"])
+        self.store.ack_task(
+            task_id="review-human",
+            worker_id=human_review["locked_by"],
+            lease_token=human_review["lease_token"],
+            success=True,
+            result={"approved": True},
+        )
+
+        summary_mid = self.store.summarize_workflow("root-hybrid")
+        self.assertFalse(summary_mid["merge_gate_status"]["merge-hybrid"]["satisfied"])
+
+        ai_review = self.store.claim_task(worker_id="review-ai-worker", worker_capabilities=["reviewer"], lease_seconds=30)
+        assert ai_review is not None
+        self.assertEqual(ai_review["payload"]["_review"]["reviewer_type"], "ai")
+        self.store.ack_task(
+            task_id="review-ai",
+            worker_id=ai_review["locked_by"],
+            lease_token=ai_review["lease_token"],
+            success=True,
+            result={"approved": True},
+        )
+
+        summary_done = self.store.summarize_workflow("root-hybrid")
+        self.assertTrue(summary_done["merge_gate_status"]["merge-hybrid"]["satisfied"])

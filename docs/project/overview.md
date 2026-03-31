@@ -136,6 +136,8 @@ Workflow governance now has a first executable layer:
 - merge tasks can protect specific branches
 - protected merge waits for enough completed approvals per protected branch
 - workflow summaries expose review and merge-gate state for planners and operators
+- approval policy can distinguish human and AI reviewers
+- review tasks can inherit Git context from the target task they inspect
 
 ## Delivery and Failure States
 

@@ -432,5 +432,32 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(attached["updated"])
             self.assertEqual(attached["task_id"], "git-task-1")
+
+            self._post(
+                f"{node.base_url}/v1/workflows/review-gate",
+                "token-g",
+                {
+                    "workflow_id": "git-task-1",
+                    "reviews": [
+                        {
+                            "id": "git-review-human",
+                            "kind": "review",
+                            "role": "reviewer",
+                            "payload": {"_review": {"target_task_id": "git-task-1", "reviewer_type": "human"}},
+                        },
+                        {
+                            "id": "git-review-ai",
+                            "kind": "review",
+                            "role": "reviewer",
+                            "payload": {"_review": {"target_task_id": "git-task-1", "reviewer_type": "ai"}},
+                        },
+                    ],
+                },
+            )
+            _, tasks_after_reviews = self._get(f"{node.base_url}/v1/tasks")
+            review_tasks = {item["id"]: item for item in tasks_after_reviews["items"] if item["id"].startswith("git-review-")}
+            self.assertEqual(review_tasks["git-review-human"]["payload"]["_review"]["reviewer_type"], "human")
+            self.assertEqual(review_tasks["git-review-ai"]["payload"]["_review"]["reviewer_type"], "ai")
+            self.assertEqual(review_tasks["git-review-human"]["payload"]["_git"]["repo_root"], str(repo_path.resolve()))
         finally:
             node.stop()

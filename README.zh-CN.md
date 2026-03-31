@@ -79,6 +79,7 @@ flowchart TB
 - 项目说明：[docs/project/overview.md](docs/project/overview.md)
 - 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
 - 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)
+- 蓝图偏差检查：[docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - 通信说明：[docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
 - GPL 声明：[docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
 - 协议全文：[LICENSE](LICENSE)
@@ -247,6 +248,8 @@ agentcoin-worker \
 - merge 任务可以声明 `protected_branches`
 - 每个受保护分支在 merge 放行前都可以要求 reviewer 审批
 - workflow summary 现在会暴露 `review_task_ids`、`review_approvals`、`merge_gate_status`
+- 审批策略现在可以区分 `human reviewer` 和 `AI reviewer`
+- merge 策略现在可以分别要求每个受保护分支的人类审批数和 AI 审批数
 
 ## 通信方向
 

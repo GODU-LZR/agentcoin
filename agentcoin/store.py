@@ -649,7 +649,13 @@ class NodeStore:
             review_meta.setdefault("target_task_id", target_task_id)
             review_meta.setdefault("target_branch", target["branch"])
             review_meta.setdefault("target_revision", target["revision"])
+            reviewer_type = str(review_meta.get("reviewer_type") or "human").strip().lower()
+            if reviewer_type not in {"human", "ai"}:
+                raise ValueError("reviewer_type must be 'human' or 'ai'")
+            review_meta["reviewer_type"] = reviewer_type
             review.payload["_review"] = review_meta
+            if target.get("payload", {}).get("_git") and "_git" not in review.payload:
+                review.payload["_git"] = dict(target["payload"]["_git"])
             if not review.commit_message:
                 review.commit_message = f"review {target_task_id} on {target['branch']}"
             self.add_task(review)
@@ -674,17 +680,26 @@ class NodeStore:
                     "approved_review_task_ids": [],
                     "rejected_review_task_ids": [],
                     "pending_review_task_ids": [],
+                    "approved_by_type": {"human": [], "ai": []},
+                    "rejected_by_type": {"human": [], "ai": []},
+                    "pending_by_type": {"human": [], "ai": []},
                 },
             )
             entry["review_task_ids"].append(task["id"])
+            reviewer_type = str(review_meta.get("reviewer_type") or "human").strip().lower()
+            if reviewer_type not in {"human", "ai"}:
+                reviewer_type = "human"
             if task["status"] == "completed":
                 approved = bool((task.get("result") or {}).get("approved"))
                 if approved:
                     entry["approved_review_task_ids"].append(task["id"])
+                    entry["approved_by_type"][reviewer_type].append(task["id"])
                 else:
                     entry["rejected_review_task_ids"].append(task["id"])
+                    entry["rejected_by_type"][reviewer_type].append(task["id"])
             elif task["status"] in {"queued", "leased"}:
                 entry["pending_review_task_ids"].append(task["id"])
+                entry["pending_by_type"][reviewer_type].append(task["id"])
         return approvals
 
     @classmethod
@@ -696,7 +711,11 @@ class NodeStore:
         task_map = {item["id"]: item for item in tasks}
         approval_index = cls._review_approval_index(tasks)
         protected_branches = [str(item) for item in list(merge_policy.get("protected_branches") or []) if str(item).strip()]
-        required_approvals = max(1, int(merge_policy.get("required_approvals_per_branch") or 1))
+        required_approvals = max(0, int(merge_policy.get("required_approvals_per_branch") or 0))
+        required_human = max(0, int(merge_policy.get("required_human_approvals_per_branch") or 0))
+        required_ai = max(0, int(merge_policy.get("required_ai_approvals_per_branch") or 0))
+        if required_approvals == 0 and required_human == 0 and required_ai == 0:
+            required_human = 1
         protected_parent_ids = [
             parent_id
             for parent_id in list(merge_task.get("merge_parent_ids") or [])
@@ -711,14 +730,29 @@ class NodeStore:
             approved_reviews = list(reviews.get("approved_review_task_ids") or [])
             rejected_reviews = list(reviews.get("rejected_review_task_ids") or [])
             pending_reviews = list(reviews.get("pending_review_task_ids") or [])
+            approved_human = list((reviews.get("approved_by_type") or {}).get("human") or [])
+            approved_ai = list((reviews.get("approved_by_type") or {}).get("ai") or [])
+            rejected_human = list((reviews.get("rejected_by_type") or {}).get("human") or [])
+            rejected_ai = list((reviews.get("rejected_by_type") or {}).get("ai") or [])
             branch_entry = {
                 "target_task_id": parent_id,
                 "branch": parent["branch"],
                 "required_approvals": required_approvals,
+                "required_human_approvals": required_human,
+                "required_ai_approvals": required_ai,
                 "approved_reviews": approved_reviews,
                 "rejected_reviews": rejected_reviews,
                 "pending_reviews": pending_reviews,
-                "satisfied": len(approved_reviews) >= required_approvals and not rejected_reviews,
+                "approved_human_reviews": approved_human,
+                "approved_ai_reviews": approved_ai,
+                "rejected_human_reviews": rejected_human,
+                "rejected_ai_reviews": rejected_ai,
+                "satisfied": (
+                    len(approved_reviews) >= required_approvals
+                    and len(approved_human) >= required_human
+                    and len(approved_ai) >= required_ai
+                    and not rejected_reviews
+                ),
             }
             if not branch_entry["satisfied"]:
                 satisfied = False
@@ -727,6 +761,8 @@ class NodeStore:
         return {
             "protected_branches": protected_branches,
             "required_approvals_per_branch": required_approvals,
+            "required_human_approvals_per_branch": required_human,
+            "required_ai_approvals_per_branch": required_ai,
             "protected_parent_ids": protected_parent_ids,
             "branch_status": branch_status,
             "satisfied": satisfied,
