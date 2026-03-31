@@ -199,6 +199,13 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - `POST /v1/bridges/export` 可以把任务状态或结果重新导出成桥接协议消息
 - bridge 上下文会保存在 `payload._bridge`，这样既保留外部协议语境，也不让内部任务模型被替代
 
+worker 执行层现在也已经感知 bridge：
+
+- worker 会识别 `payload._bridge.protocol`
+- `MCP bridge task` 会产出规范化的 tool-call 风格结果
+- `A2A bridge task` 会产出规范化的 message-result 结果
+- 这仍然只是 adapter skeleton，不是完整的外部 `MCP/A2A runtime client`
+
 跨节点消息投递现在也加入了显式 ACK：
 
 - inbox 按 `message_id` 做幂等去重

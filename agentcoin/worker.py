@@ -7,6 +7,7 @@ import time
 from typing import Any
 from urllib import error, request
 
+from agentcoin.adapters import ExecutionAdapterRegistry
 from agentcoin.models import utc_now
 
 LOG = logging.getLogger("agentcoin.worker")
@@ -26,6 +27,7 @@ class WorkerLoop:
         self.worker_id = worker_id
         self.capabilities = capabilities
         self.lease_seconds = lease_seconds
+        self.adapters = ExecutionAdapterRegistry()
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -61,15 +63,7 @@ class WorkerLoop:
             return False
 
         LOG.info("claimed task %s kind=%s", task["id"], task["kind"])
-        result = {
-            "worker_id": self.worker_id,
-            "handled_kind": task["kind"],
-            "handled_at": utc_now(),
-            "workflow_id": task.get("workflow_id"),
-            "branch": task.get("branch"),
-            "revision": task.get("revision"),
-            "echo": task.get("payload", {}),
-        }
+        result = self.execute_task(task)
         ack = self._post_json(
             "/v1/tasks/ack",
             {
@@ -85,6 +79,17 @@ class WorkerLoop:
             return False
         LOG.info("acked task %s ok=%s", task["id"], ack.get("ok"))
         return True
+
+    def execute_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        result = self.adapters.execute(task, worker_id=self.worker_id)
+        result.setdefault("worker_id", self.worker_id)
+        result.setdefault("handled_kind", task["kind"])
+        result.setdefault("handled_at", utc_now())
+        result.setdefault("workflow_id", task.get("workflow_id"))
+        result.setdefault("branch", task.get("branch"))
+        result.setdefault("revision", task.get("revision"))
+        result.setdefault("echo", task.get("payload", {}))
+        return result
 
 
 def main() -> None:

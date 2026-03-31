@@ -25,7 +25,7 @@ class NodeStoreTests(unittest.TestCase):
                 payload={},
                 role="worker",
                 max_attempts=2,
-                retry_backoff_seconds=1,
+                retry_backoff_seconds=2,
             )
         )
 
@@ -43,7 +43,7 @@ class NodeStoreTests(unittest.TestCase):
         )
 
         self.assertIsNone(self.store.claim_task(worker_id="worker-1", worker_capabilities=["worker"], lease_seconds=30))
-        time.sleep(1.1)
+        time.sleep(2.1)
 
         second = self.store.claim_task(worker_id="worker-1", worker_capabilities=["worker"], lease_seconds=30)
         self.assertIsNotNone(second)

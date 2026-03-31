@@ -199,6 +199,13 @@ The bridge layer now has a first executable MCP / A2A skeleton:
 - `POST /v1/bridges/export` renders task state or explicit results back into bridge-shaped protocol messages
 - bridge metadata is stored in `payload._bridge`, so planners and workers can preserve protocol context without replacing the internal task model
 
+Worker execution is now bridge-aware too:
+
+- the worker loop detects `payload._bridge.protocol`
+- MCP bridge tasks produce normalized tool-call style results
+- A2A bridge tasks produce normalized message-result payloads
+- this is still a skeleton adapter layer, not a full external MCP or A2A runtime client
+
 Inter-node delivery now also uses explicit message acknowledgements:
 
 - inbox writes are idempotent by `message_id`

@@ -185,6 +185,13 @@ bridge layer にも最初の実行可能 skeleton を追加しました。
 - `POST /v1/bridges/export` で task state や result を bridge-shaped message に戻せます
 - bridge metadata は `payload._bridge` に保存されるため、外部 protocol context を保ったまま内部 task model を維持できます
 
+worker execution も bridge-aware になりました。
+
+- worker は `payload._bridge.protocol` を見て adapter を選びます
+- `MCP bridge task` は normalized な tool-call style result を返します
+- `A2A bridge task` は normalized な message-result payload を返します
+- ただし、これはまだ full MCP / A2A runtime client ではなく adapter skeleton です
+
 inter-node message delivery には explicit ACK も追加しました。
 
 - inbox は `message_id` で idempotent

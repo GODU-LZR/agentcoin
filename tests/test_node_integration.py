@@ -13,6 +13,7 @@ from urllib import error, request
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.security import sign_document_with_ssh
+from agentcoin.worker import WorkerLoop
 
 
 def _free_port() -> int:
@@ -727,5 +728,88 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(a2a_export_status, 200)
             self.assertEqual(a2a_exported["message"]["conversation_id"], "conv-1")
             self.assertEqual(a2a_exported["message"]["task"]["result"]["summary"], "done")
+        finally:
+            node.stop()
+
+    def test_bridge_worker_execution_adapter_skeleton(self) -> None:
+        node = NodeHarness(
+            node_id="bridge-worker-node",
+            token="token-bridge-worker",
+            db_path=str(Path(self.tempdir.name) / "bridge-worker.db"),
+            capabilities=["worker", "tool-runner", "reviewer"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-bridge-worker",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "mcp-exec-1",
+                        "method": "tools/call",
+                        "params": {"name": "tool-runner", "arguments": {"path": "README.md", "mode": "lint"}},
+                        "sender": "mcp-client",
+                    },
+                    "task_overrides": {"id": "bridge-exec-mcp", "role": "worker"},
+                },
+            )
+            self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-bridge-worker",
+                {
+                    "protocol": "a2a",
+                    "message": {
+                        "message_id": "a2a-exec-1",
+                        "conversation_id": "conv-exec-1",
+                        "sender": "agent-z",
+                        "intent": "summarize",
+                        "content": {"text": "hello bridge"},
+                        "metadata": {"priority": "normal"},
+                        "required_capabilities": ["worker"],
+                    },
+                    "task_overrides": {"id": "bridge-exec-a2a", "role": "worker"},
+                },
+            )
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-bridge-worker",
+                worker_id="worker-bridge-1",
+                capabilities=["worker", "tool-runner", "reviewer"],
+                lease_seconds=30,
+            )
+
+            self.assertTrue(worker.run_once())
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            by_id = {item["id"]: item for item in tasks["items"]}
+            self.assertEqual(by_id["bridge-exec-mcp"]["status"], "completed")
+            self.assertEqual(by_id["bridge-exec-a2a"]["status"], "completed")
+            self.assertEqual(by_id["bridge-exec-mcp"]["result"]["adapter"]["protocol"], "mcp")
+            self.assertEqual(by_id["bridge-exec-a2a"]["result"]["adapter"]["protocol"], "a2a")
+            self.assertEqual(
+                by_id["bridge-exec-mcp"]["result"]["bridge_execution"]["normalized_output"]["content"][0]["data"]["tool_name"],
+                "tool-runner",
+            )
+            self.assertEqual(
+                by_id["bridge-exec-a2a"]["result"]["bridge_execution"]["normalized_output"]["content"]["accepted_intent"],
+                "summarize",
+            )
+
+            _, exported = self._post(
+                f"{node.base_url}/v1/bridges/export",
+                "token-bridge-worker",
+                {"protocol": "mcp", "task_id": "bridge-exec-mcp"},
+            )
+            self.assertEqual(exported["message"]["result"]["result"]["adapter"]["protocol"], "mcp")
+
+            _, exported_a2a = self._post(
+                f"{node.base_url}/v1/bridges/export",
+                "token-bridge-worker",
+                {"protocol": "a2a", "task_id": "bridge-exec-a2a"},
+            )
+            self.assertEqual(exported_a2a["message"]["task"]["result"]["adapter"]["protocol"], "a2a")
         finally:
             node.stop()

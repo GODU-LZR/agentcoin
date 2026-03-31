@@ -115,6 +115,7 @@ Current bridge capabilities:
 - A2A message import
 - bridge metadata persisted in `payload._bridge`
 - export of task state or result back into bridge-shaped response payloads
+- bridge-aware worker execution skeleton with normalized MCP / A2A result shapes
 
 ### Git Adapter Model
 

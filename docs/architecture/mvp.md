@@ -115,6 +115,13 @@ The node now also has a first protocol-bridge layer:
 - A2A-style message import into durable task envelopes
 - protocol-shaped export of task state and results back to bridge callers
 
+The worker loop now also has a first bridge-aware execution layer:
+
+- detect bridge metadata from `payload._bridge`
+- produce normalized MCP-style tool execution result payloads
+- produce normalized A2A-style task result payloads
+- leave real external runtime invocation for later adapters
+
 ## Git-Like Task Model
 
 Tasks now carry workflow lineage fields inspired by Git:
