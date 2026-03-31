@@ -251,3 +251,119 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(finalized["status"], "completed")
         finally:
             node.stop()
+
+    def test_protected_merge_requires_review_approval(self) -> None:
+        node = NodeHarness(
+            node_id="protected-workflow-node",
+            token="token-p",
+            db_path=str(Path(self.tempdir.name) / "protected.db"),
+            capabilities=["planner", "worker", "reviewer"],
+        )
+        node.start()
+        try:
+            self._post(f"{node.base_url}/v1/tasks", "token-p", {"id": "root-protected", "kind": "plan", "role": "planner"})
+            self._post(
+                f"{node.base_url}/v1/workflows/fanout",
+                "token-p",
+                {
+                    "parent_task_id": "root-protected",
+                    "subtasks": [
+                        {"id": "branch-a", "kind": "code", "role": "worker", "branch": "feature/a"},
+                        {"id": "branch-b", "kind": "code", "role": "worker", "branch": "feature/b"},
+                    ],
+                },
+            )
+            self._post(
+                f"{node.base_url}/v1/workflows/review-gate",
+                "token-p",
+                {
+                    "workflow_id": "root-protected",
+                    "reviews": [
+                        {"id": "review-a", "kind": "review", "role": "reviewer", "payload": {"_review": {"target_task_id": "branch-a"}}},
+                        {"id": "review-b", "kind": "review", "role": "reviewer", "payload": {"_review": {"target_task_id": "branch-b"}}},
+                    ],
+                },
+            )
+            self._post(
+                f"{node.base_url}/v1/workflows/merge",
+                "token-p",
+                {
+                    "workflow_id": "root-protected",
+                    "parent_task_ids": ["branch-a", "branch-b"],
+                    "protected_branches": ["feature/a", "feature/b"],
+                    "required_approvals_per_branch": 1,
+                    "task": {"id": "merge-protected", "kind": "merge", "role": "reviewer", "branch": "main"},
+                },
+            )
+
+            for worker_id in ["branch-a", "branch-b"]:
+                _, claim = self._post(
+                    f"{node.base_url}/v1/tasks/claim",
+                    "token-p",
+                    {"worker_id": f"{worker_id}-worker", "worker_capabilities": ["worker"], "lease_seconds": 30},
+                )
+                self.assertEqual(claim["task"]["id"], worker_id)
+                self._post(
+                    f"{node.base_url}/v1/tasks/ack",
+                    "token-p",
+                    {
+                        "task_id": worker_id,
+                        "worker_id": claim["task"]["locked_by"],
+                        "lease_token": claim["task"]["lease_token"],
+                        "success": True,
+                        "result": {"done": worker_id},
+                    },
+                )
+
+            _, first_review_claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-p",
+                {"worker_id": "reviewer-a", "worker_capabilities": ["reviewer"], "lease_seconds": 30},
+            )
+            self.assertIn(first_review_claim["task"]["id"], {"review-a", "review-b"})
+
+            _, summary_before = self._get(f"{node.base_url}/v1/workflows/summary?workflow_id=root-protected")
+            self.assertFalse(summary_before["merge_gate_status"]["merge-protected"]["satisfied"])
+
+            pending_reviews = {"review-a", "review-b"}
+            first_id = first_review_claim["task"]["id"]
+            pending_reviews.remove(first_id)
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-p",
+                {
+                    "task_id": first_id,
+                    "worker_id": first_review_claim["task"]["locked_by"],
+                    "lease_token": first_review_claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"approved": True},
+                },
+            )
+
+            _, second_review_claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-p",
+                {"worker_id": "reviewer-b", "worker_capabilities": ["reviewer"], "lease_seconds": 30},
+            )
+            second_id = next(iter(pending_reviews))
+            self.assertEqual(second_review_claim["task"]["id"], second_id)
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-p",
+                {
+                    "task_id": second_id,
+                    "worker_id": second_review_claim["task"]["locked_by"],
+                    "lease_token": second_review_claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"approved": True},
+                },
+            )
+
+            _, merge_claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-p",
+                {"worker_id": "merge-reviewer", "worker_capabilities": ["reviewer"], "lease_seconds": 30},
+            )
+            self.assertEqual(merge_claim["task"]["id"], "merge-protected")
+        finally:
+            node.stop()

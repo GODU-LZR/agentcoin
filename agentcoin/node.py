@@ -223,6 +223,17 @@ class AgentCoinNode:
                         created = node.store.create_subtasks(parent_task_id, subtasks)
                         self._json_response(HTTPStatus.CREATED, {"items": created})
                         return
+                    if self.path == "/v1/workflows/review-gate":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        workflow_id = str(payload.get("workflow_id") or "")
+                        if not workflow_id:
+                            raise ValueError("workflow_id is required")
+                        reviews = [node._normalize_task(TaskEnvelope.from_dict(item), node.config) for item in list(payload.get("reviews") or [])]
+                        created = node.store.create_review_tasks(workflow_id, reviews)
+                        self._json_response(HTTPStatus.CREATED, {"items": created})
+                        return
                     if self.path == "/v1/workflows/merge":
                         if not self._require_auth():
                             return
@@ -236,6 +247,12 @@ class AgentCoinNode:
                             raw_task["kind"] = "merge"
                         task = node._normalize_task(TaskEnvelope.from_dict(raw_task), node.config)
                         task.workflow_id = workflow_id
+                        protected_branches = [str(item) for item in list(payload.get("protected_branches") or []) if str(item).strip()]
+                        if protected_branches:
+                            merge_policy = dict(task.payload.get("_merge_policy") or {})
+                            merge_policy["protected_branches"] = protected_branches
+                            merge_policy["required_approvals_per_branch"] = int(payload.get("required_approvals_per_branch") or 1)
+                            task.payload["_merge_policy"] = merge_policy
                         created = node.store.create_merge_task(workflow_id, parent_task_ids, task)
                         self._json_response(HTTPStatus.CREATED, {"task": created})
                         return

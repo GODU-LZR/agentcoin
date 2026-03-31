@@ -587,6 +587,15 @@ class NodeStore:
         if not task.depends_on:
             task.depends_on = list(unique_parent_ids)
         task.merge_parent_ids = list(unique_parent_ids)
+        merge_policy = dict(task.payload.get("_merge_policy") or {})
+        if merge_policy:
+            protected_branches = [str(item) for item in list(merge_policy.get("protected_branches") or []) if str(item).strip()]
+            merge_policy["protected_branches"] = protected_branches
+            merge_policy["required_approvals_per_branch"] = max(1, int(merge_policy.get("required_approvals_per_branch") or 1))
+            merge_policy["protected_parent_ids"] = [
+                parent_id for parent_id in unique_parent_ids if parent_map[parent_id]["branch"] in set(protected_branches)
+            ]
+            task.payload["_merge_policy"] = merge_policy
         if task.revision <= 1:
             task.revision = max(int(parent_map[item]["revision"]) for item in unique_parent_ids) + 1
         if not task.commit_message:
@@ -596,6 +605,116 @@ class NodeStore:
         if not created:
             raise ValueError("failed to persist merge task")
         return created
+
+    def create_review_tasks(self, workflow_id: str, reviews: list[TaskEnvelope]) -> list[dict[str, Any]]:
+        tasks = self.list_workflow_tasks(workflow_id)
+        if not tasks:
+            raise ValueError("workflow not found")
+        task_map = {item["id"]: item for item in tasks}
+        created: list[dict[str, Any]] = []
+        for review in reviews:
+            review_meta = dict(review.payload.get("_review") or {})
+            target_task_id = str(review_meta.get("target_task_id") or "").strip()
+            if not target_task_id:
+                raise ValueError("review task requires payload._review.target_task_id")
+            if target_task_id not in task_map:
+                raise ValueError(f"review target not found in workflow: {target_task_id}")
+
+            target = task_map[target_task_id]
+            review.workflow_id = workflow_id
+            review.role = review.role or "reviewer"
+            review.parent_task_id = review.parent_task_id or target_task_id
+            if not review.depends_on:
+                review.depends_on = [target_task_id]
+            if review.revision <= 1:
+                review.revision = int(target["revision"]) + 1
+            if not review.branch:
+                review.branch = f"review/{target['branch']}"
+            review_meta.setdefault("target_task_id", target_task_id)
+            review_meta.setdefault("target_branch", target["branch"])
+            review_meta.setdefault("target_revision", target["revision"])
+            review.payload["_review"] = review_meta
+            if not review.commit_message:
+                review.commit_message = f"review {target_task_id} on {target['branch']}"
+            self.add_task(review)
+            created_review = self.get_task(review.id)
+            if created_review:
+                created.append(created_review)
+        return created
+
+    @staticmethod
+    def _review_approval_index(tasks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        approvals: dict[str, dict[str, Any]] = {}
+        for task in tasks:
+            review_meta = dict(task.get("payload", {}).get("_review") or {})
+            target_task_id = str(review_meta.get("target_task_id") or "").strip()
+            if not target_task_id:
+                continue
+            entry = approvals.setdefault(
+                target_task_id,
+                {
+                    "target_branch": review_meta.get("target_branch"),
+                    "review_task_ids": [],
+                    "approved_review_task_ids": [],
+                    "rejected_review_task_ids": [],
+                    "pending_review_task_ids": [],
+                },
+            )
+            entry["review_task_ids"].append(task["id"])
+            if task["status"] == "completed":
+                approved = bool((task.get("result") or {}).get("approved"))
+                if approved:
+                    entry["approved_review_task_ids"].append(task["id"])
+                else:
+                    entry["rejected_review_task_ids"].append(task["id"])
+            elif task["status"] in {"queued", "leased"}:
+                entry["pending_review_task_ids"].append(task["id"])
+        return approvals
+
+    @classmethod
+    def _merge_policy_status_for_task(cls, merge_task: dict[str, Any], tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
+        merge_policy = dict(merge_task.get("payload", {}).get("_merge_policy") or {})
+        if not merge_policy:
+            return None
+
+        task_map = {item["id"]: item for item in tasks}
+        approval_index = cls._review_approval_index(tasks)
+        protected_branches = [str(item) for item in list(merge_policy.get("protected_branches") or []) if str(item).strip()]
+        required_approvals = max(1, int(merge_policy.get("required_approvals_per_branch") or 1))
+        protected_parent_ids = [
+            parent_id
+            for parent_id in list(merge_task.get("merge_parent_ids") or [])
+            if parent_id in task_map and task_map[parent_id]["branch"] in set(protected_branches)
+        ]
+
+        branch_status: dict[str, Any] = {}
+        satisfied = True
+        for parent_id in protected_parent_ids:
+            parent = task_map[parent_id]
+            reviews = approval_index.get(parent_id, {})
+            approved_reviews = list(reviews.get("approved_review_task_ids") or [])
+            rejected_reviews = list(reviews.get("rejected_review_task_ids") or [])
+            pending_reviews = list(reviews.get("pending_review_task_ids") or [])
+            branch_entry = {
+                "target_task_id": parent_id,
+                "branch": parent["branch"],
+                "required_approvals": required_approvals,
+                "approved_reviews": approved_reviews,
+                "rejected_reviews": rejected_reviews,
+                "pending_reviews": pending_reviews,
+                "satisfied": len(approved_reviews) >= required_approvals and not rejected_reviews,
+            }
+            if not branch_entry["satisfied"]:
+                satisfied = False
+            branch_status[parent_id] = branch_entry
+
+        return {
+            "protected_branches": protected_branches,
+            "required_approvals_per_branch": required_approvals,
+            "protected_parent_ids": protected_parent_ids,
+            "branch_status": branch_status,
+            "satisfied": satisfied,
+        }
 
     def summarize_workflow(self, workflow_id: str) -> dict[str, Any]:
         tasks = self.list_workflow_tasks(workflow_id)
@@ -609,10 +728,13 @@ class NodeStore:
         ready_ids: list[str] = []
         blocked_ids: list[str] = []
         merge_task_ids: list[str] = []
+        review_task_ids: list[str] = []
         failed_ids: list[str] = []
         dead_letter_ids: list[str] = []
+        merge_gate_status: dict[str, Any] = {}
 
         completed_ids = {task["id"] for task in tasks if task["status"] == "completed"}
+        review_approvals = self._review_approval_index(tasks)
         for task in tasks:
             status = str(task["status"] or "unknown")
             role = str(task["role"] or "worker")
@@ -630,6 +752,11 @@ class NodeStore:
 
             if task.get("merge_parent_ids"):
                 merge_task_ids.append(task["id"])
+                policy_status = self._merge_policy_status_for_task(task, tasks)
+                if policy_status:
+                    merge_gate_status[task["id"]] = policy_status
+            if task.get("payload", {}).get("_review"):
+                review_task_ids.append(task["id"])
             if status == "failed":
                 failed_ids.append(task["id"])
             if status == "dead-letter":
@@ -637,9 +764,11 @@ class NodeStore:
 
             if status == "queued":
                 depends_on = set(task.get("depends_on", []))
-                if depends_on.issubset(completed_ids):
+                policy_status = self._merge_policy_status_for_task(task, tasks)
+                policy_ready = policy_status["satisfied"] if policy_status else True
+                if depends_on.issubset(completed_ids) and policy_ready:
                     ready_ids.append(task["id"])
-                elif depends_on:
+                elif depends_on or policy_status:
                     blocked_ids.append(task["id"])
 
         leaf_task_ids = [task["id"] for task in tasks if task["id"] not in consumed_task_ids]
@@ -660,11 +789,14 @@ class NodeStore:
             "ready_task_ids": ready_ids,
             "blocked_task_ids": blocked_ids,
             "merge_task_ids": merge_task_ids,
+            "review_task_ids": review_task_ids,
             "failed_task_ids": failed_ids,
             "dead_letter_task_ids": dead_letter_ids,
             "status_counts": status_counts,
             "role_counts": role_counts,
             "branch_counts": branch_counts,
+            "review_approvals": review_approvals,
+            "merge_gate_status": merge_gate_status,
             "latest_revision": max(int(task["revision"]) for task in tasks),
             "finalizable": terminal,
             "status": final_status,
@@ -759,6 +891,7 @@ class NodeStore:
                 ORDER BY priority DESC, created_at ASC
                 """
             ).fetchall()
+            workflow_task_cache: dict[str, list[dict[str, Any]]] = {}
 
             selected: sqlite3.Row | None = None
             for row in rows:
@@ -788,6 +921,21 @@ class NodeStore:
                     ).fetchone()[0]
                     if dependency_count != len(depends_on):
                         continue
+                payload = json.loads(row["payload_json"] or "{}")
+                merge_policy = dict(payload.get("_merge_policy") or {})
+                if merge_policy:
+                    workflow_id = str(row["workflow_id"] or "")
+                    if workflow_id:
+                        if workflow_id not in workflow_task_cache:
+                            workflow_task_cache[workflow_id] = self.list_workflow_tasks(workflow_id)
+                        merge_task = {
+                            "id": row["id"],
+                            "merge_parent_ids": json.loads(row["merge_parent_ids_json"] or "[]"),
+                            "payload": payload,
+                        }
+                        policy_status = self._merge_policy_status_for_task(merge_task, workflow_task_cache[workflow_id])
+                        if policy_status and not policy_status["satisfied"]:
+                            continue
                 selected = row
                 break
 

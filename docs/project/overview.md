@@ -114,6 +114,15 @@ Lifecycle:
 
 This gives the system Git-like properties without pretending tasks are literally Git commits.
 
+### Governance Model
+
+Workflow governance now has a first executable layer:
+
+- review tasks can target specific branch tasks
+- merge tasks can protect specific branches
+- protected merge waits for enough completed approvals per protected branch
+- workflow summaries expose review and merge-gate state for planners and operators
+
 ## Delivery and Failure States
 
 ### Task states

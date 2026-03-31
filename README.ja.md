@@ -131,6 +131,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
+- `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
 - `POST /v1/workflows/finalize`
 - `POST /v1/tasks/claim`
@@ -209,10 +210,17 @@ task には Git-like な workflow traits も追加しました。
 
 workflow の収束フェーズも追加しました。
 
+- `POST /v1/workflows/review-gate` で target branch task を承認・却下する reviewer task を生成
 - `POST /v1/workflows/merge` で複数 branch task に依存する merge / aggregate / reviewer task を生成
 - `GET /v1/workflows/summary?workflow_id=...` で branch, role, status, ready, blocked, leaf task を要約表示
 - `POST /v1/workflows/finalize` で open task がなくなった workflow の終端状態を永続化
 - planner が `fanout` を実行すると親 task は自動で completed になり、root が queued のまま残りません
+
+protected merge もサポートしました。
+
+- merge task は `protected_branches` を宣言できる
+- 各 protected branch は merge の前に reviewer approval を要求できる
+- workflow summary は `review_task_ids`, `review_approvals`, `merge_gate_status` を返す
 
 ## Test Status
 

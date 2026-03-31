@@ -130,6 +130,7 @@ Key endpoints:
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
+- `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
 - `POST /v1/workflows/finalize`
 - `POST /v1/tasks/claim`
@@ -223,10 +224,17 @@ This lets AgentCoin treat a workflow as a task DAG with branchable history rathe
 
 Workflows can now also converge back into a merge/finalize phase:
 
+- `POST /v1/workflows/review-gate` creates reviewer tasks that explicitly approve or reject target branch tasks
 - `POST /v1/workflows/merge` creates an aggregate or reviewer task that depends on multiple branch tasks
 - `GET /v1/workflows/summary?workflow_id=...` returns branch, role, status, ready, blocked, and leaf-task views
 - `POST /v1/workflows/finalize` persists a terminal workflow state once all open tasks are finished
 - planner fanout auto-completes the parent planning task, which makes workflow closure explicit instead of leaving the root task queued forever
+
+Protected merge is now supported:
+
+- merge tasks can declare `protected_branches`
+- each protected branch can require reviewer approval before the merge task becomes claimable
+- workflow summaries now expose `review_task_ids`, `review_approvals`, and `merge_gate_status`
 
 ## Status
 

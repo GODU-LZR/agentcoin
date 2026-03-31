@@ -52,6 +52,7 @@ The reference node now also models degraded network conditions explicitly:
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
+- `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
 - `POST /v1/workflows/finalize`
 - `POST /v1/tasks/claim`
@@ -104,8 +105,10 @@ This makes AgentCoin closer to a distributed task graph with history, not just a
 The workflow model now also supports Git-like convergence:
 
 - `fanout` spawns child tasks and auto-completes the parent planning task
+- `review-gate` creates reviewer tasks bound to specific branch tasks
 - `merge` creates a merge or aggregate task with multiple `merge_parent_ids`
 - dependency checks keep merge tasks blocked until every upstream branch is completed
+- protected merge checks keep merge tasks blocked until required reviews are approved
 - `summary` exposes the workflow state for planners, reviewers, and dashboards
 - `finalize` persists a terminal workflow snapshot once no queued or leased tasks remain
 
@@ -116,6 +119,12 @@ This gives the scheduler a simple but useful lifecycle:
 3. workers complete branch tasks
 4. reviewer or aggregator claims the merge task
 5. workflow finalization records the terminal summary
+
+Protected branches now work as a first governance primitive:
+
+- reviewer tasks declare a review target in `payload._review.target_task_id`
+- merge tasks declare protected branches and required approvals in `payload._merge_policy`
+- the scheduler only releases the merge task after both dependency completion and review-policy satisfaction
 
 ## Failure Handling
 

@@ -15,6 +15,7 @@ The current test scope covers:
 - explicit message ACK validation
 - lease-based task claiming
 - workflow fanout and merge behavior
+- review gate and protected merge behavior
 - weak-network retry, dead-letter, and local fallback
 
 ## What Exists Today
@@ -65,6 +66,7 @@ The following behaviors are now covered either by automated tests or previously 
 - planner dispatch to matching peer capability
 - worker pull loop completion path
 - workflow fanout with dependency blocking
+- review-gate approval before protected merge claim
 - merge task blocking until branch completion
 - workflow finalization persistence
 - remote dispatch fallback to local execution after outbox dead-letter
