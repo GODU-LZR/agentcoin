@@ -114,6 +114,9 @@ docker compose up --build
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
+- `POST /v1/tasks/claim`
+- `POST /v1/tasks/lease/renew`
+- `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
 - `POST /v1/peers/sync`
@@ -126,6 +129,15 @@ docker compose up --build
 curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
 curl http://127.0.0.1:8080/v1/peer-cards
 ```
+
+本地任务队列现在也支持多 Agent 协调所需的租约锁：
+
+- worker 用 `POST /v1/tasks/claim` 抢占任务
+- 节点返回 `lease_token`
+- worker 用 `POST /v1/tasks/lease/renew` 续租
+- worker 用 `POST /v1/tasks/ack` 完成、失败或回队
+
+这一步是后续做锁消息队列、任务队列和 swarm 调度的基础。
 
 ## 通信方向
 

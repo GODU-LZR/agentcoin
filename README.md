@@ -108,6 +108,9 @@ Key endpoints:
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
+- `POST /v1/tasks/claim`
+- `POST /v1/tasks/lease/renew`
+- `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
 - `POST /v1/peers/sync`
@@ -126,6 +129,15 @@ The node can also fetch and cache remote capability cards:
 curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
 curl http://127.0.0.1:8080/v1/peer-cards
 ```
+
+The local task queue now supports lease-based coordination for multiple agents:
+
+- workers claim a task with `POST /v1/tasks/claim`
+- the node returns a `lease_token`
+- workers renew the lock with `POST /v1/tasks/lease/renew`
+- workers finish with `POST /v1/tasks/ack`
+
+This is the first queue-locking primitive for multi-agent execution.
 
 ## Status
 

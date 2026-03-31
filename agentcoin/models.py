@@ -42,6 +42,7 @@ class TaskEnvelope:
     priority: int = 5
     status: str = "queued"
     deliver_to: str | None = None
+    required_capabilities: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TaskEnvelope":
@@ -54,6 +55,7 @@ class TaskEnvelope:
             priority=int(raw.get("priority") or 5),
             status=str(raw.get("status") or "queued"),
             deliver_to=raw.get("deliver_to"),
+            required_capabilities=list(raw.get("required_capabilities") or []),
         )
 
     def to_dict(self) -> dict[str, Any]:

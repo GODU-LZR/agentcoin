@@ -101,6 +101,9 @@ agentcoin-node --config configs/node.example.json
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
+- `POST /v1/tasks/claim`
+- `POST /v1/tasks/lease/renew`
+- `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
 - `POST /v1/peers/sync`
@@ -113,3 +116,11 @@ peer capability card の同期と確認:
 curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
 curl http://127.0.0.1:8080/v1/peer-cards
 ```
+
+ローカル task queue は lease-based coordination にも対応しました。
+
+- `POST /v1/tasks/claim`
+- `POST /v1/tasks/lease/renew`
+- `POST /v1/tasks/ack`
+
+これは複数 agent による task coordination の土台です。

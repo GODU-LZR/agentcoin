@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 
@@ -31,6 +32,13 @@ class NodeStore:
                     priority INTEGER NOT NULL,
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
+                    required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    locked_by TEXT,
+                    lease_token TEXT,
+                    lease_expires_at TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    result_json TEXT,
+                    completed_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -61,9 +69,22 @@ class NodeStore:
                 );
                 """
             )
+            self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "tasks", "locked_by", "TEXT")
+            self._ensure_column(conn, "tasks", "lease_token", "TEXT")
+            self._ensure_column(conn, "tasks", "lease_expires_at", "TEXT")
+            self._ensure_column(conn, "tasks", "attempts", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "tasks", "result_json", "TEXT")
+            self._ensure_column(conn, "tasks", "completed_at", "TEXT")
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def add_task(self, task: TaskEnvelope) -> None:
         now = utc_now()
@@ -72,8 +93,8 @@ class NodeStore:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tasks
-                (id, kind, sender, priority, status, payload_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, kind, sender, priority, status, payload_json, required_capabilities_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -82,6 +103,7 @@ class NodeStore:
                     task.priority,
                     task.status,
                     json.dumps(task.payload, ensure_ascii=False),
+                    json.dumps(task.required_capabilities, ensure_ascii=False),
                     task.created_at,
                     now,
                 ),
@@ -95,7 +117,9 @@ class NodeStore:
         try:
             rows = conn.execute(
                 """
-                SELECT id, kind, sender, priority, status, payload_json, created_at, updated_at
+                SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       created_at, updated_at
                 FROM tasks
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -110,6 +134,13 @@ class NodeStore:
                     "priority": row["priority"],
                     "status": row["status"],
                     "payload": json.loads(row["payload_json"]),
+                    "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
+                    "locked_by": row["locked_by"],
+                    "lease_token": row["lease_token"],
+                    "lease_expires_at": row["lease_expires_at"],
+                    "attempts": row["attempts"],
+                    "result": json.loads(row["result_json"]) if row["result_json"] else None,
+                    "completed_at": row["completed_at"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                 }
@@ -198,12 +229,18 @@ class NodeStore:
         conn = self._connect()
         try:
             task_count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+            queued_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'queued'").fetchone()[0]
+            leased_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'leased'").fetchone()[0]
+            completed_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'completed'").fetchone()[0]
             inbox_count = conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0]
             outbox_pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
             outbox_delivered = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'delivered'").fetchone()[0]
             peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
             return {
                 "tasks": task_count,
+                "tasks_queued": queued_tasks,
+                "tasks_leased": leased_tasks,
+                "tasks_completed": completed_tasks,
                 "inbox": inbox_count,
                 "outbox_pending": outbox_pending,
                 "outbox_delivered": outbox_delivered,
@@ -248,5 +285,163 @@ class NodeStore:
                 }
                 for row in rows
             ]
+        finally:
+            conn.close()
+
+    def claim_task(
+        self,
+        worker_id: str,
+        worker_capabilities: list[str] | None = None,
+        lease_seconds: int = 60,
+    ) -> dict[str, Any] | None:
+        worker_capabilities = worker_capabilities or []
+        now = utc_now()
+        lease_expires_at = utc_after(lease_seconds)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                """
+                SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       created_at, updated_at
+                FROM tasks
+                WHERE status IN ('queued', 'leased')
+                ORDER BY priority DESC, created_at ASC
+                """
+            ).fetchall()
+
+            selected: sqlite3.Row | None = None
+            for row in rows:
+                required = json.loads(row["required_capabilities_json"] or "[]")
+                lease_expired = not row["lease_expires_at"] or row["lease_expires_at"] <= now
+                available = row["status"] == "queued" or lease_expired
+                if not available:
+                    continue
+                if required and not set(required).issubset(set(worker_capabilities)):
+                    continue
+                selected = row
+                break
+
+            if not selected:
+                conn.commit()
+                return None
+
+            lease_token = str(uuid4())
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'leased',
+                    locked_by = ?,
+                    lease_token = ?,
+                    lease_expires_at = ?,
+                    attempts = attempts + 1,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (worker_id, lease_token, lease_expires_at, now, selected["id"]),
+            )
+            conn.commit()
+            claimed = dict(selected)
+            claimed["status"] = "leased"
+            claimed["locked_by"] = worker_id
+            claimed["lease_token"] = lease_token
+            claimed["lease_expires_at"] = lease_expires_at
+            claimed["attempts"] = int(selected["attempts"]) + 1
+            return {
+                "id": claimed["id"],
+                "kind": claimed["kind"],
+                "sender": claimed["sender"],
+                "priority": claimed["priority"],
+                "status": claimed["status"],
+                "payload": json.loads(claimed["payload_json"]),
+                "required_capabilities": json.loads(claimed["required_capabilities_json"] or "[]"),
+                "locked_by": claimed["locked_by"],
+                "lease_token": claimed["lease_token"],
+                "lease_expires_at": claimed["lease_expires_at"],
+                "attempts": claimed["attempts"],
+                "created_at": claimed["created_at"],
+                "updated_at": now,
+            }
+        finally:
+            conn.close()
+
+    def renew_task_lease(self, task_id: str, worker_id: str, lease_token: str, lease_seconds: int = 60) -> bool:
+        conn = self._connect()
+        try:
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
+                """,
+                (utc_after(lease_seconds), utc_now(), task_id, worker_id, lease_token),
+            ).rowcount
+            conn.commit()
+            return updated > 0
+        finally:
+            conn.close()
+
+    def ack_task(
+        self,
+        task_id: str,
+        worker_id: str,
+        lease_token: str,
+        success: bool,
+        result: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        requeue: bool = False,
+    ) -> bool:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            if success:
+                updated = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'completed',
+                        result_json = ?,
+                        completed_at = ?,
+                        locked_by = NULL,
+                        lease_token = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
+                    """,
+                    (json.dumps(result or {}, ensure_ascii=False), now, now, task_id, worker_id, lease_token),
+                ).rowcount
+            elif requeue:
+                payload_update = {"error": error_message} if error_message else {}
+                updated = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'queued',
+                        result_json = ?,
+                        locked_by = NULL,
+                        lease_token = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
+                    """,
+                    (json.dumps(payload_update, ensure_ascii=False), now, task_id, worker_id, lease_token),
+                ).rowcount
+            else:
+                failure = {"error": error_message} if error_message else {"error": "task failed"}
+                updated = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'failed',
+                        result_json = ?,
+                        completed_at = ?,
+                        locked_by = NULL,
+                        lease_token = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
+                    """,
+                    (json.dumps(failure, ensure_ascii=False), now, now, task_id, worker_id, lease_token),
+                ).rowcount
+            conn.commit()
+            return updated > 0
         finally:
             conn.close()

@@ -36,14 +36,31 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/peers`
+- `GET /v1/peer-cards`
 - `GET /v1/outbox`
 - `POST /v1/tasks`
+- `POST /v1/tasks/claim`
+- `POST /v1/tasks/lease/renew`
+- `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/peers/sync`
 
 The node can now resolve `deliver_to` either as a full URL or as a configured `peer_id`. This is better suited for encrypted overlay networks because application code can target stable peer identities instead of embedding raw addresses everywhere.
 
 It also supports capability-card synchronization from configured peers. This allows the node to cache peer capabilities locally before the scheduler layer is built.
+
+The task queue now includes lease-based locking primitives. Workers can atomically claim work, renew the lease while executing, and explicitly acknowledge completion or failure.
+
+## Coordination Direction
+
+The next coordination layer should be built on top of these primitives:
+
+1. `Task queue`: durable queue with lease locking and ACK.
+2. `Message queue`: durable inter-node delivery with explicit receipts.
+3. `Planner-worker model`: planners emit tasks, workers claim by capability.
+4. `Retry and dead-letter`: failed tasks requeue or move to a failure lane.
+5. `Checkpoint merge`: long workflows checkpoint state between stages.
 
 ## Next Milestones
 

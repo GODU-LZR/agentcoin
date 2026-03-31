@@ -138,6 +138,49 @@ class AgentCoinNode:
                             node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
+                    if self.path == "/v1/tasks/claim":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        worker_id = str(payload.get("worker_id") or "").strip()
+                        if not worker_id:
+                            raise ValueError("worker_id is required")
+                        lease_seconds = int(payload.get("lease_seconds") or 60)
+                        worker_capabilities = list(payload.get("worker_capabilities") or [])
+                        task = node.store.claim_task(
+                            worker_id=worker_id,
+                            worker_capabilities=worker_capabilities,
+                            lease_seconds=lease_seconds,
+                        )
+                        self._json_response(HTTPStatus.OK, {"task": task})
+                        return
+                    if self.path == "/v1/tasks/lease/renew":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        ok = node.store.renew_task_lease(
+                            task_id=str(payload.get("task_id") or ""),
+                            worker_id=str(payload.get("worker_id") or ""),
+                            lease_token=str(payload.get("lease_token") or ""),
+                            lease_seconds=int(payload.get("lease_seconds") or 60),
+                        )
+                        self._json_response(HTTPStatus.OK, {"ok": ok})
+                        return
+                    if self.path == "/v1/tasks/ack":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        ok = node.store.ack_task(
+                            task_id=str(payload.get("task_id") or ""),
+                            worker_id=str(payload.get("worker_id") or ""),
+                            lease_token=str(payload.get("lease_token") or ""),
+                            success=bool(payload.get("success")),
+                            result=dict(payload.get("result") or {}),
+                            error_message=payload.get("error_message"),
+                            requeue=bool(payload.get("requeue")),
+                        )
+                        self._json_response(HTTPStatus.OK, {"ok": ok})
+                        return
                     if self.path == "/v1/inbox":
                         if not self._require_auth():
                             return
