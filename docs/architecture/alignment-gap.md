@@ -107,9 +107,9 @@ The blueprint explicitly mentions:
 
 The current implementation now has a pragmatic signed-identity MVP with both HMAC and SSH-key based signatures, but it is still far from the blueprint's stronger target. There is no TEE integration, no attestation, no decentralized trust chain, and no cryptographic proof-of-work receipts yet.
 
-### 5. Protocol compatibility is still adapter-ready, not standards-complete
+### 5. Protocol compatibility is now skeleton-level, not standards-complete
 
-The blueprint discusses MCP, A2A, ACP, LACP, and ANP directions. The current repository is only compatible in spirit. It does not yet provide full bridges for those protocols.
+The blueprint discusses MCP, A2A, ACP, LACP, and ANP directions. The current repository now has a pragmatic MCP / A2A bridge skeleton for import-export flows, but it does not yet provide full standards-complete bridges for those protocols.
 
 ## Current Overall Judgment
 
@@ -131,7 +131,7 @@ If the goal is to converge back toward the original blueprint, the most importan
 2. stronger signed identity and envelope verification beyond the current HMAC MVP
 3. PoAW scoring and settlement pipeline
 4. stronger execution isolation and attestation
-5. MCP / A2A bridge adapters
+5. fuller MCP / A2A bridge adapters and additional protocol coverage
 
 ## Recommended Next Completion Path
 

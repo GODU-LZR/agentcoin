@@ -15,6 +15,7 @@ The current test scope covers:
 - explicit message ACK validation
 - signed peer-card sync and inbox signature verification
 - SSH identity signed delivery receipt verification
+- bridge registry plus MCP / A2A import-export flow
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior

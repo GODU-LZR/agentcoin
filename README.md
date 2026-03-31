@@ -130,10 +130,13 @@ Key endpoints:
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/bridges/import`
+- `POST /v1/bridges/export`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
@@ -188,6 +191,13 @@ The node can now also adapt to a real Git repository instead of treating the int
 - `POST /v1/git/branch` creates a Git branch from a chosen ref
 - `POST /v1/git/task-context` attaches real repository context to an existing task
 - `POST /v1/tasks` can set `attach_git_context=true` to persist `_git` metadata at creation time
+
+The bridge layer now has a first executable MCP / A2A skeleton:
+
+- `GET /v1/bridges` lists enabled bridge adapters
+- `POST /v1/bridges/import` turns MCP or A2A style messages into durable AgentCoin tasks
+- `POST /v1/bridges/export` renders task state or explicit results back into bridge-shaped protocol messages
+- bridge metadata is stored in `payload._bridge`, so planners and workers can preserve protocol context without replacing the internal task model
 
 Inter-node delivery now also uses explicit message acknowledgements:
 
@@ -282,8 +292,8 @@ Current implementation status:
 - whitepaper and language landing pages are in place;
 - a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, handle dead-letter lanes, and track Git-like workflow convergence;
 - automated `unittest` coverage and cross-platform GitHub Actions CI are in place for the current MVP surface;
-- peer routing, Git-native review policy, HMAC verification, and SSH-key based node identity are implemented in the MVP;
-- ontology, stronger key rotation, attestation, protocol bridges, and PoAW settlement are not implemented yet.
+- peer routing, Git-native review policy, HMAC verification, SSH-key based node identity, and MCP / A2A bridge skeletons are implemented in the MVP;
+- ontology, stronger key rotation, full standards-complete bridges, attestation, and PoAW settlement are not implemented yet.
 
 ## Connectivity Direction
 

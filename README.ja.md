@@ -131,10 +131,13 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/bridges/import`
+- `POST /v1/bridges/export`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
@@ -174,6 +177,13 @@ node は内部 workflow を Git の代替にするのではなく、実際の Gi
 - `POST /v1/git/branch` で指定 ref から branch を作成
 - `POST /v1/git/task-context` で既存 task に real repository context を付与
 - `POST /v1/tasks` に `attach_git_context=true` を渡すと作成時に `_git` metadata を保存
+
+bridge layer にも最初の実行可能 skeleton を追加しました。
+
+- `GET /v1/bridges` で有効な bridge adapter を一覧できます
+- `POST /v1/bridges/import` で `MCP` / `A2A` 風 message を durable AgentCoin task に変換できます
+- `POST /v1/bridges/export` で task state や result を bridge-shaped message に戻せます
+- bridge metadata は `payload._bridge` に保存されるため、外部 protocol context を保ったまま内部 task model を維持できます
 
 inter-node message delivery には explicit ACK も追加しました。
 
@@ -255,7 +265,7 @@ protected merge もサポートしました。
 
 ## Test Status
 
-現在のリポジトリには、自動 `unittest` とクロスプラットフォーム GitHub Actions CI が含まれており、retry, dead-letter, delivery ACK, 署名検証, workflow merge/finalize, 弱ネットワーク fallback を検証します。
+現在のリポジトリには、自動 `unittest` とクロスプラットフォーム GitHub Actions CI が含まれており、retry, dead-letter, delivery ACK, 署名検証, `MCP/A2A bridge`, workflow merge/finalize, 弱ネットワーク fallback を検証します。
 
 ## License
 

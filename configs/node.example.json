@@ -12,6 +12,10 @@
   "identity_private_key_path": "./var/identity/id_ed25519",
   "database_path": "./var/agentcoin.db",
   "git_root": ".",
+  "bridges": [
+    "mcp",
+    "a2a"
+  ],
   "sync_interval_seconds": 15,
   "max_body_bytes": 262144,
   "outbox_max_attempts": 5,

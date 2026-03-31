@@ -643,3 +643,89 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(review_tasks["git-review-human"]["payload"]["_git"]["repo_root"], str(repo_path.resolve()))
         finally:
             node.stop()
+
+    def test_bridge_registry_import_and_export(self) -> None:
+        node = NodeHarness(
+            node_id="bridge-node",
+            token="token-bridge",
+            db_path=str(Path(self.tempdir.name) / "bridge.db"),
+            capabilities=["worker", "reviewer"],
+        )
+        node.start()
+        try:
+            _, card = self._get(f"{node.base_url}/v1/card")
+            self.assertIn("mcp-bridge/0.1", card["protocols"])
+            self.assertIn("a2a-bridge/0.1", card["protocols"])
+            self.assertTrue(card["endpoints"]["bridge_import"].endswith("/v1/bridges/import"))
+
+            _, bridges = self._get(f"{node.base_url}/v1/bridges")
+            protocols = {item["protocol"] for item in bridges["items"]}
+            self.assertEqual(protocols, {"mcp", "a2a"})
+
+            import_status, imported = self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-bridge",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "mcp-req-1",
+                        "method": "tools/call",
+                        "params": {"name": "reviewer", "arguments": {"path": "README.md"}},
+                        "sender": "mcp-client",
+                    },
+                    "task_overrides": {"id": "bridge-task-1", "role": "worker"},
+                },
+            )
+            self.assertEqual(import_status, 201)
+            self.assertEqual(imported["task"]["id"], "bridge-task-1")
+            self.assertEqual(imported["task"]["kind"], "tool-call")
+            self.assertEqual(imported["task"]["payload"]["_bridge"]["protocol"], "mcp")
+            self.assertEqual(imported["task"]["required_capabilities"], ["reviewer"])
+
+            export_status, exported = self._post(
+                f"{node.base_url}/v1/bridges/export",
+                "token-bridge",
+                {
+                    "protocol": "mcp",
+                    "task_id": "bridge-task-1",
+                    "result": {"approved": True, "notes": "ok"},
+                },
+            )
+            self.assertEqual(export_status, 200)
+            self.assertEqual(exported["message"]["id"], "mcp-req-1")
+            self.assertEqual(exported["message"]["result"]["result"]["approved"], True)
+
+            a2a_status, a2a_imported = self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-bridge",
+                {
+                    "protocol": "a2a",
+                    "message": {
+                        "message_id": "a2a-msg-1",
+                        "conversation_id": "conv-1",
+                        "sender": "agent-b",
+                        "intent": "summarize",
+                        "content": {"text": "hello world"},
+                        "required_capabilities": ["worker"],
+                    },
+                    "task_overrides": {"id": "bridge-task-2", "role": "worker"},
+                },
+            )
+            self.assertEqual(a2a_status, 201)
+            self.assertEqual(a2a_imported["task"]["workflow_id"], "conv-1")
+            self.assertEqual(a2a_imported["task"]["payload"]["_bridge"]["protocol"], "a2a")
+
+            a2a_export_status, a2a_exported = self._post(
+                f"{node.base_url}/v1/bridges/export",
+                "token-bridge",
+                {
+                    "protocol": "a2a",
+                    "task_id": "bridge-task-2",
+                    "result": {"summary": "done"},
+                },
+            )
+            self.assertEqual(a2a_export_status, 200)
+            self.assertEqual(a2a_exported["message"]["conversation_id"], "conv-1")
+            self.assertEqual(a2a_exported["message"]["task"]["result"]["summary"], "done")
+        finally:
+            node.stop()

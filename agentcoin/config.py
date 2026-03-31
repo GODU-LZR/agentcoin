@@ -49,6 +49,7 @@ class NodeConfig:
     task_retry_limit: int = 3
     task_retry_backoff_seconds: int = 5
     local_dispatch_fallback: bool = True
+    bridges: list[str] = field(default_factory=lambda: ["mcp", "a2a"])
     overlay_network: str = "tailnet"
     overlay_endpoint: str | None = None
     overlay_addresses: list[str] = field(default_factory=list)
@@ -69,10 +70,12 @@ class NodeConfig:
 
     @property
     def card(self) -> AgentCard:
+        protocols = ["agentcoin/0.1", *[f"{protocol}-bridge/0.1" for protocol in self.bridges]]
         return AgentCard(
             node_id=self.node_id,
             name=self.name,
             description=self.description,
+            protocols=protocols,
             capabilities=self.capabilities,
             tags=self.tags,
             runtimes=self.runtimes,
@@ -83,6 +86,9 @@ class NodeConfig:
                 "inbox": f"{self.base_url}/v1/inbox",
                 "peers": f"{self.base_url}/v1/peers",
                 "peer_cards": f"{self.base_url}/v1/peer-cards",
+                "bridges": f"{self.base_url}/v1/bridges",
+                "bridge_import": f"{self.base_url}/v1/bridges/import",
+                "bridge_export": f"{self.base_url}/v1/bridges/export",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",
                 "git_diff": f"{self.base_url}/v1/git/diff" if self.git_root else "",
             },

@@ -42,6 +42,7 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - agent capability cards
 - local task ingestion
 - peer routing
+- protocol bridge import and export
 - inbox and outbox delivery
 - lease-based claiming
 - workflow fanout, merge, summary, and finalize
@@ -103,6 +104,17 @@ AgentCoin currently has two durable queues:
 
 - task queue: work claiming, lease management, ACK, retry, dead-letter
 - message queue: inter-node outbox, inbox dedupe, delivery ACK, replay
+
+### Bridge Model
+
+The bridge layer lets AgentCoin ingest external protocol messages without replacing its internal task model.
+
+Current bridge capabilities:
+
+- MCP message import
+- A2A message import
+- bridge metadata persisted in `payload._bridge`
+- export of task state or result back into bridge-shaped response payloads
 
 ### Git Adapter Model
 
@@ -210,6 +222,7 @@ Still missing for later milestones:
 - `GET /v1/card`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/bridges`
 
 ### Task operations
 
@@ -217,6 +230,8 @@ Still missing for later milestones:
 - `GET /v1/tasks/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/bridges/import`
+- `POST /v1/bridges/export`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -260,7 +275,7 @@ Recommended medium-term direction:
 ## Current Limitations
 
 - no key rotation, revocation, or trust-chain management yet
-- no plugin adapter system yet
+- no plugin adapter marketplace yet
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade
 - no production-grade authN/authZ model yet
@@ -278,7 +293,7 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 ## Near-Term Roadmap
 
 1. Upgrade HMAC signatures to stronger asymmetric identity and key rotation
-2. Add MCP / A2A / custom runtime adapters
+2. Expand MCP / A2A bridges and add custom runtime adapters
 3. Expand workflow governance, rejection handling, and policy controls
 4. Harden authN/authZ, secret handling, and outbound ACLs
 5. Add PoAW, reputation, and settlement scaffolding

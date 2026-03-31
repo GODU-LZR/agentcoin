@@ -57,10 +57,13 @@ The reference node now also models degraded network conditions explicitly:
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/bridges/import`
+- `POST /v1/bridges/export`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
@@ -104,6 +107,13 @@ The node now also has a Git-native adapter layer:
 - branch creation
 - task attachment to real repository context
 - no attempt to replace Git history with internal workflow metadata
+
+The node now also has a first protocol-bridge layer:
+
+- bridge registry for enabled MCP / A2A adapters
+- MCP-style request import into durable task envelopes
+- A2A-style message import into durable task envelopes
+- protocol-shaped export of task state and results back to bridge callers
 
 ## Git-Like Task Model
 
@@ -170,5 +180,5 @@ The next coordination layer should be built on top of these primitives:
 1. Replace the current mixed HMAC / SSH MVP with key rotation, stronger trust bootstrap, and richer receipt semantics.
 2. Add task state transitions and worker execution adapters.
 3. Add encrypted local secrets and stricter outbound policy controls.
-4. Add pluggable protocol bridges for MCP, A2A, and custom agents.
+4. Expand the current MCP / A2A bridge skeleton into fuller protocol coverage and custom adapters.
 5. Add gossip sync and richer offline replay semantics.

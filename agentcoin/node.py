@@ -9,6 +9,7 @@ from urllib import error, request
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
+from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope
@@ -29,6 +30,7 @@ class AgentCoinNode:
         self.config = config
         self.store = NodeStore(config.database_path)
         self.git = GitWorkspace(config.git_root) if config.git_root else None
+        self.bridges = BridgeRegistry(config.bridges)
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
@@ -193,6 +195,23 @@ class AgentCoinNode:
             return True
         return set(capabilities).issubset(set(self.config.capabilities))
 
+    def _persist_task_delivery(self, task: TaskEnvelope, dispatch_mode: str | None = None) -> None:
+        self.store.add_task(task)
+        if not task.deliver_to:
+            return
+        target_url, auth_token, target_ref = self._resolve_delivery(task.deliver_to)
+        task.payload.setdefault("_delivery", {})
+        task.payload["_delivery"].update({"target_ref": target_ref})
+        if dispatch_mode:
+            task.payload["_delivery"]["dispatch_mode"] = dispatch_mode
+        self.store.add_task(task)
+        outbound = self._sign_document(
+            task.to_dict(),
+            hmac_scope="task-envelope",
+            identity_namespace="agentcoin-task",
+        )
+        self.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
+
     def _require_git(self) -> GitWorkspace:
         if not self.git:
             raise ValueError("git integration is not configured")
@@ -301,6 +320,9 @@ class AgentCoinNode:
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
+                if path == "/v1/bridges":
+                    self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
+                    return
                 if path == "/v1/git/status":
                     self._json_response(HTTPStatus.OK, node._require_git().status())
                     return
@@ -357,18 +379,7 @@ class AgentCoinNode:
                             base_ref = str(payload.get("git_base_ref") or "HEAD")
                             target_ref = payload.get("git_target_ref")
                             task.payload["_git"] = node._require_git().task_context(base_ref=base_ref, target_ref=target_ref)
-                        node.store.add_task(task)
-                        if task.deliver_to:
-                            target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
-                            task.payload.setdefault("_delivery", {})
-                            task.payload["_delivery"].update({"target_ref": target_ref})
-                            node.store.add_task(task)
-                            outbound = node._sign_document(
-                                task.to_dict(),
-                                hmac_scope="task-envelope",
-                                identity_namespace="agentcoin-task",
-                            )
-                            node.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
+                        node._persist_task_delivery(task)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
                     if self.path == "/v1/workflows/fanout":
@@ -461,19 +472,52 @@ class AgentCoinNode:
                                 return
                             if target["target_type"] == "peer":
                                 task.deliver_to = target["target_ref"]
-                        node.store.add_task(task)
-                        if task.deliver_to:
-                            target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
-                            task.payload.setdefault("_delivery", {})
-                            task.payload["_delivery"].update({"target_ref": target_ref, "dispatch_mode": "planner"})
-                            node.store.add_task(task)
-                            outbound = node._sign_document(
-                                task.to_dict(),
-                                hmac_scope="task-envelope",
-                                identity_namespace="agentcoin-task",
-                            )
-                            node.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
+                        node._persist_task_delivery(task, dispatch_mode="planner" if task.deliver_to else None)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
+                        return
+                    if self.path == "/v1/bridges/import":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        protocol = str(payload.get("protocol") or "").strip()
+                        message = dict(payload.get("message") or {})
+                        task_overrides = dict(payload.get("task_overrides") or {})
+                        dispatch = bool(payload.get("dispatch"))
+                        prefer_local = bool(payload.get("prefer_local"))
+                        task = node._normalize_task(node.bridges.import_task(protocol, message, task_overrides), node.config)
+                        target = None
+                        if dispatch:
+                            if task.deliver_to:
+                                target = {"target_type": "explicit", "target_ref": task.deliver_to}
+                            else:
+                                target = node.select_dispatch_target(task.required_capabilities, prefer_local=prefer_local)
+                                if not target:
+                                    self._json_response(
+                                        HTTPStatus.CONFLICT,
+                                        {"error": "no dispatch target found", "required_capabilities": task.required_capabilities},
+                                    )
+                                    return
+                                if target["target_type"] == "peer":
+                                    task.deliver_to = target["target_ref"]
+                        node._persist_task_delivery(task, dispatch_mode="bridge" if task.deliver_to else None)
+                        self._json_response(
+                            HTTPStatus.CREATED,
+                            {"task": task.to_dict(), "target": target, "protocol": protocol, "dispatch": dispatch},
+                        )
+                        return
+                    if self.path == "/v1/bridges/export":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        protocol = str(payload.get("protocol") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        exported = node.bridges.export_message(protocol, task, dict(payload.get("result") or {}) or task.get("result"))
+                        self._json_response(HTTPStatus.OK, exported)
                         return
                     if self.path == "/v1/tasks/claim":
                         if not self._require_auth():
