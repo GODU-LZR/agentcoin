@@ -9,6 +9,10 @@
   "database_path": "./var/agentcoin.db",
   "sync_interval_seconds": 15,
   "max_body_bytes": 262144,
+  "outbox_max_attempts": 5,
+  "task_retry_limit": 3,
+  "task_retry_backoff_seconds": 5,
+  "local_dispatch_fallback": true,
   "overlay_network": "tailnet",
   "overlay_endpoint": "agentcoin-a.tailnet.internal:8080",
   "overlay_addresses": [

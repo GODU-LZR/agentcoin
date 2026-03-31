@@ -98,10 +98,13 @@ agentcoin-node --config configs/node.example.json
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/tasks/dead-letter`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/outbox`
+- `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
@@ -112,6 +115,8 @@ agentcoin-node --config configs/node.example.json
 - `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/tasks/requeue`
+- `POST /v1/outbox/requeue`
 - `POST /v1/peers/sync`
 
 暗号化 overlay 上の設定済み peer に配送する場合は、task の `deliver_to` に `configs/node.example.json` の `peer_id` を指定します。例: `agentcoin-peer-b`。
@@ -136,6 +141,20 @@ inter-node message delivery には explicit ACK も追加しました。
 - inbox は `message_id` で idempotent
 - receiver は `ack` を返す
 - outbox は有効な ACK を受けたときだけ delivered になります
+
+弱いネットワークや失敗時の扱いも追加しました。
+
+- outbox は `pending -> retrying` と指数バックオフで再送
+- `outbox_max_attempts` を超えると outbox dead-letter に移動
+- `local_dispatch_fallback=true` かつ local capability が足りる場合、失敗した remote dispatch は `fallback-local` に切り替え
+- それ以外は task 自体が dead-letter に移動し、後から replay できます
+
+task retry も明示的になりました。
+
+- task は `max_attempts`, `retry_backoff_seconds`, `available_at`, `last_error` を持つ
+- `POST /v1/tasks/ack` に `requeue=true` を渡すと即時再取得ではなく遅延再試行になる
+- retry budget を使い切ると task は `dead-letter` になる
+- `POST /v1/tasks/requeue` と `POST /v1/outbox/requeue` で再投入できます
 
 最小の planner dispatch も追加しました。
 

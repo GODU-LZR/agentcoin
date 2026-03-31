@@ -111,10 +111,13 @@ docker compose up --build
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/tasks/dead-letter`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/outbox`
+- `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
@@ -125,6 +128,8 @@ docker compose up --build
 - `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/tasks/requeue`
+- `POST /v1/outbox/requeue`
 - `POST /v1/peers/sync`
 
 如果要通过加密覆盖网络把任务投递给配置好的节点，可以在提交任务时把 `deliver_to` 设置为 `configs/node.example.json` 里的 `peer_id`，例如 `agentcoin-peer-b`。
@@ -150,6 +155,20 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - inbox 按 `message_id` 做幂等去重
 - 接收端返回 `ack`
 - outbox 只有收到有效 ACK 才会标记为成功送达
+
+现在也开始正式处理弱网和异常情况：
+
+- outbox 会在 `pending -> retrying` 之间按指数退避重试
+- 超过 `outbox_max_attempts` 后，消息进入 outbox dead-letter
+- 如果 `local_dispatch_fallback=true` 且本地能力满足，远端派发失败会回退成 `fallback-local`
+- 否则任务本身会进入 task dead-letter，等待人工回放或治理处理
+
+任务重试现在也有明确边界：
+
+- 每个任务带有 `max_attempts`、`retry_backoff_seconds`、`available_at`、`last_error`
+- `POST /v1/tasks/ack` 传 `requeue=true` 时不会立刻再次 claim，而是延迟重试
+- 超过重试上限后，任务自动进入 `dead-letter`
+- 运维方可以通过 `POST /v1/tasks/requeue` 和 `POST /v1/outbox/requeue` 重新放回队列
 
 现在也已经有了最小版 planner 分发：
 

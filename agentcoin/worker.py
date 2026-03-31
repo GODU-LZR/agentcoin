@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from typing import Any
-from urllib import request
+from urllib import error, request
 
 from agentcoin.models import utc_now
 
@@ -27,7 +27,7 @@ class WorkerLoop:
         self.capabilities = capabilities
         self.lease_seconds = lease_seconds
 
-    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
             f"{self.node_url}{path}",
@@ -38,8 +38,12 @@ class WorkerLoop:
             },
             method="POST",
         )
-        with request.urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            LOG.warning("request failed path=%s worker_id=%s error=%s", path, self.worker_id, exc)
+            return None
 
     def run_once(self) -> bool:
         claimed = self._post_json(
@@ -50,6 +54,8 @@ class WorkerLoop:
                 "lease_seconds": self.lease_seconds,
             },
         )
+        if claimed is None:
+            return False
         task = claimed.get("task")
         if not task:
             return False
@@ -74,6 +80,9 @@ class WorkerLoop:
                 "result": result,
             },
         )
+        if ack is None:
+            LOG.warning("ack failed for task %s; lease will expire and task may be retried", task["id"])
+            return False
         LOG.info("acked task %s ok=%s", task["id"], ack.get("ok"))
         return True
 

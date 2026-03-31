@@ -31,6 +31,8 @@ class NodeStore:
                     sender TEXT NOT NULL,
                     priority INTEGER NOT NULL,
                     status TEXT NOT NULL,
+                    deliver_to TEXT,
+                    delivery_status TEXT NOT NULL DEFAULT 'local',
                     payload_json TEXT NOT NULL,
                     required_capabilities_json TEXT NOT NULL DEFAULT '[]',
                     workflow_id TEXT,
@@ -45,6 +47,10 @@ class NodeStore:
                     lease_token TEXT,
                     lease_expires_at TEXT,
                     attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    retry_backoff_seconds INTEGER NOT NULL DEFAULT 5,
+                    available_at TEXT NOT NULL,
+                    last_error TEXT,
                     result_json TEXT,
                     completed_at TEXT,
                     created_at TEXT NOT NULL,
@@ -61,6 +67,7 @@ class NodeStore:
                     id TEXT PRIMARY KEY,
                     target_url TEXT NOT NULL,
                     auth_token TEXT,
+                    task_id TEXT,
                     payload_json TEXT NOT NULL,
                     status TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0,
@@ -93,6 +100,8 @@ class NodeStore:
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "tasks", "deliver_to", "TEXT")
+            self._ensure_column(conn, "tasks", "delivery_status", "TEXT NOT NULL DEFAULT 'local'")
             self._ensure_column(conn, "tasks", "workflow_id", "TEXT")
             self._ensure_column(conn, "tasks", "parent_task_id", "TEXT")
             self._ensure_column(conn, "tasks", "depends_on_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -105,9 +114,14 @@ class NodeStore:
             self._ensure_column(conn, "tasks", "lease_token", "TEXT")
             self._ensure_column(conn, "tasks", "lease_expires_at", "TEXT")
             self._ensure_column(conn, "tasks", "attempts", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "tasks", "max_attempts", "INTEGER NOT NULL DEFAULT 3")
+            self._ensure_column(conn, "tasks", "retry_backoff_seconds", "INTEGER NOT NULL DEFAULT 5")
+            self._ensure_column(conn, "tasks", "available_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'")
+            self._ensure_column(conn, "tasks", "last_error", "TEXT")
             self._ensure_column(conn, "tasks", "result_json", "TEXT")
             self._ensure_column(conn, "tasks", "completed_at", "TEXT")
             self._ensure_column(conn, "inbox", "acked", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "outbox", "task_id", "TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -120,6 +134,8 @@ class NodeStore:
             "sender": row["sender"],
             "priority": row["priority"],
             "status": row["status"],
+            "deliver_to": row["deliver_to"],
+            "delivery_status": row["delivery_status"],
             "payload": json.loads(row["payload_json"]),
             "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
             "workflow_id": row["workflow_id"],
@@ -134,6 +150,10 @@ class NodeStore:
             "lease_token": row["lease_token"],
             "lease_expires_at": row["lease_expires_at"],
             "attempts": row["attempts"],
+            "max_attempts": row["max_attempts"],
+            "retry_backoff_seconds": row["retry_backoff_seconds"],
+            "available_at": row["available_at"],
+            "last_error": row["last_error"],
             "result": json.loads(row["result_json"]) if row["result_json"] else None,
             "completed_at": row["completed_at"],
             "created_at": row["created_at"],
@@ -153,10 +173,11 @@ class NodeStore:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tasks
-                (id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                (id, kind, sender, priority, status, deliver_to, delivery_status, payload_json, required_capabilities_json,
                  workflow_id, parent_task_id, depends_on_json, role, branch, revision,
-                 merge_parent_ids_json, commit_message, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 merge_parent_ids_json, commit_message, max_attempts, retry_backoff_seconds, available_at, last_error,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -164,6 +185,8 @@ class NodeStore:
                     task.sender,
                     task.priority,
                     task.status,
+                    task.deliver_to,
+                    task.delivery_status,
                     json.dumps(task.payload, ensure_ascii=False),
                     json.dumps(task.required_capabilities, ensure_ascii=False),
                     task.workflow_id,
@@ -174,6 +197,10 @@ class NodeStore:
                     task.revision,
                     json.dumps(task.merge_parent_ids, ensure_ascii=False),
                     task.commit_message,
+                    task.max_attempts,
+                    task.retry_backoff_seconds,
+                    task.available_at,
+                    task.last_error,
                     task.created_at,
                     now,
                 ),
@@ -188,9 +215,11 @@ class NodeStore:
             rows = conn.execute(
                 """
                 SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       deliver_to, delivery_status,
                        workflow_id, parent_task_id, depends_on_json, role, branch, revision,
                        merge_parent_ids_json, commit_message,
-                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       locked_by, lease_token, lease_expires_at, attempts, max_attempts, retry_backoff_seconds,
+                       available_at, last_error, result_json, completed_at,
                        created_at, updated_at
                 FROM tasks
                 ORDER BY created_at DESC
@@ -220,17 +249,24 @@ class NodeStore:
         finally:
             conn.close()
 
-    def queue_outbox(self, message_id: str, target_url: str, auth_token: str | None, payload: dict[str, Any]) -> None:
+    def queue_outbox(
+        self,
+        message_id: str,
+        target_url: str,
+        auth_token: str | None,
+        payload: dict[str, Any],
+        task_id: str | None = None,
+    ) -> None:
         now = utc_now()
         conn = self._connect()
         try:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO outbox
-                (id, target_url, auth_token, payload_json, status, attempts, next_attempt_at, last_error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, ?, ?)
+                (id, target_url, auth_token, task_id, payload_json, status, attempts, next_attempt_at, last_error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, NULL, ?, ?)
                 """,
-                (message_id, target_url, auth_token, json.dumps(payload, ensure_ascii=False), now, now, now),
+                (message_id, target_url, auth_token, task_id, json.dumps(payload, ensure_ascii=False), now, now, now),
             )
             conn.commit()
         finally:
@@ -242,7 +278,7 @@ class NodeStore:
             rows = conn.execute(
                 """
                 SELECT * FROM outbox
-                WHERE status = 'pending'
+                WHERE status IN ('pending', 'retrying')
                   AND next_attempt_at <= ?
                 ORDER BY next_attempt_at ASC
                 LIMIT ?
@@ -256,10 +292,20 @@ class NodeStore:
     def mark_outbox_delivered(self, message_id: str) -> None:
         conn = self._connect()
         try:
-            conn.execute(
-                "UPDATE outbox SET status = 'delivered', updated_at = ? WHERE id = ?",
-                (utc_now(), message_id),
-            )
+            now = utc_now()
+            row = conn.execute("SELECT task_id FROM outbox WHERE id = ?", (message_id,)).fetchone()
+            conn.execute("UPDATE outbox SET status = 'delivered', updated_at = ? WHERE id = ?", (now, message_id))
+            if row and row["task_id"]:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET delivery_status = 'remote-accepted',
+                        last_error = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, row["task_id"]),
+                )
             conn.commit()
         finally:
             conn.close()
@@ -287,19 +333,64 @@ class NodeStore:
         finally:
             conn.close()
 
-    def mark_outbox_failed(self, message_id: str, attempts: int, error: str) -> None:
+    def mark_outbox_failed(self, message_id: str, attempts: int, error: str, max_attempts: int) -> bool:
         delay_seconds = min(2 ** min(attempts, 6), 60)
         conn = self._connect()
         try:
+            now = utc_now()
+            status = "dead-letter" if attempts >= max_attempts else "retrying"
             conn.execute(
                 """
                 UPDATE outbox
-                SET attempts = ?, last_error = ?, next_attempt_at = ?, updated_at = ?
+                SET attempts = ?, status = ?, last_error = ?, next_attempt_at = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (attempts, error[:500], utc_after(delay_seconds), utc_now(), message_id),
+                (attempts, status, error[:500], utc_after(delay_seconds), now, message_id),
             )
             conn.commit()
+            return status == "dead-letter"
+        finally:
+            conn.close()
+
+    def list_outbox(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if status:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM outbox
+                    WHERE status = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (status, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM outbox
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+
+    def requeue_outbox(self, message_id: str, delay_seconds: int = 0) -> bool:
+        conn = self._connect()
+        try:
+            updated = conn.execute(
+                """
+                UPDATE outbox
+                SET status = 'pending', next_attempt_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'dead-letter'
+                """,
+                (utc_after(delay_seconds), utc_now(), message_id),
+            ).rowcount
+            conn.commit()
+            return updated > 0
         finally:
             conn.close()
 
@@ -310,10 +401,13 @@ class NodeStore:
             queued_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'queued'").fetchone()[0]
             leased_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'leased'").fetchone()[0]
             completed_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'completed'").fetchone()[0]
+            dead_letter_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'dead-letter'").fetchone()[0]
             inbox_count = conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0]
             inbox_acked = conn.execute("SELECT COUNT(*) FROM inbox WHERE acked = 1").fetchone()[0]
             outbox_pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
+            outbox_retrying = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'retrying'").fetchone()[0]
             outbox_delivered = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'delivered'").fetchone()[0]
+            outbox_dead_letter = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'dead-letter'").fetchone()[0]
             delivery_receipts = conn.execute("SELECT COUNT(*) FROM delivery_receipts").fetchone()[0]
             peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
             workflow_states = conn.execute("SELECT COUNT(*) FROM workflow_states").fetchone()[0]
@@ -322,10 +416,13 @@ class NodeStore:
                 "tasks_queued": queued_tasks,
                 "tasks_leased": leased_tasks,
                 "tasks_completed": completed_tasks,
+                "tasks_dead_letter": dead_letter_tasks,
                 "inbox": inbox_count,
                 "inbox_acked": inbox_acked,
                 "outbox_pending": outbox_pending,
+                "outbox_retrying": outbox_retrying,
                 "outbox_delivered": outbox_delivered,
+                "outbox_dead_letter": outbox_dead_letter,
                 "delivery_receipts": delivery_receipts,
                 "peer_cards": peer_cards,
                 "workflow_states": workflow_states,
@@ -378,9 +475,11 @@ class NodeStore:
             row = conn.execute(
                 """
                 SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       deliver_to, delivery_status,
                        workflow_id, parent_task_id, depends_on_json, role, branch, revision,
                        merge_parent_ids_json, commit_message,
-                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       locked_by, lease_token, lease_expires_at, attempts, max_attempts, retry_backoff_seconds,
+                       available_at, last_error, result_json, completed_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE id = ?
@@ -399,9 +498,11 @@ class NodeStore:
             rows = conn.execute(
                 """
                 SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       deliver_to, delivery_status,
                        workflow_id, parent_task_id, depends_on_json, role, branch, revision,
                        merge_parent_ids_json, commit_message,
-                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       locked_by, lease_token, lease_expires_at, attempts, max_attempts, retry_backoff_seconds,
+                       available_at, last_error, result_json, completed_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE workflow_id = ?
@@ -509,6 +610,7 @@ class NodeStore:
         blocked_ids: list[str] = []
         merge_task_ids: list[str] = []
         failed_ids: list[str] = []
+        dead_letter_ids: list[str] = []
 
         completed_ids = {task["id"] for task in tasks if task["status"] == "completed"}
         for task in tasks:
@@ -530,6 +632,8 @@ class NodeStore:
                 merge_task_ids.append(task["id"])
             if status == "failed":
                 failed_ids.append(task["id"])
+            if status == "dead-letter":
+                dead_letter_ids.append(task["id"])
 
             if status == "queued":
                 depends_on = set(task.get("depends_on", []))
@@ -544,7 +648,7 @@ class NodeStore:
         terminal = open_tasks == 0
         final_status = "active"
         if terminal:
-            final_status = "failed" if failed_ids else "completed"
+            final_status = "failed" if failed_ids or dead_letter_ids else "completed"
 
         persisted_state = self.get_workflow_state(workflow_id)
 
@@ -557,6 +661,7 @@ class NodeStore:
             "blocked_task_ids": blocked_ids,
             "merge_task_ids": merge_task_ids,
             "failed_task_ids": failed_ids,
+            "dead_letter_task_ids": dead_letter_ids,
             "status_counts": status_counts,
             "role_counts": role_counts,
             "branch_counts": branch_counts,
@@ -643,9 +748,11 @@ class NodeStore:
             rows = conn.execute(
                 """
                 SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       deliver_to, delivery_status,
                        workflow_id, parent_task_id, depends_on_json, role, branch, revision,
                        merge_parent_ids_json, commit_message,
-                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       locked_by, lease_token, lease_expires_at, attempts, max_attempts, retry_backoff_seconds,
+                       available_at, last_error, result_json, completed_at,
                        created_at, updated_at
                 FROM tasks
                 WHERE status IN ('queued', 'leased')
@@ -660,6 +767,10 @@ class NodeStore:
                 lease_expired = not row["lease_expires_at"] or row["lease_expires_at"] <= now
                 available = row["status"] == "queued" or lease_expired
                 if not available:
+                    continue
+                if row["status"] == "queued" and row["available_at"] and row["available_at"] > now:
+                    continue
+                if row["delivery_status"] not in {"local", "fallback-local"}:
                     continue
                 role = row["role"] or "worker"
                 if worker_capabilities and role not in {"any", ""} and role not in set(worker_capabilities):
@@ -687,15 +798,16 @@ class NodeStore:
             lease_token = str(uuid4())
             conn.execute(
                 """
-                UPDATE tasks
-                SET status = 'leased',
-                    locked_by = ?,
-                    lease_token = ?,
-                    lease_expires_at = ?,
-                    attempts = attempts + 1,
-                    updated_at = ?
-                WHERE id = ?
-                """,
+                    UPDATE tasks
+                    SET status = 'leased',
+                        locked_by = ?,
+                        lease_token = ?,
+                        lease_expires_at = ?,
+                        attempts = attempts + 1,
+                        last_error = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
                 (worker_id, lease_token, lease_expires_at, now, selected["id"]),
             )
             conn.commit()
@@ -711,6 +823,8 @@ class NodeStore:
                 "sender": claimed["sender"],
                 "priority": claimed["priority"],
                 "status": claimed["status"],
+                "deliver_to": claimed["deliver_to"],
+                "delivery_status": claimed["delivery_status"],
                 "payload": json.loads(claimed["payload_json"]),
                 "required_capabilities": json.loads(claimed["required_capabilities_json"] or "[]"),
                 "workflow_id": claimed["workflow_id"],
@@ -725,6 +839,10 @@ class NodeStore:
                 "lease_token": claimed["lease_token"],
                 "lease_expires_at": claimed["lease_expires_at"],
                 "attempts": claimed["attempts"],
+                "max_attempts": claimed["max_attempts"],
+                "retry_backoff_seconds": claimed["retry_backoff_seconds"],
+                "available_at": claimed["available_at"],
+                "last_error": claimed["last_error"],
                 "result": json.loads(claimed["result_json"]) if claimed["result_json"] else None,
                 "completed_at": claimed["completed_at"],
                 "created_at": claimed["created_at"],
@@ -762,12 +880,25 @@ class NodeStore:
         now = utc_now()
         conn = self._connect()
         try:
+            row = conn.execute(
+                """
+                SELECT attempts, max_attempts, retry_backoff_seconds, delivery_status
+                FROM tasks
+                WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
+                """,
+                (task_id, worker_id, lease_token),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return False
+
             if success:
                 updated = conn.execute(
                     """
                     UPDATE tasks
                     SET status = 'completed',
                         result_json = ?,
+                        last_error = NULL,
                         completed_at = ?,
                         locked_by = NULL,
                         lease_token = NULL,
@@ -779,18 +910,33 @@ class NodeStore:
                 ).rowcount
             elif requeue:
                 payload_update = {"error": error_message} if error_message else {}
+                status = "dead-letter" if int(row["attempts"]) >= int(row["max_attempts"]) else "queued"
                 updated = conn.execute(
                     """
                     UPDATE tasks
-                    SET status = 'queued',
+                    SET status = ?,
                         result_json = ?,
+                        last_error = ?,
+                        available_at = ?,
                         locked_by = NULL,
                         lease_token = NULL,
                         lease_expires_at = NULL,
+                        completed_at = CASE WHEN ? = 'dead-letter' THEN ? ELSE completed_at END,
                         updated_at = ?
                     WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
                     """,
-                    (json.dumps(payload_update, ensure_ascii=False), now, task_id, worker_id, lease_token),
+                    (
+                        status,
+                        json.dumps(payload_update, ensure_ascii=False),
+                        error_message,
+                        utc_after(int(row["retry_backoff_seconds"])) if status == "queued" else now,
+                        status,
+                        now,
+                        now,
+                        task_id,
+                        worker_id,
+                        lease_token,
+                    ),
                 ).rowcount
             else:
                 failure = {"error": error_message} if error_message else {"error": "task failed"}
@@ -799,6 +945,7 @@ class NodeStore:
                     UPDATE tasks
                     SET status = 'failed',
                         result_json = ?,
+                        last_error = ?,
                         completed_at = ?,
                         locked_by = NULL,
                         lease_token = NULL,
@@ -806,8 +953,97 @@ class NodeStore:
                         updated_at = ?
                     WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
                     """,
-                    (json.dumps(failure, ensure_ascii=False), now, now, task_id, worker_id, lease_token),
+                    (json.dumps(failure, ensure_ascii=False), error_message, now, now, task_id, worker_id, lease_token),
                 ).rowcount
+            conn.commit()
+            return updated > 0
+        finally:
+            conn.close()
+
+    def activate_local_fallback(self, task_id: str, error_message: str) -> bool:
+        conn = self._connect()
+        try:
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET delivery_status = 'fallback-local',
+                    available_at = ?,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ? AND delivery_status = 'remote-pending'
+                """,
+                (utc_now(), error_message[:500], utc_now(), task_id),
+            ).rowcount
+            conn.commit()
+            return updated > 0
+        finally:
+            conn.close()
+
+    def mark_task_delivery_dead_letter(self, task_id: str, error_message: str) -> bool:
+        conn = self._connect()
+        try:
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'dead-letter',
+                    delivery_status = 'dead-letter',
+                    last_error = ?,
+                    completed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (error_message[:500], utc_now(), utc_now(), task_id),
+            ).rowcount
+            conn.commit()
+            return updated > 0
+        finally:
+            conn.close()
+
+    def list_dead_letter_tasks(self, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       deliver_to, delivery_status,
+                       workflow_id, parent_task_id, depends_on_json, role, branch, revision,
+                       merge_parent_ids_json, commit_message,
+                       locked_by, lease_token, lease_expires_at, attempts, max_attempts, retry_backoff_seconds,
+                       available_at, last_error, result_json, completed_at,
+                       created_at, updated_at
+                FROM tasks
+                WHERE status = 'dead-letter'
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [self._task_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def requeue_dead_letter_task(self, task_id: str, delay_seconds: int = 0) -> bool:
+        conn = self._connect()
+        try:
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'queued',
+                    delivery_status = CASE
+                        WHEN deliver_to IS NOT NULL AND deliver_to != '' THEN 'remote-pending'
+                        ELSE 'local'
+                    END,
+                    available_at = ?,
+                    last_error = NULL,
+                    completed_at = NULL,
+                    locked_by = NULL,
+                    lease_token = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ? AND status = 'dead-letter'
+                """,
+                (utc_after(delay_seconds), utc_now(), task_id),
+            ).rowcount
             conn.commit()
             return updated > 0
         finally:

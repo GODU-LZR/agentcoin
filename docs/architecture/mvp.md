@@ -30,16 +30,25 @@ The node does not assume a specific agent runtime. It accepts generic task envel
 
 If a task includes `deliver_to`, the node stores an outbox record and retries delivery later. This allows workflows to continue collecting work locally even when peer nodes are unreachable.
 
+The reference node now also models degraded network conditions explicitly:
+
+- outbox delivery moves through `pending`, `retrying`, and `dead-letter`
+- remote dispatch can downgrade into `fallback-local` when local execution is allowed and feasible
+- delayed task retries use `available_at` to avoid hot-loop reclaim storms
+- retry exhaustion moves work into task dead-letter instead of retrying forever
+
 ## Implemented Endpoints
 
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/tasks/dead-letter`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/outbox`
+- `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
@@ -48,8 +57,10 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
+- `POST /v1/tasks/requeue`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/outbox/requeue`
 - `POST /v1/peers/sync`
 
 The node can now resolve `deliver_to` either as a full URL or as a configured `peer_id`. This is better suited for encrypted overlay networks because application code can target stable peer identities instead of embedding raw addresses everywhere.
@@ -59,6 +70,13 @@ It also supports capability-card synchronization from configured peers. This all
 The task queue now includes lease-based locking primitives. Workers can atomically claim work, renew the lease while executing, and explicitly acknowledge completion or failure.
 
 The message queue layer now also requires explicit delivery acknowledgement. A receiver returns an ACK payload and the sender only marks the outbox item as delivered after validating that ACK. This separates `task completion` from `message delivery`.
+
+The queueing layer now also includes bounded retry and dead-letter behavior:
+
+- outbox retries are capped by `outbox_max_attempts`
+- task retries are capped by per-task `max_attempts`
+- transport failure and execution failure end up in separate dead-letter lanes
+- dead-letter work can be replayed explicitly by operators
 
 The planner layer now has a first executable skeleton:
 
@@ -98,6 +116,15 @@ This gives the scheduler a simple but useful lifecycle:
 3. workers complete branch tasks
 4. reviewer or aggregator claims the merge task
 5. workflow finalization records the terminal summary
+
+## Failure Handling
+
+The node now distinguishes:
+
+- `retrying`: temporary delivery failure, still within budget
+- `fallback-local`: remote route failed permanently, task was reclassified for local execution
+- `dead-letter`: retry budget exhausted and work now requires operator attention
+- `failed`: terminal execution failure without requeue
 
 ## Coordination Direction
 

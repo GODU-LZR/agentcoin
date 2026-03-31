@@ -105,10 +105,13 @@ Key endpoints:
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/tasks/dead-letter`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/outbox`
+- `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
@@ -119,6 +122,8 @@ Key endpoints:
 - `POST /v1/tasks/ack`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/tasks/requeue`
+- `POST /v1/outbox/requeue`
 - `POST /v1/peers/sync`
 
 Docker Compose is also available:
@@ -150,6 +155,20 @@ Inter-node delivery now also uses explicit message acknowledgements:
 - inbox writes are idempotent by `message_id`
 - the receiver returns an `ack` payload
 - outbox delivery is only marked successful after a valid ack comes back
+
+Weak-network handling is now more explicit too:
+
+- outbox entries move from `pending` to `retrying` with exponential backoff
+- after `outbox_max_attempts`, failed deliveries go to an outbox dead-letter lane
+- if `local_dispatch_fallback=true` and the node can satisfy the task locally, a permanently failed remote dispatch becomes `fallback-local`
+- otherwise the task itself moves to task dead-letter for operator review or replay
+
+Task retries are now bounded:
+
+- each task carries `max_attempts`, `retry_backoff_seconds`, `available_at`, and `last_error`
+- `POST /v1/tasks/ack` with `requeue=true` delays the next claim attempt
+- once retry budget is exhausted, the task moves to `dead-letter`
+- operators can replay failed work with `POST /v1/tasks/requeue` or `POST /v1/outbox/requeue`
 
 Planner-style dispatch is now available too:
 
@@ -199,7 +218,7 @@ This repository is currently in the whitepaper and architecture-definition stage
 Current implementation status:
 
 - whitepaper and language landing pages are in place;
-- a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, and track Git-like workflow convergence;
+- a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, handle dead-letter lanes, and track Git-like workflow convergence;
 - peer routing, execution adapters, and cryptographic verification are not implemented yet.
 
 ## Connectivity Direction

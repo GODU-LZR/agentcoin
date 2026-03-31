@@ -35,6 +35,10 @@ class NodeConfig:
     database_path: str = "./var/agentcoin.db"
     sync_interval_seconds: int = 15
     max_body_bytes: int = 262144
+    outbox_max_attempts: int = 5
+    task_retry_limit: int = 3
+    task_retry_backoff_seconds: int = 5
+    local_dispatch_fallback: bool = True
     overlay_network: str = "tailnet"
     overlay_endpoint: str | None = None
     overlay_addresses: list[str] = field(default_factory=list)

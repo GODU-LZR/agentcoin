@@ -42,6 +42,7 @@ class TaskEnvelope:
     priority: int = 5
     status: str = "queued"
     deliver_to: str | None = None
+    delivery_status: str = "local"
     required_capabilities: list[str] = field(default_factory=list)
     workflow_id: str | None = None
     parent_task_id: str | None = None
@@ -51,6 +52,10 @@ class TaskEnvelope:
     revision: int = 1
     merge_parent_ids: list[str] = field(default_factory=list)
     commit_message: str = ""
+    available_at: str = field(default_factory=utc_now)
+    max_attempts: int = 3
+    retry_backoff_seconds: int = 5
+    last_error: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TaskEnvelope":
@@ -63,6 +68,7 @@ class TaskEnvelope:
             priority=int(raw.get("priority") or 5),
             status=str(raw.get("status") or "queued"),
             deliver_to=raw.get("deliver_to"),
+            delivery_status=str(raw.get("delivery_status") or ("remote-pending" if raw.get("deliver_to") else "local")),
             required_capabilities=list(raw.get("required_capabilities") or []),
             workflow_id=raw.get("workflow_id"),
             parent_task_id=raw.get("parent_task_id"),
@@ -72,6 +78,10 @@ class TaskEnvelope:
             revision=int(raw.get("revision") or 1),
             merge_parent_ids=list(raw.get("merge_parent_ids") or []),
             commit_message=str(raw.get("commit_message") or ""),
+            available_at=str(raw.get("available_at") or utc_now()),
+            max_attempts=int(raw.get("max_attempts") or 3),
+            retry_backoff_seconds=int(raw.get("retry_backoff_seconds") or 5),
+            last_error=raw.get("last_error"),
         )
 
     def to_dict(self) -> dict[str, Any]:

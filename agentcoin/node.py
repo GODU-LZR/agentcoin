@@ -85,7 +85,7 @@ class AgentCoinNode:
         return None
 
     @staticmethod
-    def _normalize_task(task: TaskEnvelope) -> TaskEnvelope:
+    def _normalize_task(task: TaskEnvelope, config: NodeConfig) -> TaskEnvelope:
         if not task.workflow_id:
             task.workflow_id = task.id
         if not task.branch:
@@ -94,6 +94,16 @@ class AgentCoinNode:
             task.revision = 1
         if not task.commit_message:
             task.commit_message = f"{task.kind} on {task.branch}@r{task.revision}"
+        if task.max_attempts <= 0:
+            task.max_attempts = config.task_retry_limit
+        if task.retry_backoff_seconds <= 0:
+            task.retry_backoff_seconds = config.task_retry_backoff_seconds
+        if not task.available_at:
+            task.available_at = task.created_at
+        if task.deliver_to:
+            task.delivery_status = task.delivery_status or "remote-pending"
+        else:
+            task.delivery_status = "local"
         return task
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
@@ -152,6 +162,9 @@ class AgentCoinNode:
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
+                if path == "/v1/tasks/dead-letter":
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_dead_letter_tasks()})
+                    return
                 if path == "/v1/workflows":
                     workflow_id = (query.get("workflow_id") or [""])[0]
                     if not workflow_id:
@@ -176,7 +189,10 @@ class AgentCoinNode:
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_peer_cards()})
                     return
                 if path == "/v1/outbox":
-                    self._json_response(HTTPStatus.OK, {"items": node.store.get_pending_outbox()})
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_outbox()})
+                    return
+                if path == "/v1/outbox/dead-letter":
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_outbox(status="dead-letter")})
                     return
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
@@ -186,14 +202,14 @@ class AgentCoinNode:
                         if not self._require_auth():
                             return
                         payload = self._read_json()
-                        task = node._normalize_task(TaskEnvelope.from_dict(payload))
+                        task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
                         node.store.add_task(task)
                         if task.deliver_to:
                             target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
                             task.payload.setdefault("_delivery", {})
                             task.payload["_delivery"].update({"target_ref": target_ref})
                             node.store.add_task(task)
-                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
+                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict(), task_id=task.id)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
                     if self.path == "/v1/workflows/fanout":
@@ -218,7 +234,7 @@ class AgentCoinNode:
                         raw_task = dict(payload.get("task") or {})
                         if "kind" not in raw_task:
                             raw_task["kind"] = "merge"
-                        task = node._normalize_task(TaskEnvelope.from_dict(raw_task))
+                        task = node._normalize_task(TaskEnvelope.from_dict(raw_task), node.config)
                         task.workflow_id = workflow_id
                         created = node.store.create_merge_task(workflow_id, parent_task_ids, task)
                         self._json_response(HTTPStatus.CREATED, {"task": created})
@@ -238,7 +254,7 @@ class AgentCoinNode:
                         if not self._require_auth():
                             return
                         payload = self._read_json()
-                        task = node._normalize_task(TaskEnvelope.from_dict(payload))
+                        task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
                         task.sender = task.sender or node.config.node_id
                         prefer_local = bool(payload.get("prefer_local"))
                         target = None
@@ -260,7 +276,7 @@ class AgentCoinNode:
                             task.payload.setdefault("_delivery", {})
                             task.payload["_delivery"].update({"target_ref": target_ref, "dispatch_mode": "planner"})
                             node.store.add_task(task)
-                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
+                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict(), task_id=task.id)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
                         return
                     if self.path == "/v1/tasks/claim":
@@ -306,6 +322,16 @@ class AgentCoinNode:
                         )
                         self._json_response(HTTPStatus.OK, {"ok": ok})
                         return
+                    if self.path == "/v1/tasks/requeue":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        ok = node.store.requeue_dead_letter_task(
+                            task_id=str(payload.get("task_id") or ""),
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                        )
+                        self._json_response(HTTPStatus.OK, {"ok": ok})
+                        return
                     if self.path == "/v1/inbox":
                         if not self._require_auth():
                             return
@@ -313,7 +339,11 @@ class AgentCoinNode:
                         sender = str(payload.get("sender") or "peer")
                         message_id, duplicate = node.store.receive_inbox(sender, payload)
                         if not duplicate:
-                            node.store.add_task(TaskEnvelope.from_dict(payload))
+                            local_payload = dict(payload)
+                            local_payload["deliver_to"] = None
+                            local_payload["delivery_status"] = "local"
+                            local_payload["last_error"] = None
+                            node.store.add_task(node._normalize_task(TaskEnvelope.from_dict(local_payload), node.config))
                         ack_id = str(uuid4())
                         node.store.save_delivery_receipt(ack_id, message_id, sender)
                         self._json_response(
@@ -333,6 +363,16 @@ class AgentCoinNode:
                             return
                         flushed = node.flush_outbox()
                         self._json_response(HTTPStatus.OK, {"flushed": flushed, "stats": node.store.stats()})
+                        return
+                    if self.path == "/v1/outbox/requeue":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        ok = node.store.requeue_outbox(
+                            message_id=str(payload.get("message_id") or ""),
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                        )
+                        self._json_response(HTTPStatus.OK, {"ok": ok})
                         return
                     if self.path == "/v1/peers/sync":
                         if not self._require_auth():
@@ -377,7 +417,19 @@ class AgentCoinNode:
                 self.store.mark_outbox_delivered(item["id"])
                 delivered += 1
             except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
-                self.store.mark_outbox_failed(item["id"], int(item["attempts"]) + 1, str(exc))
+                permanent = self.store.mark_outbox_failed(
+                    item["id"],
+                    int(item["attempts"]) + 1,
+                    str(exc),
+                    self.config.outbox_max_attempts,
+                )
+                task_id = item.get("task_id")
+                if permanent and task_id:
+                    task = self.store.get_task(task_id)
+                    if task and self.config.local_dispatch_fallback and self._supports_capabilities(task["required_capabilities"]):
+                        self.store.activate_local_fallback(task_id, str(exc))
+                    else:
+                        self.store.mark_task_delivery_dead_letter(task_id, str(exc))
         return delivered
 
     def _sync_loop(self) -> None:
