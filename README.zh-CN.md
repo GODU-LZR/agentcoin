@@ -114,3 +114,14 @@ docker compose up --build
 - `POST /v1/tasks`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+
+## 通信方向
+
+当前推荐的“无公网 IP 多 Agent 端到端加密通信”方案是：
+
+- `Headscale` 作为自托管控制平面
+- 每个节点运行 `Tailscale 兼容客户端`
+- 使用 `DERP` 作为复杂 NAT 下的中继回退
+- AgentCoin 自身协议继续跑在加密覆盖网络地址之上
+
+详见 [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)。

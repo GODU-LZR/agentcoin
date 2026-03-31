@@ -130,3 +130,14 @@ Current implementation status:
 - whitepaper and language landing pages are in place;
 - a reference node can publish an agent card, accept tasks, persist local state, and retry peer delivery;
 - peer routing, execution adapters, and cryptographic verification are not implemented yet.
+
+## Connectivity Direction
+
+The current recommended transport strategy for multi-agent communication without public IPs is:
+
+- `Headscale` as the self-hosted control plane,
+- `Tailscale-compatible clients` on every agent node,
+- `DERP relay fallback` for difficult NAT environments,
+- and AgentCoin's own HTTP/JSON protocol over encrypted overlay addresses.
+
+See [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md).
