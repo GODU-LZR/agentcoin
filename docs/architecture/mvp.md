@@ -36,12 +36,15 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/workflows?workflow_id=...`
+- `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/outbox`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
+- `POST /v1/workflows/merge`
+- `POST /v1/workflows/finalize`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -78,6 +81,24 @@ Tasks now carry workflow lineage fields inspired by Git:
 
 This makes AgentCoin closer to a distributed task graph with history, not just a transient queue.
 
+## Workflow Convergence
+
+The workflow model now also supports Git-like convergence:
+
+- `fanout` spawns child tasks and auto-completes the parent planning task
+- `merge` creates a merge or aggregate task with multiple `merge_parent_ids`
+- dependency checks keep merge tasks blocked until every upstream branch is completed
+- `summary` exposes the workflow state for planners, reviewers, and dashboards
+- `finalize` persists a terminal workflow snapshot once no queued or leased tasks remain
+
+This gives the scheduler a simple but useful lifecycle:
+
+1. planner creates a root task
+2. planner fans out worker branches
+3. workers complete branch tasks
+4. reviewer or aggregator claims the merge task
+5. workflow finalization records the terminal summary
+
 ## Coordination Direction
 
 The next coordination layer should be built on top of these primitives:
@@ -87,6 +108,7 @@ The next coordination layer should be built on top of these primitives:
 3. `Planner-worker model`: planners emit tasks, workers claim by capability.
 4. `Retry and dead-letter`: failed tasks requeue or move to a failure lane.
 5. `Checkpoint merge`: long workflows checkpoint state between stages.
+6. `Workflow governance`: richer merge policies, review gates, and branch protection.
 
 ## Next Milestones
 

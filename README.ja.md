@@ -99,11 +99,14 @@ agentcoin-node --config configs/node.example.json
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/workflows?workflow_id=...`
+- `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
+- `POST /v1/workflows/merge`
+- `POST /v1/workflows/finalize`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -161,3 +164,10 @@ task には Git-like な workflow traits も追加しました。
 - `depends_on`
 
 これにより task は単なる flat queue ではなく DAG として扱えます。
+
+workflow の収束フェーズも追加しました。
+
+- `POST /v1/workflows/merge` で複数 branch task に依存する merge / aggregate / reviewer task を生成
+- `GET /v1/workflows/summary?workflow_id=...` で branch, role, status, ready, blocked, leaf task を要約表示
+- `POST /v1/workflows/finalize` で open task がなくなった workflow の終端状態を永続化
+- planner が `fanout` を実行すると親 task は自動で completed になり、root が queued のまま残りません

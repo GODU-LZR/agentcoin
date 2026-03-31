@@ -82,6 +82,14 @@ class NodeStore:
                     fetched_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS workflow_states (
+                    workflow_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    summary_json TEXT NOT NULL,
+                    finalized_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -103,6 +111,34 @@ class NodeStore:
             conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _task_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "sender": row["sender"],
+            "priority": row["priority"],
+            "status": row["status"],
+            "payload": json.loads(row["payload_json"]),
+            "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
+            "workflow_id": row["workflow_id"],
+            "parent_task_id": row["parent_task_id"],
+            "depends_on": json.loads(row["depends_on_json"] or "[]"),
+            "role": row["role"],
+            "branch": row["branch"],
+            "revision": row["revision"],
+            "merge_parent_ids": json.loads(row["merge_parent_ids_json"] or "[]"),
+            "commit_message": row["commit_message"],
+            "locked_by": row["locked_by"],
+            "lease_token": row["lease_token"],
+            "lease_expires_at": row["lease_expires_at"],
+            "attempts": row["attempts"],
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "completed_at": row["completed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
 
     @staticmethod
     def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -162,34 +198,7 @@ class NodeStore:
                 """,
                 (limit,),
             ).fetchall()
-            return [
-                {
-                    "id": row["id"],
-                    "kind": row["kind"],
-                    "sender": row["sender"],
-                    "priority": row["priority"],
-                    "status": row["status"],
-                    "payload": json.loads(row["payload_json"]),
-                    "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
-                    "workflow_id": row["workflow_id"],
-                    "parent_task_id": row["parent_task_id"],
-                    "depends_on": json.loads(row["depends_on_json"] or "[]"),
-                    "role": row["role"],
-                    "branch": row["branch"],
-                    "revision": row["revision"],
-                    "merge_parent_ids": json.loads(row["merge_parent_ids_json"] or "[]"),
-                    "commit_message": row["commit_message"],
-                    "locked_by": row["locked_by"],
-                    "lease_token": row["lease_token"],
-                    "lease_expires_at": row["lease_expires_at"],
-                    "attempts": row["attempts"],
-                    "result": json.loads(row["result_json"]) if row["result_json"] else None,
-                    "completed_at": row["completed_at"],
-                    "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
-                }
-                for row in rows
-            ]
+            return [self._task_from_row(row) for row in rows]
         finally:
             conn.close()
 
@@ -307,6 +316,7 @@ class NodeStore:
             outbox_delivered = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'delivered'").fetchone()[0]
             delivery_receipts = conn.execute("SELECT COUNT(*) FROM delivery_receipts").fetchone()[0]
             peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
+            workflow_states = conn.execute("SELECT COUNT(*) FROM workflow_states").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -318,6 +328,7 @@ class NodeStore:
                 "outbox_delivered": outbox_delivered,
                 "delivery_receipts": delivery_receipts,
                 "peer_cards": peer_cards,
+                "workflow_states": workflow_states,
             }
         finally:
             conn.close()
@@ -378,31 +389,7 @@ class NodeStore:
             ).fetchone()
             if not row:
                 return None
-            return {
-                "id": row["id"],
-                "kind": row["kind"],
-                "sender": row["sender"],
-                "priority": row["priority"],
-                "status": row["status"],
-                "payload": json.loads(row["payload_json"]),
-                "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
-                "workflow_id": row["workflow_id"],
-                "parent_task_id": row["parent_task_id"],
-                "depends_on": json.loads(row["depends_on_json"] or "[]"),
-                "role": row["role"],
-                "branch": row["branch"],
-                "revision": row["revision"],
-                "merge_parent_ids": json.loads(row["merge_parent_ids_json"] or "[]"),
-                "commit_message": row["commit_message"],
-                "locked_by": row["locked_by"],
-                "lease_token": row["lease_token"],
-                "lease_expires_at": row["lease_expires_at"],
-                "attempts": row["attempts"],
-                "result": json.loads(row["result_json"]) if row["result_json"] else None,
-                "completed_at": row["completed_at"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            }
+            return self._task_from_row(row)
         finally:
             conn.close()
 
@@ -411,13 +398,18 @@ class NodeStore:
         try:
             rows = conn.execute(
                 """
-                SELECT id FROM tasks
+                SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       workflow_id, parent_task_id, depends_on_json, role, branch, revision,
+                       merge_parent_ids_json, commit_message,
+                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       created_at, updated_at
+                FROM tasks
                 WHERE workflow_id = ?
-                ORDER BY created_at ASC
+                ORDER BY revision ASC, created_at ASC
                 """,
                 (workflow_id,),
             ).fetchall()
-            return [self.get_task(row["id"]) for row in rows if self.get_task(row["id"]) is not None]
+            return [self._task_from_row(row) for row in rows]
         finally:
             conn.close()
 
@@ -439,7 +431,202 @@ class NodeStore:
             created_task = self.get_task(task.id)
             if created_task:
                 created.append(created_task)
+        if parent["status"] in {"queued", "leased"}:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'completed',
+                        result_json = ?,
+                        completed_at = ?,
+                        locked_by = NULL,
+                        lease_token = NULL,
+                        lease_expires_at = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        json.dumps(
+                            {
+                                "fanout_count": len(created),
+                                "spawned_task_ids": [task["id"] for task in created],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        utc_now(),
+                        utc_now(),
+                        parent_task_id,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
         return created
+
+    def create_merge_task(
+        self,
+        workflow_id: str,
+        parent_task_ids: list[str],
+        task: TaskEnvelope,
+    ) -> dict[str, Any]:
+        unique_parent_ids = list(dict.fromkeys(str(task_id) for task_id in parent_task_ids if str(task_id).strip()))
+        if len(unique_parent_ids) < 2:
+            raise ValueError("at least two parent_task_ids are required for merge")
+
+        parents = self.list_workflow_tasks(workflow_id)
+        parent_map = {item["id"]: item for item in parents}
+        missing = [task_id for task_id in unique_parent_ids if task_id not in parent_map]
+        if missing:
+            raise ValueError(f"merge parents not found in workflow: {', '.join(missing)}")
+
+        if not task.workflow_id:
+            task.workflow_id = workflow_id
+        task.parent_task_id = task.parent_task_id or unique_parent_ids[0]
+        if not task.depends_on:
+            task.depends_on = list(unique_parent_ids)
+        task.merge_parent_ids = list(unique_parent_ids)
+        if task.revision <= 1:
+            task.revision = max(int(parent_map[item]["revision"]) for item in unique_parent_ids) + 1
+        if not task.commit_message:
+            task.commit_message = f"merge {', '.join(unique_parent_ids)} into {task.branch}"
+        self.add_task(task)
+        created = self.get_task(task.id)
+        if not created:
+            raise ValueError("failed to persist merge task")
+        return created
+
+    def summarize_workflow(self, workflow_id: str) -> dict[str, Any]:
+        tasks = self.list_workflow_tasks(workflow_id)
+        if not tasks:
+            raise ValueError("workflow not found")
+
+        status_counts: dict[str, int] = {}
+        role_counts: dict[str, int] = {}
+        branch_counts: dict[str, int] = {}
+        consumed_task_ids: set[str] = set()
+        ready_ids: list[str] = []
+        blocked_ids: list[str] = []
+        merge_task_ids: list[str] = []
+        failed_ids: list[str] = []
+
+        completed_ids = {task["id"] for task in tasks if task["status"] == "completed"}
+        for task in tasks:
+            status = str(task["status"] or "unknown")
+            role = str(task["role"] or "worker")
+            branch = str(task["branch"] or "main")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            role_counts[role] = role_counts.get(role, 0) + 1
+            branch_counts[branch] = branch_counts.get(branch, 0) + 1
+
+            if task.get("parent_task_id"):
+                consumed_task_ids.add(str(task["parent_task_id"]))
+            for dep in task.get("depends_on", []):
+                consumed_task_ids.add(str(dep))
+            for merge_parent in task.get("merge_parent_ids", []):
+                consumed_task_ids.add(str(merge_parent))
+
+            if task.get("merge_parent_ids"):
+                merge_task_ids.append(task["id"])
+            if status == "failed":
+                failed_ids.append(task["id"])
+
+            if status == "queued":
+                depends_on = set(task.get("depends_on", []))
+                if depends_on.issubset(completed_ids):
+                    ready_ids.append(task["id"])
+                elif depends_on:
+                    blocked_ids.append(task["id"])
+
+        leaf_task_ids = [task["id"] for task in tasks if task["id"] not in consumed_task_ids]
+        root_task_ids = [task["id"] for task in tasks if not task.get("parent_task_id") and not task.get("merge_parent_ids")]
+        open_tasks = status_counts.get("queued", 0) + status_counts.get("leased", 0)
+        terminal = open_tasks == 0
+        final_status = "active"
+        if terminal:
+            final_status = "failed" if failed_ids else "completed"
+
+        persisted_state = self.get_workflow_state(workflow_id)
+
+        return {
+            "workflow_id": workflow_id,
+            "task_count": len(tasks),
+            "root_task_ids": root_task_ids,
+            "leaf_task_ids": leaf_task_ids,
+            "ready_task_ids": ready_ids,
+            "blocked_task_ids": blocked_ids,
+            "merge_task_ids": merge_task_ids,
+            "failed_task_ids": failed_ids,
+            "status_counts": status_counts,
+            "role_counts": role_counts,
+            "branch_counts": branch_counts,
+            "latest_revision": max(int(task["revision"]) for task in tasks),
+            "finalizable": terminal,
+            "status": final_status,
+            "persisted_state": persisted_state,
+        }
+
+    def get_workflow_state(self, workflow_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT workflow_id, status, summary_json, finalized_at, created_at, updated_at
+                FROM workflow_states
+                WHERE workflow_id = ?
+                """,
+                (workflow_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "workflow_id": row["workflow_id"],
+                "status": row["status"],
+                "summary": json.loads(row["summary_json"]),
+                "finalized_at": row["finalized_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        finally:
+            conn.close()
+
+    def finalize_workflow(self, workflow_id: str) -> dict[str, Any]:
+        summary = self.summarize_workflow(workflow_id)
+        if not summary["finalizable"]:
+            return {"ok": False, "workflow_id": workflow_id, "summary": summary}
+
+        now = utc_now()
+        final_status = str(summary["status"])
+        summary_payload = dict(summary)
+        summary_payload["persisted_state"] = None
+
+        conn = self._connect()
+        try:
+            existing = conn.execute(
+                "SELECT created_at FROM workflow_states WHERE workflow_id = ?",
+                (workflow_id,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing else now
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO workflow_states
+                (workflow_id, status, summary_json, finalized_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (workflow_id, final_status, json.dumps(summary_payload, ensure_ascii=False), now, created_at, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        finalized_state = self.get_workflow_state(workflow_id)
+        return {
+            "ok": True,
+            "workflow_id": workflow_id,
+            "status": final_status,
+            "finalized_at": now,
+            "summary": {**summary, "persisted_state": finalized_state},
+        }
 
     def claim_task(
         self,
@@ -538,6 +725,8 @@ class NodeStore:
                 "lease_token": claimed["lease_token"],
                 "lease_expires_at": claimed["lease_expires_at"],
                 "attempts": claimed["attempts"],
+                "result": json.loads(claimed["result_json"]) if claimed["result_json"] else None,
+                "completed_at": claimed["completed_at"],
                 "created_at": claimed["created_at"],
                 "updated_at": now,
             }

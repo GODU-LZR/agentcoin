@@ -159,6 +159,13 @@ class AgentCoinNode:
                         return
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_workflow_tasks(workflow_id)})
                     return
+                if path == "/v1/workflows/summary":
+                    workflow_id = (query.get("workflow_id") or [""])[0]
+                    if not workflow_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "workflow_id is required"})
+                        return
+                    self._json_response(HTTPStatus.OK, node.store.summarize_workflow(workflow_id))
+                    return
                 if path == "/v1/peers":
                     self._json_response(
                         HTTPStatus.OK,
@@ -199,6 +206,33 @@ class AgentCoinNode:
                         subtasks = [TaskEnvelope.from_dict(item) for item in list(payload.get("subtasks") or [])]
                         created = node.store.create_subtasks(parent_task_id, subtasks)
                         self._json_response(HTTPStatus.CREATED, {"items": created})
+                        return
+                    if self.path == "/v1/workflows/merge":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        workflow_id = str(payload.get("workflow_id") or "")
+                        if not workflow_id:
+                            raise ValueError("workflow_id is required")
+                        parent_task_ids = list(payload.get("parent_task_ids") or [])
+                        raw_task = dict(payload.get("task") or {})
+                        if "kind" not in raw_task:
+                            raw_task["kind"] = "merge"
+                        task = node._normalize_task(TaskEnvelope.from_dict(raw_task))
+                        task.workflow_id = workflow_id
+                        created = node.store.create_merge_task(workflow_id, parent_task_ids, task)
+                        self._json_response(HTTPStatus.CREATED, {"task": created})
+                        return
+                    if self.path == "/v1/workflows/finalize":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        workflow_id = str(payload.get("workflow_id") or "")
+                        if not workflow_id:
+                            raise ValueError("workflow_id is required")
+                        finalized = node.store.finalize_workflow(workflow_id)
+                        status = HTTPStatus.OK if finalized.get("ok") else HTTPStatus.CONFLICT
+                        self._json_response(status, finalized)
                         return
                     if self.path == "/v1/tasks/dispatch":
                         if not self._require_auth():

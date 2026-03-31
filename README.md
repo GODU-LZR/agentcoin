@@ -106,11 +106,14 @@ Key endpoints:
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/workflows?workflow_id=...`
+- `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/workflows/fanout`
+- `POST /v1/workflows/merge`
+- `POST /v1/workflows/finalize`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -176,6 +179,13 @@ Tasks now also carry Git-like workflow traits:
 
 This lets AgentCoin treat a workflow as a task DAG with branchable history rather than a flat queue.
 
+Workflows can now also converge back into a merge/finalize phase:
+
+- `POST /v1/workflows/merge` creates an aggregate or reviewer task that depends on multiple branch tasks
+- `GET /v1/workflows/summary?workflow_id=...` returns branch, role, status, ready, blocked, and leaf-task views
+- `POST /v1/workflows/finalize` persists a terminal workflow state once all open tasks are finished
+- planner fanout auto-completes the parent planning task, which makes workflow closure explicit instead of leaving the root task queued forever
+
 ## Status
 
 This repository is currently in the whitepaper and architecture-definition stage. The next implementation target is an MVP that can:
@@ -189,7 +199,7 @@ This repository is currently in the whitepaper and architecture-definition stage
 Current implementation status:
 
 - whitepaper and language landing pages are in place;
-- a reference node can publish an agent card, accept tasks, persist local state, and retry peer delivery;
+- a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, and track Git-like workflow convergence;
 - peer routing, execution adapters, and cryptographic verification are not implemented yet.
 
 ## Connectivity Direction
