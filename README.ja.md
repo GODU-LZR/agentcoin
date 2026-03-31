@@ -19,6 +19,12 @@
 <p align="center">
   <a href="docs/whitepaper/ja.md">ホワイトペーパー</a>
   ·
+  <a href="docs/project/overview.md">Project Docs</a>
+  ·
+  <a href="docs/testing/strategy.md">Testing Docs</a>
+  ·
+  <a href="docs/legal/gpl-notice.md">GPL Notice</a>
+  ·
   <a href="docs/whitepaper/en.md">English Whitepaper</a>
   ·
   <a href="docs/whitepaper/zh-CN.md">中文白皮书</a>
@@ -60,6 +66,15 @@ flowchart TB
 | 日本語 | [README.ja.md](README.ja.md) | [docs/whitepaper/ja.md](docs/whitepaper/ja.md) |
 | English | [README.md](README.md) | [docs/whitepaper/en.md](docs/whitepaper/en.md) |
 | 简体中文 | [README.zh-CN.md](README.zh-CN.md) | [docs/whitepaper/zh-CN.md](docs/whitepaper/zh-CN.md) |
+
+## 追加ドキュメント
+
+- Project documentation: [docs/project/overview.md](docs/project/overview.md)
+- Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
+- Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
+- GPL notice: [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
+- License text: [LICENSE](LICENSE)
 
 ## 現在の状態
 
@@ -190,3 +205,7 @@ workflow の収束フェーズも追加しました。
 - `GET /v1/workflows/summary?workflow_id=...` で branch, role, status, ready, blocked, leaf task を要約表示
 - `POST /v1/workflows/finalize` で open task がなくなった workflow の終端状態を永続化
 - planner が `fanout` を実行すると親 task は自動で completed になり、root が queued のまま残りません
+
+## License
+
+This repository is licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE) and [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md).

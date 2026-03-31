@@ -19,6 +19,12 @@
 <p align="center">
   <a href="docs/whitepaper/zh-CN.md">阅读中文白皮书</a>
   ·
+  <a href="docs/project/overview.md">项目文档</a>
+  ·
+  <a href="docs/testing/strategy.md">测试文档</a>
+  ·
+  <a href="docs/legal/gpl-notice.md">GPL 声明</a>
+  ·
   <a href="docs/whitepaper/en.md">Read the English Whitepaper</a>
   ·
   <a href="docs/whitepaper/ja.md">日本語版を見る</a>
@@ -67,6 +73,15 @@ flowchart TB
 | 简体中文 | [README.zh-CN.md](README.zh-CN.md) | [docs/whitepaper/zh-CN.md](docs/whitepaper/zh-CN.md) |
 | English | [README.md](README.md) | [docs/whitepaper/en.md](docs/whitepaper/en.md) |
 | 日本語 | [README.ja.md](README.ja.md) | [docs/whitepaper/ja.md](docs/whitepaper/ja.md) |
+
+## 项目文档入口
+
+- 项目说明：[docs/project/overview.md](docs/project/overview.md)
+- 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
+- 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)
+- 通信说明：[docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
+- GPL 声明：[docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
+- 协议全文：[LICENSE](LICENSE)
 
 ## 当前阶段
 
@@ -215,3 +230,7 @@ agentcoin-worker \
 - AgentCoin 自身协议继续跑在加密覆盖网络地址之上
 
 详见 [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)。
+
+## 开源协议
+
+本仓库采用 GNU General Public License v3.0 或更高版本。详见 [LICENSE](LICENSE) 和 [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)。

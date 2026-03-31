@@ -1,0 +1,197 @@
+# AgentCoin Testing Documentation
+
+## Purpose
+
+This document defines how the current AgentCoin reference implementation should be verified, what has already been validated manually, and what still needs automation.
+
+## Test Scope
+
+The current test scope covers:
+
+- node startup and health endpoints
+- local task persistence
+- peer-card synchronization
+- durable outbox and inbox delivery
+- explicit message ACK validation
+- lease-based task claiming
+- workflow fanout and merge behavior
+- weak-network retry, dead-letter, and local fallback
+
+## What Exists Today
+
+The repository does not yet contain an automated unit or integration test suite.
+
+Validation has been done by:
+
+- `python -m py_compile` on runtime modules
+- local loopback multi-node simulations
+- manual endpoint verification using Python scripts and HTTP requests
+- failure-path validation with unreachable peers
+
+## Minimum Verification Matrix
+
+### Platforms
+
+- Windows PowerShell
+- WSL
+- Linux
+- macOS
+
+### Runtime Modes
+
+- direct Python process
+- Docker Compose
+- multi-node local loopback
+- overlay-network style peer addressing
+
+### Failure Modes
+
+- peer unavailable
+- invalid message ACK
+- task retry exhaustion
+- outbox retry exhaustion
+- local fallback activation
+- workflow finalize before all branches complete
+
+## Verified Behaviors
+
+The following behaviors have already been manually verified in this repository history:
+
+- peer card sync and peer-id based delivery
+- lease queue prevents duplicate claim by multiple workers
+- inbox dedupe and explicit delivery ACK
+- planner dispatch to matching peer capability
+- worker pull loop completion path
+- workflow fanout with dependency blocking
+- merge task blocking until branch completion
+- workflow finalization persistence
+- remote dispatch fallback to local execution after outbox dead-letter
+- remote dispatch dead-letter when no valid local fallback exists
+- delayed retry and task dead-letter after retry exhaustion
+- worker loop tolerance of temporary node connectivity failure
+
+## Recommended Automated Test Layers
+
+### Unit tests
+
+Target:
+
+- `TaskEnvelope.from_dict`
+- config loading defaults
+- store transitions for task lifecycle
+- store transitions for outbox lifecycle
+- workflow summary and finalization
+
+### Integration tests
+
+Target:
+
+- spin up one or more nodes in-process
+- submit tasks across nodes
+- validate persistence and endpoint responses
+- simulate unreachable peers and fallback
+
+### CLI smoke tests
+
+Target:
+
+- `agentcoin-node`
+- `agentcoin-worker`
+
+### Packaging checks
+
+Target:
+
+- editable install
+- package metadata
+- Docker build smoke test
+
+## Suggested Test Cases
+
+### Task queue
+
+1. create task
+2. claim task with matching worker capability
+3. verify lease token exists
+4. ACK success
+5. verify task becomes `completed`
+
+### Retry and dead-letter
+
+1. create task with `max_attempts=2`
+2. claim and ACK with `requeue=true`
+3. ensure immediate reclaim is blocked
+4. wait until `available_at`
+5. claim again and fail again
+6. verify task enters `dead-letter`
+
+### Outbox delivery
+
+1. create remotely delivered task
+2. flush outbox to a reachable peer
+3. verify delivery ACK
+4. verify outbox item becomes `delivered`
+5. verify receiver inbox dedupe on replay
+
+### Weak-network fallback
+
+1. create remotely delivered task to unreachable peer
+2. set `outbox_max_attempts=1`
+3. flush outbox
+4. verify outbox item enters dead-letter
+5. if `local_dispatch_fallback=true`, verify task becomes `fallback-local`
+6. verify local worker can claim it
+
+### Workflow merge
+
+1. create root task
+2. fan out two branch tasks
+3. create merge task with both branch ids
+4. verify merge task cannot be claimed yet
+5. complete both branch tasks
+6. verify merge task becomes claimable
+7. finalize workflow and verify persisted summary
+
+## Manual Test Commands
+
+### Syntax check
+
+```bash
+python -m py_compile agentcoin/models.py agentcoin/config.py agentcoin/store.py agentcoin/node.py agentcoin/worker.py
+```
+
+### Run node
+
+```bash
+agentcoin-node --config configs/node.example.json
+```
+
+### Run worker
+
+```bash
+agentcoin-worker --node-url http://127.0.0.1:8080 --token change-me --worker-id worker-1 --capability worker
+```
+
+### Docker Compose
+
+```bash
+docker compose up --build
+```
+
+## Exit Criteria For MVP
+
+The MVP should not be considered stable until:
+
+- repeatable automated integration tests exist
+- CI runs syntax and integration checks on every push
+- task and outbox dead-letter behavior is covered
+- workflow merge and finalize are covered
+- Windows, Linux, and macOS paths are exercised
+
+## Next Testing Milestones
+
+1. Add `unittest`-based store and node tests
+2. Add in-process multi-node integration tests
+3. Add GitHub Actions CI
+4. Add Docker smoke tests
+5. Add cross-platform verification notes

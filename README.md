@@ -19,6 +19,12 @@
 <p align="center">
   <a href="docs/whitepaper/en.md">Whitepaper</a>
   ·
+  <a href="docs/project/overview.md">Project Docs</a>
+  ·
+  <a href="docs/testing/strategy.md">Testing Docs</a>
+  ·
+  <a href="docs/legal/gpl-notice.md">GPL Notice</a>
+  ·
   <a href="docs/whitepaper/zh-CN.md">中文白皮书</a>
   ·
   <a href="docs/whitepaper/ja.md">日本語ホワイトペーパー</a>
@@ -64,6 +70,15 @@ flowchart TB
 | English | [README.md](README.md) | [docs/whitepaper/en.md](docs/whitepaper/en.md) |
 | Simplified Chinese | [README.zh-CN.md](README.zh-CN.md) | [docs/whitepaper/zh-CN.md](docs/whitepaper/zh-CN.md) |
 | Japanese | [README.ja.md](README.ja.md) | [docs/whitepaper/ja.md](docs/whitepaper/ja.md) |
+
+## Documentation Map
+
+- Project documentation: [docs/project/overview.md](docs/project/overview.md)
+- Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
+- Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
+- GPL notice: [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
+- License text: [LICENSE](LICENSE)
 
 ## Initial Build Track
 
@@ -231,3 +246,7 @@ The current recommended transport strategy for multi-agent communication without
 - and AgentCoin's own HTTP/JSON protocol over encrypted overlay addresses.
 
 See [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md).
+
+## License
+
+This repository is licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE) and [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md).
