@@ -43,6 +43,14 @@ class TaskEnvelope:
     status: str = "queued"
     deliver_to: str | None = None
     required_capabilities: list[str] = field(default_factory=list)
+    workflow_id: str | None = None
+    parent_task_id: str | None = None
+    depends_on: list[str] = field(default_factory=list)
+    role: str = "worker"
+    branch: str = "main"
+    revision: int = 1
+    merge_parent_ids: list[str] = field(default_factory=list)
+    commit_message: str = ""
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "TaskEnvelope":
@@ -56,6 +64,14 @@ class TaskEnvelope:
             status=str(raw.get("status") or "queued"),
             deliver_to=raw.get("deliver_to"),
             required_capabilities=list(raw.get("required_capabilities") or []),
+            workflow_id=raw.get("workflow_id"),
+            parent_task_id=raw.get("parent_task_id"),
+            depends_on=list(raw.get("depends_on") or []),
+            role=str(raw.get("role") or "worker"),
+            branch=str(raw.get("branch") or "main"),
+            revision=int(raw.get("revision") or 1),
+            merge_parent_ids=list(raw.get("merge_parent_ids") or []),
+            commit_message=str(raw.get("commit_message") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:

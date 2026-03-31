@@ -98,10 +98,12 @@ agentcoin-node --config configs/node.example.json
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/workflows?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/workflows/fanout`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -147,3 +149,15 @@ agentcoin-worker \
   --worker-id worker-1 \
   --capability worker
 ```
+
+task には Git-like な workflow traits も追加しました。
+
+- `workflow_id`
+- `parent_task_id`
+- `branch`
+- `revision`
+- `merge_parent_ids`
+- `commit_message`
+- `depends_on`
+
+これにより task は単なる flat queue ではなく DAG として扱えます。

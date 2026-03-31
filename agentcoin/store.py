@@ -33,6 +33,14 @@ class NodeStore:
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    workflow_id TEXT,
+                    parent_task_id TEXT,
+                    depends_on_json TEXT NOT NULL DEFAULT '[]',
+                    role TEXT NOT NULL DEFAULT 'worker',
+                    branch TEXT NOT NULL DEFAULT 'main',
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    merge_parent_ids_json TEXT NOT NULL DEFAULT '[]',
+                    commit_message TEXT NOT NULL DEFAULT '',
                     locked_by TEXT,
                     lease_token TEXT,
                     lease_expires_at TEXT,
@@ -77,6 +85,14 @@ class NodeStore:
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "tasks", "workflow_id", "TEXT")
+            self._ensure_column(conn, "tasks", "parent_task_id", "TEXT")
+            self._ensure_column(conn, "tasks", "depends_on_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "tasks", "role", "TEXT NOT NULL DEFAULT 'worker'")
+            self._ensure_column(conn, "tasks", "branch", "TEXT NOT NULL DEFAULT 'main'")
+            self._ensure_column(conn, "tasks", "revision", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "tasks", "merge_parent_ids_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "tasks", "commit_message", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "tasks", "locked_by", "TEXT")
             self._ensure_column(conn, "tasks", "lease_token", "TEXT")
             self._ensure_column(conn, "tasks", "lease_expires_at", "TEXT")
@@ -101,8 +117,10 @@ class NodeStore:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tasks
-                (id, kind, sender, priority, status, payload_json, required_capabilities_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                 workflow_id, parent_task_id, depends_on_json, role, branch, revision,
+                 merge_parent_ids_json, commit_message, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task.id,
@@ -112,6 +130,14 @@ class NodeStore:
                     task.status,
                     json.dumps(task.payload, ensure_ascii=False),
                     json.dumps(task.required_capabilities, ensure_ascii=False),
+                    task.workflow_id,
+                    task.parent_task_id,
+                    json.dumps(task.depends_on, ensure_ascii=False),
+                    task.role,
+                    task.branch,
+                    task.revision,
+                    json.dumps(task.merge_parent_ids, ensure_ascii=False),
+                    task.commit_message,
                     task.created_at,
                     now,
                 ),
@@ -126,6 +152,8 @@ class NodeStore:
             rows = conn.execute(
                 """
                 SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       workflow_id, parent_task_id, depends_on_json, role, branch, revision,
+                       merge_parent_ids_json, commit_message,
                        locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
                        created_at, updated_at
                 FROM tasks
@@ -143,6 +171,14 @@ class NodeStore:
                     "status": row["status"],
                     "payload": json.loads(row["payload_json"]),
                     "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
+                    "workflow_id": row["workflow_id"],
+                    "parent_task_id": row["parent_task_id"],
+                    "depends_on": json.loads(row["depends_on_json"] or "[]"),
+                    "role": row["role"],
+                    "branch": row["branch"],
+                    "revision": row["revision"],
+                    "merge_parent_ids": json.loads(row["merge_parent_ids_json"] or "[]"),
+                    "commit_message": row["commit_message"],
                     "locked_by": row["locked_by"],
                     "lease_token": row["lease_token"],
                     "lease_expires_at": row["lease_expires_at"],
@@ -325,6 +361,86 @@ class NodeStore:
         finally:
             conn.close()
 
+    def get_task(self, task_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       workflow_id, parent_task_id, depends_on_json, role, branch, revision,
+                       merge_parent_ids_json, commit_message,
+                       locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
+                       created_at, updated_at
+                FROM tasks
+                WHERE id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "kind": row["kind"],
+                "sender": row["sender"],
+                "priority": row["priority"],
+                "status": row["status"],
+                "payload": json.loads(row["payload_json"]),
+                "required_capabilities": json.loads(row["required_capabilities_json"] or "[]"),
+                "workflow_id": row["workflow_id"],
+                "parent_task_id": row["parent_task_id"],
+                "depends_on": json.loads(row["depends_on_json"] or "[]"),
+                "role": row["role"],
+                "branch": row["branch"],
+                "revision": row["revision"],
+                "merge_parent_ids": json.loads(row["merge_parent_ids_json"] or "[]"),
+                "commit_message": row["commit_message"],
+                "locked_by": row["locked_by"],
+                "lease_token": row["lease_token"],
+                "lease_expires_at": row["lease_expires_at"],
+                "attempts": row["attempts"],
+                "result": json.loads(row["result_json"]) if row["result_json"] else None,
+                "completed_at": row["completed_at"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        finally:
+            conn.close()
+
+    def list_workflow_tasks(self, workflow_id: str) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id FROM tasks
+                WHERE workflow_id = ?
+                ORDER BY created_at ASC
+                """,
+                (workflow_id,),
+            ).fetchall()
+            return [self.get_task(row["id"]) for row in rows if self.get_task(row["id"]) is not None]
+        finally:
+            conn.close()
+
+    def create_subtasks(self, parent_task_id: str, subtasks: list[TaskEnvelope]) -> list[dict[str, Any]]:
+        parent = self.get_task(parent_task_id)
+        if not parent:
+            raise ValueError("parent task not found")
+        workflow_id = parent["workflow_id"] or parent["id"]
+        created: list[dict[str, Any]] = []
+        for task in subtasks:
+            if not task.workflow_id:
+                task.workflow_id = workflow_id
+            task.parent_task_id = parent_task_id
+            if task.revision <= 1:
+                task.revision = int(parent["revision"]) + 1
+            if not task.commit_message:
+                task.commit_message = f"spawn subtask from {parent_task_id}"
+            self.add_task(task)
+            created_task = self.get_task(task.id)
+            if created_task:
+                created.append(created_task)
+        return created
+
     def claim_task(
         self,
         worker_id: str,
@@ -340,6 +456,8 @@ class NodeStore:
             rows = conn.execute(
                 """
                 SELECT id, kind, sender, priority, status, payload_json, required_capabilities_json,
+                       workflow_id, parent_task_id, depends_on_json, role, branch, revision,
+                       merge_parent_ids_json, commit_message,
                        locked_by, lease_token, lease_expires_at, attempts, result_json, completed_at,
                        created_at, updated_at
                 FROM tasks
@@ -351,12 +469,27 @@ class NodeStore:
             selected: sqlite3.Row | None = None
             for row in rows:
                 required = json.loads(row["required_capabilities_json"] or "[]")
+                depends_on = json.loads(row["depends_on_json"] or "[]")
                 lease_expired = not row["lease_expires_at"] or row["lease_expires_at"] <= now
                 available = row["status"] == "queued" or lease_expired
                 if not available:
                     continue
+                role = row["role"] or "worker"
+                if worker_capabilities and role not in {"any", ""} and role not in set(worker_capabilities):
+                    continue
                 if required and not set(required).issubset(set(worker_capabilities)):
                     continue
+                if depends_on:
+                    dependency_count = conn.execute(
+                        """
+                        SELECT COUNT(*) FROM tasks
+                        WHERE id IN ({})
+                          AND status = 'completed'
+                        """.format(",".join("?" for _ in depends_on)),
+                        tuple(depends_on),
+                    ).fetchone()[0]
+                    if dependency_count != len(depends_on):
+                        continue
                 selected = row
                 break
 
@@ -393,6 +526,14 @@ class NodeStore:
                 "status": claimed["status"],
                 "payload": json.loads(claimed["payload_json"]),
                 "required_capabilities": json.loads(claimed["required_capabilities_json"] or "[]"),
+                "workflow_id": claimed["workflow_id"],
+                "parent_task_id": claimed["parent_task_id"],
+                "depends_on": json.loads(claimed["depends_on_json"] or "[]"),
+                "role": claimed["role"],
+                "branch": claimed["branch"],
+                "revision": claimed["revision"],
+                "merge_parent_ids": json.loads(claimed["merge_parent_ids_json"] or "[]"),
+                "commit_message": claimed["commit_message"],
                 "locked_by": claimed["locked_by"],
                 "lease_token": claimed["lease_token"],
                 "lease_expires_at": claimed["lease_expires_at"],

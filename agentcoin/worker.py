@@ -59,6 +59,9 @@ class WorkerLoop:
             "worker_id": self.worker_id,
             "handled_kind": task["kind"],
             "handled_at": utc_now(),
+            "workflow_id": task.get("workflow_id"),
+            "branch": task.get("branch"),
+            "revision": task.get("revision"),
             "echo": task.get("payload", {}),
         }
         ack = self._post_json(
@@ -116,4 +119,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -6,7 +6,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error, request
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from agentcoin.config import NodeConfig, PeerConfig
@@ -84,6 +84,18 @@ class AgentCoinNode:
 
         return None
 
+    @staticmethod
+    def _normalize_task(task: TaskEnvelope) -> TaskEnvelope:
+        if not task.workflow_id:
+            task.workflow_id = task.id
+        if not task.branch:
+            task.branch = "main"
+        if task.revision <= 0:
+            task.revision = 1
+        if not task.commit_message:
+            task.commit_message = f"{task.kind} on {task.branch}@r{task.revision}"
+        return task
+
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
 
@@ -120,7 +132,11 @@ class AgentCoinNode:
                 return False
 
             def do_GET(self) -> None:
-                if self.path == "/healthz":
+                parsed_request = urlparse(self.path)
+                path = parsed_request.path
+                query = parse_qs(parsed_request.query)
+
+                if path == "/healthz":
                     self._json_response(
                         HTTPStatus.OK,
                         {
@@ -130,22 +146,29 @@ class AgentCoinNode:
                         },
                     )
                     return
-                if self.path == "/v1/card":
+                if path == "/v1/card":
                     self._json_response(HTTPStatus.OK, node.config.card.to_dict())
                     return
-                if self.path == "/v1/tasks":
+                if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
-                if self.path == "/v1/peers":
+                if path == "/v1/workflows":
+                    workflow_id = (query.get("workflow_id") or [""])[0]
+                    if not workflow_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "workflow_id is required"})
+                        return
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_workflow_tasks(workflow_id)})
+                    return
+                if path == "/v1/peers":
                     self._json_response(
                         HTTPStatus.OK,
                         {"items": [node._sanitize_peer(peer) for peer in node.config.peers]},
                     )
                     return
-                if self.path == "/v1/peer-cards":
+                if path == "/v1/peer-cards":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_peer_cards()})
                     return
-                if self.path == "/v1/outbox":
+                if path == "/v1/outbox":
                     self._json_response(HTTPStatus.OK, {"items": node.store.get_pending_outbox()})
                     return
                 self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -156,7 +179,7 @@ class AgentCoinNode:
                         if not self._require_auth():
                             return
                         payload = self._read_json()
-                        task = TaskEnvelope.from_dict(payload)
+                        task = node._normalize_task(TaskEnvelope.from_dict(payload))
                         node.store.add_task(task)
                         if task.deliver_to:
                             target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
@@ -166,11 +189,22 @@ class AgentCoinNode:
                             node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
+                    if self.path == "/v1/workflows/fanout":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        parent_task_id = str(payload.get("parent_task_id") or "")
+                        if not parent_task_id:
+                            raise ValueError("parent_task_id is required")
+                        subtasks = [TaskEnvelope.from_dict(item) for item in list(payload.get("subtasks") or [])]
+                        created = node.store.create_subtasks(parent_task_id, subtasks)
+                        self._json_response(HTTPStatus.CREATED, {"items": created})
+                        return
                     if self.path == "/v1/tasks/dispatch":
                         if not self._require_auth():
                             return
                         payload = self._read_json()
-                        task = TaskEnvelope.from_dict(payload)
+                        task = node._normalize_task(TaskEnvelope.from_dict(payload))
                         task.sender = task.sender or node.config.node_id
                         prefer_local = bool(payload.get("prefer_local"))
                         target = None

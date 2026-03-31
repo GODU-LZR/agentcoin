@@ -35,11 +35,13 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/workflows?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/outbox`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/workflows/fanout`
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
@@ -61,6 +63,20 @@ The planner layer now has a first executable skeleton:
 - the node selects a peer from cached capability cards
 - dispatch falls back to local execution if local capabilities satisfy the task
 - workers can run a simple pull loop and complete claimed tasks
+
+## Git-Like Task Model
+
+Tasks now carry workflow lineage fields inspired by Git:
+
+- `workflow_id`: identifies the whole DAG
+- `parent_task_id`: identifies the task that spawned the current one
+- `branch`: allows alternate solution paths
+- `revision`: monotonic revision inside a branch
+- `merge_parent_ids`: records merge-style ancestry
+- `commit_message`: short human-readable intent for the task revision
+- `depends_on`: explicit dependency edges
+
+This makes AgentCoin closer to a distributed task graph with history, not just a transient queue.
 
 ## Coordination Direction
 
