@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentcoin"
+version = "0.1.0"
+description = "Reference node for the AgentCoin Web 4.0 agent swarm network."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "GODU-LZR" }
+]
+keywords = ["agents", "multi-agent", "swarm", "offline-first", "protocol"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: OS Independent",
+  "Topic :: Software Development",
+]
+
+[project.scripts]
+agentcoin-node = "agentcoin.cli:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["agentcoin*"]
+

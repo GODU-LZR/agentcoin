@@ -1,0 +1,27 @@
+{
+  "node_id": "agentcoin-local",
+  "name": "AgentCoin Reference Node",
+  "description": "Cross-platform reference node with local queueing and secure ingress.",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "auth_token": "change-me",
+  "database_path": "./var/agentcoin.db",
+  "sync_interval_seconds": 15,
+  "max_body_bytes": 262144,
+  "capabilities": [
+    "task-routing",
+    "offline-queue",
+    "agent-card",
+    "secure-ingress"
+  ],
+  "tags": [
+    "reference",
+    "cross-platform",
+    "offline-first"
+  ],
+  "runtimes": [
+    "python"
+  ],
+  "peers": []
+}
+

@@ -1,0 +1,96 @@
+<svg width="1400" height="720" viewBox="0 0 1400 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1400" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6F8FF"/>
+      <stop offset="1" stop-color="#EEF7F2"/>
+    </linearGradient>
+    <linearGradient id="strokeA" x1="217" y1="122" x2="1150" y2="584" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3563E9"/>
+      <stop offset="0.5" stop-color="#10B981"/>
+      <stop offset="1" stop-color="#F59E0B"/>
+    </linearGradient>
+    <linearGradient id="cardA" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F7FAFF"/>
+    </linearGradient>
+    <filter id="shadow" x="-40" y="-40" width="1480" height="800" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#17324D" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect width="1400" height="720" rx="28" fill="url(#bg)"/>
+
+  <g opacity="0.65">
+    <circle cx="156" cy="160" r="10" fill="#3563E9"/>
+    <circle cx="286" cy="126" r="6" fill="#7C3AED"/>
+    <circle cx="394" cy="202" r="8" fill="#10B981"/>
+    <circle cx="1030" cy="134" r="8" fill="#F59E0B"/>
+    <circle cx="1160" cy="206" r="10" fill="#3563E9"/>
+    <circle cx="1260" cy="156" r="6" fill="#10B981"/>
+    <circle cx="172" cy="572" r="8" fill="#F59E0B"/>
+    <circle cx="302" cy="622" r="10" fill="#10B981"/>
+    <circle cx="1112" cy="574" r="8" fill="#3563E9"/>
+    <circle cx="1242" cy="622" r="10" fill="#7C3AED"/>
+    <path d="M156 160L286 126L394 202L700 134L1030 134L1160 206L1260 156" stroke="url(#strokeA)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M172 572L302 622L612 562L916 622L1112 574L1242 622" stroke="url(#strokeA)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M394 202L512 310L700 358L912 300L1160 206" stroke="url(#strokeA)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M302 622L512 458L700 358L916 450L1112 574" stroke="url(#strokeA)" stroke-width="2" stroke-linecap="round"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="142" y="88" width="1116" height="544" rx="28" fill="url(#cardA)"/>
+  </g>
+
+  <rect x="188" y="134" width="156" height="34" rx="17" fill="#E7EEFF"/>
+  <text x="266" y="156" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#274690">Living Whitepaper</text>
+
+  <text x="188" y="250" font-family="Segoe UI, Arial, sans-serif" font-size="76" font-weight="800" fill="#0F172A">AgentCorn</text>
+  <text x="188" y="302" font-family="Segoe UI, Arial, sans-serif" font-size="28" font-weight="600" fill="#1E293B">Web 4.0 Agent Swarm Infrastructure</text>
+
+  <text x="188" y="372" font-family="Segoe UI, Arial, sans-serif" font-size="24" fill="#334155">
+    <tspan x="188" dy="0">Cross-node agents that can discover peers, compose teams,</tspan>
+    <tspan x="188" dy="38">prove useful work, and execute inside secure policy boundaries.</tspan>
+  </text>
+
+  <g>
+    <rect x="188" y="466" width="208" height="90" rx="20" fill="#EEF4FF"/>
+    <text x="212" y="500" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#274690">Interoperability</text>
+    <text x="212" y="528" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">Cards, ontology, adapters,</text>
+    <text x="212" y="548" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">shared protocol surface</text>
+  </g>
+
+  <g>
+    <rect x="420" y="466" width="208" height="90" rx="20" fill="#ECFDF5"/>
+    <text x="444" y="500" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#047857">Proof of Agent Work</text>
+    <text x="444" y="528" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">Value-based rewards,</text>
+    <text x="444" y="548" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">receipts, reputation, settlement</text>
+  </g>
+
+  <g>
+    <rect x="652" y="466" width="208" height="90" rx="20" fill="#FFF7ED"/>
+    <text x="676" y="500" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#C2410C">Swarm Orchestration</text>
+    <text x="676" y="528" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">Leader-worker routing,</text>
+    <text x="676" y="548" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">decomposition, checkpoint replay</text>
+  </g>
+
+  <g>
+    <rect x="884" y="466" width="208" height="90" rx="20" fill="#F5F3FF"/>
+    <text x="908" y="500" font-family="Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#6D28D9">Secure Runtime</text>
+    <text x="908" y="528" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">Gateway control, sandboxing,</text>
+    <text x="908" y="548" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#334155">attestation, slashing</text>
+  </g>
+
+  <g opacity="0.8">
+    <rect x="1014" y="182" width="164" height="96" rx="22" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="1038" y="216" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#0F172A">Capability Card</text>
+    <text x="1038" y="240" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#475569">Model • Tools • Policy</text>
+    <text x="1038" y="260" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#475569">Latency • Trust • Cost</text>
+  </g>
+
+  <g opacity="0.8">
+    <rect x="980" y="322" width="198" height="110" rx="22" fill="#FFFFFF" stroke="#E2E8F0"/>
+    <text x="1004" y="356" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="700" fill="#0F172A">Task Lifecycle</text>
+    <text x="1004" y="380" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#475569">Discover → Elect → Execute</text>
+    <text x="1004" y="400" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#475569">Verify → Settle → Replay</text>
+  </g>
+</svg>
