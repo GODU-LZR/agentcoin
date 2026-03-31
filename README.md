@@ -121,6 +121,8 @@ Key endpoints:
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
+- `GET /v1/git/status`
+- `GET /v1/git/diff`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
@@ -140,6 +142,8 @@ Key endpoints:
 - `POST /v1/outbox/flush`
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
+- `POST /v1/git/branch`
+- `POST /v1/git/task-context`
 - `POST /v1/peers/sync`
 
 Docker Compose is also available:
@@ -173,6 +177,14 @@ The local task queue now supports lease-based coordination for multiple agents:
 - workers finish with `POST /v1/tasks/ack`
 
 This is the first queue-locking primitive for multi-agent execution.
+
+The node can now also adapt to a real Git repository instead of treating the internal workflow graph as a Git replacement:
+
+- `GET /v1/git/status` reads branch, head, dirty state, and changed files
+- `GET /v1/git/diff` reads repository diffs or changed file lists
+- `POST /v1/git/branch` creates a Git branch from a chosen ref
+- `POST /v1/git/task-context` attaches real repository context to an existing task
+- `POST /v1/tasks` can set `attach_git_context=true` to persist `_git` metadata at creation time
 
 Inter-node delivery now also uses explicit message acknowledgements:
 

@@ -492,6 +492,22 @@ class NodeStore:
         finally:
             conn.close()
 
+    def update_task_payload(self, task_id: str, payload: dict[str, Any]) -> bool:
+        conn = self._connect()
+        try:
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET payload_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(payload, ensure_ascii=False), utc_now(), task_id),
+            ).rowcount
+            conn.commit()
+            return updated > 0
+        finally:
+            conn.close()
+
     def list_workflow_tasks(self, workflow_id: str) -> list[dict[str, Any]]:
         conn = self._connect()
         try:

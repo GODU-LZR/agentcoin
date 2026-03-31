@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from agentcoin.config import NodeConfig, PeerConfig
+from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope
 from agentcoin.store import NodeStore
 
@@ -20,6 +21,7 @@ class AgentCoinNode:
     def __init__(self, config: NodeConfig) -> None:
         self.config = config
         self.store = NodeStore(config.database_path)
+        self.git = GitWorkspace(config.git_root) if config.git_root else None
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
@@ -61,6 +63,11 @@ class AgentCoinNode:
         if not capabilities:
             return True
         return set(capabilities).issubset(set(self.config.capabilities))
+
+    def _require_git(self) -> GitWorkspace:
+        if not self.git:
+            raise ValueError("git integration is not configured")
+        return self.git
 
     def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
         if prefer_local and self._supports_capabilities(required_capabilities):
@@ -162,6 +169,15 @@ class AgentCoinNode:
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
+                if path == "/v1/git/status":
+                    self._json_response(HTTPStatus.OK, node._require_git().status())
+                    return
+                if path == "/v1/git/diff":
+                    base_ref = (query.get("base_ref") or ["HEAD"])[0]
+                    target_ref = (query.get("target_ref") or [None])[0]
+                    name_only = (query.get("name_only") or ["0"])[0] in {"1", "true", "yes"}
+                    self._json_response(HTTPStatus.OK, node._require_git().diff(base_ref=base_ref, target_ref=target_ref, name_only=name_only))
+                    return
                 if path == "/v1/tasks/dead-letter":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_dead_letter_tasks()})
                     return
@@ -203,6 +219,10 @@ class AgentCoinNode:
                             return
                         payload = self._read_json()
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
+                        if bool(payload.get("attach_git_context")):
+                            base_ref = str(payload.get("git_base_ref") or "HEAD")
+                            target_ref = payload.get("git_target_ref")
+                            task.payload["_git"] = node._require_git().task_context(base_ref=base_ref, target_ref=target_ref)
                         node.store.add_task(task)
                         if task.deliver_to:
                             target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
@@ -348,6 +368,36 @@ class AgentCoinNode:
                             delay_seconds=int(payload.get("delay_seconds") or 0),
                         )
                         self._json_response(HTTPStatus.OK, {"ok": ok})
+                        return
+                    if self.path == "/v1/git/branch":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        created = node._require_git().create_branch(
+                            name=str(payload.get("name") or ""),
+                            from_ref=str(payload.get("from_ref") or "HEAD"),
+                            checkout=bool(payload.get("checkout")),
+                        )
+                        self._json_response(HTTPStatus.CREATED, created)
+                        return
+                    if self.path == "/v1/git/task-context":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        context = node._require_git().task_context(
+                            base_ref=str(payload.get("base_ref") or "HEAD"),
+                            target_ref=payload.get("target_ref"),
+                        )
+                        updated = False
+                        if task_id:
+                            task = node.store.get_task(task_id)
+                            if not task:
+                                raise ValueError("task not found")
+                            merged_payload = dict(task["payload"])
+                            merged_payload["_git"] = context
+                            updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(HTTPStatus.OK, {"git": context, "task_id": task_id or None, "updated": updated})
                         return
                     if self.path == "/v1/inbox":
                         if not self._require_auth():

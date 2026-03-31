@@ -16,6 +16,7 @@ The current test scope covers:
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior
+- Git repository status, diff, branch, and task-context attachment
 - weak-network retry, dead-letter, and local fallback
 
 ## What Exists Today

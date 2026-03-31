@@ -33,6 +33,7 @@ class NodeConfig:
     advertise_url: str | None = None
     auth_token: str = "change-me"
     database_path: str = "./var/agentcoin.db"
+    git_root: str | None = None
     sync_interval_seconds: int = 15
     max_body_bytes: int = 262144
     outbox_max_attempts: int = 5
@@ -69,6 +70,8 @@ class NodeConfig:
                 "inbox": f"{self.base_url}/v1/inbox",
                 "peers": f"{self.base_url}/v1/peers",
                 "peer_cards": f"{self.base_url}/v1/peer-cards",
+                "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",
+                "git_diff": f"{self.base_url}/v1/git/diff" if self.git_root else "",
             },
             network={
                 "overlay_network": self.overlay_network,

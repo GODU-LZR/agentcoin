@@ -7,6 +7,7 @@
   "advertise_url": "http://100.64.0.1:8080",
   "auth_token": "change-me",
   "database_path": "./var/agentcoin.db",
+  "git_root": ".",
   "sync_interval_seconds": 15,
   "max_body_bytes": 262144,
   "outbox_max_attempts": 5,

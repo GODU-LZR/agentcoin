@@ -122,6 +122,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
+- `GET /v1/git/status`
+- `GET /v1/git/diff`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
@@ -141,6 +143,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/outbox/flush`
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
+- `POST /v1/git/branch`
+- `POST /v1/git/task-context`
 - `POST /v1/peers/sync`
 
 暗号化 overlay 上の設定済み peer に配送する場合は、task の `deliver_to` に `configs/node.example.json` の `peer_id` を指定します。例: `agentcoin-peer-b`。
@@ -159,6 +163,14 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - `POST /v1/tasks/ack`
 
 これは複数 agent による task coordination の土台です。
+
+node は内部 workflow を Git の代替にするのではなく、実際の Git repository にも適応できるようになりました。
+
+- `GET /v1/git/status` で branch, HEAD, dirty state, changed files を取得
+- `GET /v1/git/diff` で repository diff または changed file list を取得
+- `POST /v1/git/branch` で指定 ref から branch を作成
+- `POST /v1/git/task-context` で既存 task に real repository context を付与
+- `POST /v1/tasks` に `attach_git_context=true` を渡すと作成時に `_git` metadata を保存
 
 inter-node message delivery には explicit ACK も追加しました。
 

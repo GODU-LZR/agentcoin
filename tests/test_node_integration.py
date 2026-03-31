@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import tempfile
 import threading
 import time
@@ -21,7 +22,7 @@ def _free_port() -> int:
 
 class NodeHarness:
     def __init__(self, *, node_id: str, token: str, db_path: str, capabilities: list[str], peers: list[PeerConfig] | None = None,
-                 local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3) -> None:
+                 local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -29,6 +30,7 @@ class NodeHarness:
             host="127.0.0.1",
             port=self.port,
             database_path=db_path,
+            git_root=git_root,
             sync_interval_seconds=3600,
             capabilities=capabilities,
             peers=peers or [],
@@ -80,6 +82,15 @@ class NodeIntegrationTests(unittest.TestCase):
     def _get(self, url: str) -> tuple[int, dict]:
         with request.urlopen(url, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def _init_git_repo(self, repo_path: Path) -> None:
+        repo_path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "AgentCoin Test"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.email", "agentcoin@example.com"], cwd=repo_path, check=True, capture_output=True, text=True)
+        (repo_path / "README.txt").write_text("hello\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.txt"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=repo_path, check=True, capture_output=True, text=True)
 
     def test_outbox_delivery_ack_and_inbox_dedupe(self) -> None:
         node_b = NodeHarness(
@@ -365,5 +376,61 @@ class NodeIntegrationTests(unittest.TestCase):
                 {"worker_id": "merge-reviewer", "worker_capabilities": ["reviewer"], "lease_seconds": 30},
             )
             self.assertEqual(merge_claim["task"]["id"], "merge-protected")
+        finally:
+            node.stop()
+
+    def test_git_status_branch_diff_and_task_context(self) -> None:
+        repo_path = Path(self.tempdir.name) / "repo"
+        self._init_git_repo(repo_path)
+        (repo_path / "README.txt").write_text("hello\nchange\n", encoding="utf-8")
+
+        node = NodeHarness(
+            node_id="git-node",
+            token="token-g",
+            db_path=str(Path(self.tempdir.name) / "git.db"),
+            capabilities=["planner", "worker"],
+            git_root=str(repo_path),
+        )
+        node.start()
+        try:
+            _, status = self._get(f"{node.base_url}/v1/git/status")
+            self.assertTrue(status["is_dirty"])
+            tracked = set(status["staged_files"]) | set(status["unstaged_files"]) | set(status["untracked_files"])
+            self.assertIn("README.txt", tracked)
+
+            created_status, branch = self._post(
+                f"{node.base_url}/v1/git/branch",
+                "token-g",
+                {"name": "agentcoin/test-branch", "from_ref": "HEAD", "checkout": False},
+            )
+            self.assertEqual(created_status, 201)
+            self.assertEqual(branch["branch"], "agentcoin/test-branch")
+
+            _, diff = self._get(f"{node.base_url}/v1/git/diff?base_ref=HEAD&name_only=1")
+            self.assertIn("README.txt", diff["files"])
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-g",
+                {
+                    "id": "git-task-1",
+                    "kind": "code",
+                    "payload": {"goal": "use git context"},
+                    "attach_git_context": True,
+                    "git_base_ref": "HEAD",
+                },
+            )
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            git_task = [item for item in tasks["items"] if item["id"] == "git-task-1"][0]
+            self.assertEqual(git_task["payload"]["_git"]["repo_root"], str(repo_path.resolve()))
+            self.assertIn("README.txt", git_task["payload"]["_git"]["changed_files"])
+
+            _, attached = self._post(
+                f"{node.base_url}/v1/git/task-context",
+                "token-g",
+                {"task_id": "git-task-1", "base_ref": "HEAD"},
+            )
+            self.assertTrue(attached["updated"])
+            self.assertEqual(attached["task_id"], "git-task-1")
         finally:
             node.stop()

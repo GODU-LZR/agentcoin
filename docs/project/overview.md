@@ -12,6 +12,7 @@ The current repository contains:
 - durable local task, inbox, outbox, and workflow state persistence
 - Git-like workflow lineage, merge, and finalize semantics
 - weak-network retry, dead-letter, and local fallback behavior
+- Git-native repository inspection and task context attachment
 
 ## Design Goals
 
@@ -99,6 +100,19 @@ AgentCoin currently has two durable queues:
 
 - task queue: work claiming, lease management, ACK, retry, dead-letter
 - message queue: inter-node outbox, inbox dedupe, delivery ACK, replay
+
+### Git Adapter Model
+
+AgentCoin does not replace Git. It now adapts to Git repositories directly.
+
+Current Git-native capabilities:
+
+- inspect repository status
+- inspect diffs
+- create branches
+- attach repository context to tasks
+
+This keeps source-of-truth code history in Git while AgentCoin handles coordination and policy.
 
 ### Workflow Model
 

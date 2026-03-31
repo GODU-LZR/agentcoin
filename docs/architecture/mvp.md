@@ -43,6 +43,8 @@ The reference node now also models degraded network conditions explicitly:
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
+- `GET /v1/git/status`
+- `GET /v1/git/diff`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
@@ -59,6 +61,8 @@ The reference node now also models degraded network conditions explicitly:
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`
 - `POST /v1/tasks/requeue`
+- `POST /v1/git/branch`
+- `POST /v1/git/task-context`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
 - `POST /v1/outbox/requeue`
@@ -85,6 +89,13 @@ The planner layer now has a first executable skeleton:
 - the node selects a peer from cached capability cards
 - dispatch falls back to local execution if local capabilities satisfy the task
 - workers can run a simple pull loop and complete claimed tasks
+
+The node now also has a Git-native adapter layer:
+
+- repository status and diff inspection
+- branch creation
+- task attachment to real repository context
+- no attempt to replace Git history with internal workflow metadata
 
 ## Git-Like Task Model
 
