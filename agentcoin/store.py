@@ -52,6 +52,13 @@ class NodeStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS peer_cards (
+                    peer_id TEXT PRIMARY KEY,
+                    source_url TEXT NOT NULL,
+                    card_json TEXT NOT NULL,
+                    fetched_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             conn.commit()
@@ -194,11 +201,52 @@ class NodeStore:
             inbox_count = conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0]
             outbox_pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
             outbox_delivered = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'delivered'").fetchone()[0]
+            peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
             return {
                 "tasks": task_count,
                 "inbox": inbox_count,
                 "outbox_pending": outbox_pending,
                 "outbox_delivered": outbox_delivered,
+                "peer_cards": peer_cards,
             }
+        finally:
+            conn.close()
+
+    def save_peer_card(self, peer_id: str, source_url: str, card: dict[str, Any]) -> None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO peer_cards
+                (peer_id, source_url, card_json, fetched_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (peer_id, source_url, json.dumps(card, ensure_ascii=False), now, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_peer_cards(self) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT peer_id, source_url, card_json, fetched_at, updated_at
+                FROM peer_cards
+                ORDER BY peer_id ASC
+                """
+            ).fetchall()
+            return [
+                {
+                    "peer_id": row["peer_id"],
+                    "source_url": row["source_url"],
+                    "card": json.loads(row["card_json"]),
+                    "fetched_at": row["fetched_at"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            ]
         finally:
             conn.close()

@@ -38,6 +38,24 @@ class AgentCoinNode:
             payload["auth_token"] = "***"
         return payload
 
+    def sync_peer_cards(self) -> list[dict]:
+        synced: list[dict] = []
+        for peer in self.config.peers:
+            if not peer.enabled:
+                continue
+            source_url = f"{peer.url.rstrip('/')}/v1/card"
+            try:
+                req = request.Request(source_url, headers={"Accept": "application/json"}, method="GET")
+                with request.urlopen(req, timeout=5) as resp:
+                    if resp.status >= 300:
+                        raise ValueError(f"peer returned status {resp.status}")
+                    card = json.loads(resp.read().decode("utf-8"))
+                self.store.save_peer_card(peer.peer_id, source_url, card)
+                synced.append({"peer_id": peer.peer_id, "status": "ok"})
+            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+                synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc)})
+        return synced
+
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
 
@@ -96,6 +114,9 @@ class AgentCoinNode:
                         {"items": [node._sanitize_peer(peer) for peer in node.config.peers]},
                     )
                     return
+                if self.path == "/v1/peer-cards":
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_peer_cards()})
+                    return
                 if self.path == "/v1/outbox":
                     self._json_response(HTTPStatus.OK, {"items": node.store.get_pending_outbox()})
                     return
@@ -131,6 +152,12 @@ class AgentCoinNode:
                             return
                         flushed = node.flush_outbox()
                         self._json_response(HTTPStatus.OK, {"flushed": flushed, "stats": node.store.stats()})
+                        return
+                    if self.path == "/v1/peers/sync":
+                        if not self._require_auth():
+                            return
+                        synced = node.sync_peer_cards()
+                        self._json_response(HTTPStatus.OK, {"items": synced, "stats": node.store.stats()})
                         return
                     self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 except ValueError as exc:
@@ -171,6 +198,7 @@ class AgentCoinNode:
 
     def _sync_loop(self) -> None:
         while not self._sync_stop.wait(self.config.sync_interval_seconds):
+            self.sync_peer_cards()
             self.flush_outbox()
 
     def serve_forever(self) -> None:

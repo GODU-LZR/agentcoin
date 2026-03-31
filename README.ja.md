@@ -99,8 +99,17 @@ agentcoin-node --config configs/node.example.json
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/peers`
+- `GET /v1/peer-cards`
 - `POST /v1/tasks`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/peers/sync`
 
 暗号化 overlay 上の設定済み peer に配送する場合は、task の `deliver_to` に `configs/node.example.json` の `peer_id` を指定します。例: `agentcoin-peer-b`。
+
+peer capability card の同期と確認:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
+curl http://127.0.0.1:8080/v1/peer-cards
+```

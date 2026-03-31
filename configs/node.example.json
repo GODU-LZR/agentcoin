@@ -4,10 +4,16 @@
   "description": "Cross-platform reference node with local queueing and secure ingress.",
   "host": "127.0.0.1",
   "port": 8080,
+  "advertise_url": "http://100.64.0.1:8080",
   "auth_token": "change-me",
   "database_path": "./var/agentcoin.db",
   "sync_interval_seconds": 15,
   "max_body_bytes": 262144,
+  "overlay_network": "tailnet",
+  "overlay_endpoint": "agentcoin-a.tailnet.internal:8080",
+  "overlay_addresses": [
+    "100.64.0.1"
+  ],
   "capabilities": [
     "task-routing",
     "offline-queue",
@@ -28,6 +34,10 @@
       "name": "AgentCoin Peer B",
       "url": "http://100.64.0.2:8080",
       "auth_token": "peer-b-token",
+      "overlay_endpoint": "agentcoin-b.tailnet.internal:8080",
+      "overlay_addresses": [
+        "100.64.0.2"
+      ],
       "tags": [
         "tailnet",
         "worker"

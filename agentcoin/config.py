@@ -14,6 +14,8 @@ class PeerConfig:
     name: str
     url: str
     auth_token: str | None = None
+    overlay_endpoint: str | None = None
+    overlay_addresses: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     enabled: bool = True
 
@@ -28,10 +30,14 @@ class NodeConfig:
     description: str = "Offline-first reference node for the AgentCoin swarm network."
     host: str = "127.0.0.1"
     port: int = 8080
+    advertise_url: str | None = None
     auth_token: str = "change-me"
     database_path: str = "./var/agentcoin.db"
     sync_interval_seconds: int = 15
     max_body_bytes: int = 262144
+    overlay_network: str = "tailnet"
+    overlay_endpoint: str | None = None
+    overlay_addresses: list[str] = field(default_factory=list)
     capabilities: list[str] = field(
         default_factory=lambda: ["task-routing", "offline-queue", "agent-card", "secure-ingress"]
     )
@@ -41,7 +47,7 @@ class NodeConfig:
 
     @property
     def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return self.advertise_url or f"http://{self.host}:{self.port}"
 
     @property
     def card(self) -> AgentCard:
@@ -57,6 +63,13 @@ class NodeConfig:
                 "card": f"{self.base_url}/v1/card",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",
+                "peers": f"{self.base_url}/v1/peers",
+                "peer_cards": f"{self.base_url}/v1/peer-cards",
+            },
+            network={
+                "overlay_network": self.overlay_network,
+                "overlay_endpoint": self.overlay_endpoint,
+                "overlay_addresses": self.overlay_addresses,
             },
         )
 

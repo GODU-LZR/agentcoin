@@ -43,6 +43,8 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 
 The node can now resolve `deliver_to` either as a full URL or as a configured `peer_id`. This is better suited for encrypted overlay networks because application code can target stable peer identities instead of embedding raw addresses everywhere.
 
+It also supports capability-card synchronization from configured peers. This allows the node to cache peer capabilities locally before the scheduler layer is built.
+
 ## Next Milestones
 
 1. Add peer registry and signed capability cards.

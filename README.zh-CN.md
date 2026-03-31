@@ -112,11 +112,20 @@ docker compose up --build
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/peers`
+- `GET /v1/peer-cards`
 - `POST /v1/tasks`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+- `POST /v1/peers/sync`
 
 如果要通过加密覆盖网络把任务投递给配置好的节点，可以在提交任务时把 `deliver_to` 设置为 `configs/node.example.json` 里的 `peer_id`，例如 `agentcoin-peer-b`。
+
+节点现在也可以主动拉取并缓存远端能力名片：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
+curl http://127.0.0.1:8080/v1/peer-cards
+```
 
 ## 通信方向
 
