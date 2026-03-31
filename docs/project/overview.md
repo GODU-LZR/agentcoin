@@ -78,6 +78,7 @@ Configuration defines:
 - auth token
 - HMAC signing secret
 - inbound signature requirement
+- SSH identity principal and key paths
 - persistence path
 - peer definitions
 - overlay metadata
@@ -187,6 +188,7 @@ Current baseline:
 - binds to `127.0.0.1` by default
 - protects write APIs with bearer token when configured
 - supports HMAC-signed capability cards and task envelopes
+- supports `ssh-keygen` compatible asymmetric signatures for cards, task envelopes, and delivery receipts
 - can require signed inbox delivery from configured peers
 - avoids mandatory external runtime dependencies
 - treats transport and execution failure as separate accountability domains
@@ -257,7 +259,7 @@ Recommended medium-term direction:
 
 ## Current Limitations
 
-- no public-key signing or key rotation yet
+- no key rotation, revocation, or trust-chain management yet
 - no plugin adapter system yet
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade

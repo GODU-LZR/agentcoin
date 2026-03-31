@@ -12,7 +12,13 @@ from uuid import uuid4
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope
-from agentcoin.security import SignatureError, sign_document, verify_document
+from agentcoin.security import (
+    SignatureError,
+    sign_document,
+    sign_document_with_ssh,
+    verify_document,
+    verify_document_with_ssh,
+)
 from agentcoin.store import NodeStore
 
 LOG = logging.getLogger("agentcoin.node")
@@ -42,36 +48,118 @@ class AgentCoinNode:
             payload["auth_token"] = "***"
         if payload.get("signing_secret"):
             payload["signing_secret"] = "***"
+        if payload.get("identity_public_key"):
+            payload["identity_public_key"] = f"{str(payload['identity_public_key'])[:32]}..."
         return payload
 
-    def _sign_document(self, document: dict, scope: str) -> dict:
-        if not self.config.signing_secret:
-            return dict(document)
-        return sign_document(document, secret=self.config.signing_secret, key_id=self.config.node_id, scope=scope)
+    @staticmethod
+    def _collapse_verification(results: dict[str, dict]) -> dict | None:
+        if not results:
+            return None
+        if len(results) == 1:
+            return next(iter(results.values()))
+        return {"verified": True, **results}
+
+    def _sign_document(self, document: dict, *, hmac_scope: str, identity_namespace: str) -> dict:
+        signed = dict(document)
+        if self.config.signing_secret:
+            signed = sign_document(signed, secret=self.config.signing_secret, key_id=self.config.node_id, scope=hmac_scope)
+        if self.config.identity_private_key_path and self.config.identity_principal:
+            signed = sign_document_with_ssh(
+                signed,
+                private_key_path=self.config.identity_private_key_path,
+                principal=self.config.identity_principal,
+                namespace=identity_namespace,
+                public_key=self.config.resolved_identity_public_key,
+            )
+        return signed
+
+    @staticmethod
+    def _peer_trust_required(peer: PeerConfig | None) -> bool:
+        if not peer:
+            return False
+        return bool(peer.signing_secret or (peer.identity_principal and peer.identity_public_key))
+
+    def _verify_signed_document(
+        self,
+        payload: dict,
+        *,
+        peer: PeerConfig | None,
+        hmac_scope: str,
+        identity_namespace: str,
+        required: bool,
+    ) -> dict | None:
+        results: dict[str, dict] = {}
+        if peer and peer.signing_secret:
+            results["hmac"] = verify_document(payload, secret=peer.signing_secret, expected_scope=hmac_scope, expected_key_id=peer.peer_id)
+        if peer and peer.identity_principal and peer.identity_public_key:
+            results["identity"] = verify_document_with_ssh(
+                payload,
+                public_key=peer.identity_public_key,
+                principal=peer.identity_principal,
+                expected_namespace=identity_namespace,
+            )
+        if required and not results:
+            raise SignatureError("no trusted signature configuration is available for sender")
+        return self._collapse_verification(results)
 
     def _verify_peer_card(self, peer: PeerConfig, card: dict) -> dict | None:
-        if not peer.signing_secret:
-            return None
-        return verify_document(card, secret=peer.signing_secret, expected_scope="agent-card", expected_key_id=peer.peer_id)
+        return self._verify_signed_document(
+            card,
+            peer=peer,
+            hmac_scope="agent-card",
+            identity_namespace="agentcoin-card",
+            required=self._peer_trust_required(peer),
+        )
 
     def _verify_inbox_document(self, payload: dict) -> dict | None:
         sender = str(payload.get("sender") or "").strip()
-        shared_secret = None
-        expected_key_id = None
+        peer = None
         if sender:
             try:
                 peer = self.config.resolve_peer(sender)
-                shared_secret = peer.signing_secret
-                expected_key_id = peer.peer_id
             except KeyError:
-                shared_secret = None
+                peer = None
 
-        requires_signature = self.config.require_signed_inbox or bool(shared_secret) or "_signature" in payload
-        if not requires_signature:
+        requires_signature = self.config.require_signed_inbox or self._peer_trust_required(peer) or "_signature" in payload or "_identity_signature" in payload
+        return self._verify_signed_document(
+            payload,
+            peer=peer,
+            hmac_scope="task-envelope",
+            identity_namespace="agentcoin-task",
+            required=requires_signature,
+        )
+
+    def _verify_receipt_payload(self, peer: PeerConfig | None, payload: dict) -> dict | None:
+        requires_signature = self._peer_trust_required(peer) or "_signature" in payload or "_identity_signature" in payload
+        return self._verify_signed_document(
+            payload,
+            peer=peer,
+            hmac_scope="delivery-receipt",
+            identity_namespace="agentcoin-receipt",
+            required=requires_signature,
+        )
+
+    def _resolve_outbox_peer(self, item: dict) -> PeerConfig | None:
+        target_url = str(item.get("target_url") or "")
+        for peer in self.config.peers:
+            if f"{peer.url.rstrip('/')}/v1/inbox" == target_url:
+                return peer
+
+        try:
+            payload = json.loads(str(item.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
             return None
-        if not shared_secret:
-            raise SignatureError("no shared signing secret configured for sender")
-        return verify_document(payload, secret=shared_secret, expected_scope="task-envelope", expected_key_id=expected_key_id)
+        target_ref = (
+            payload.get("payload", {}).get("_delivery", {}).get("target_ref")
+            or payload.get("deliver_to")
+        )
+        if not target_ref:
+            return None
+        try:
+            return self.config.resolve_peer(str(target_ref))
+        except KeyError:
+            return None
 
     def sync_peer_cards(self) -> list[dict]:
         synced: list[dict] = []
@@ -87,7 +175,15 @@ class AgentCoinNode:
                     card = json.loads(resp.read().decode("utf-8"))
                 verification = self._verify_peer_card(peer, card)
                 self.store.save_peer_card(peer.peer_id, source_url, card)
-                synced.append({"peer_id": peer.peer_id, "status": "ok", "signed": bool(verification)})
+                synced.append(
+                    {
+                        "peer_id": peer.peer_id,
+                        "status": "ok",
+                        "signed": bool(verification),
+                        "hmac_signed": isinstance(verification, dict) and ("scope" in verification or "hmac" in verification),
+                        "identity_signed": isinstance(verification, dict) and ("namespace" in verification or "identity" in verification),
+                    }
+                )
             except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError, SignatureError) as exc:
                 synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc)})
         return synced
@@ -197,7 +293,10 @@ class AgentCoinNode:
                     )
                     return
                 if path == "/v1/card":
-                    self._json_response(HTTPStatus.OK, node._sign_document(node.config.card.to_dict(), scope="agent-card"))
+                    self._json_response(
+                        HTTPStatus.OK,
+                        node._sign_document(node.config.card.to_dict(), hmac_scope="agent-card", identity_namespace="agentcoin-card"),
+                    )
                     return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
@@ -264,7 +363,11 @@ class AgentCoinNode:
                             task.payload.setdefault("_delivery", {})
                             task.payload["_delivery"].update({"target_ref": target_ref})
                             node.store.add_task(task)
-                            outbound = node._sign_document(task.to_dict(), scope="task-envelope")
+                            outbound = node._sign_document(
+                                task.to_dict(),
+                                hmac_scope="task-envelope",
+                                identity_namespace="agentcoin-task",
+                            )
                             node.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
@@ -364,7 +467,11 @@ class AgentCoinNode:
                             task.payload.setdefault("_delivery", {})
                             task.payload["_delivery"].update({"target_ref": target_ref, "dispatch_mode": "planner"})
                             node.store.add_task(task)
-                            outbound = node._sign_document(task.to_dict(), scope="task-envelope")
+                            outbound = node._sign_document(
+                                task.to_dict(),
+                                hmac_scope="task-envelope",
+                                identity_namespace="agentcoin-task",
+                            )
                             node.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
                         return
@@ -471,7 +578,8 @@ class AgentCoinNode:
                         node.store.save_delivery_receipt(ack_id, message_id, sender)
                         self._json_response(
                             HTTPStatus.CREATED,
-                            {
+                            node._sign_document(
+                                {
                                 "message_id": message_id,
                                 "duplicate": duplicate,
                                 "ack": {
@@ -479,7 +587,10 @@ class AgentCoinNode:
                                     "message_id": message_id,
                                 },
                                 "verified": bool(verification),
-                            },
+                                },
+                                hmac_scope="delivery-receipt",
+                                identity_namespace="agentcoin-receipt",
+                            ),
                         )
                         return
                     if self.path == "/v1/outbox/flush":
@@ -540,6 +651,8 @@ class AgentCoinNode:
                     response_payload = json.loads(resp.read().decode("utf-8"))
                 if response_payload.get("ack", {}).get("message_id") != item["id"]:
                     raise ValueError("missing or invalid message ack")
+                receipt_peer = self._resolve_outbox_peer(item)
+                self._verify_receipt_payload(receipt_peer, response_payload)
                 self.store.mark_outbox_delivered(item["id"])
                 delivered += 1
             except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:

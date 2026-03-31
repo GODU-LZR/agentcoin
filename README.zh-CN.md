@@ -97,6 +97,7 @@ flowchart TB
 - `离线优先`：基于 SQLite 持久化任务、inbox、outbox。
 - `默认安全`：默认仅绑定 `127.0.0.1`，写接口要求 Bearer Token。
 - `签名传输`：capability card 和 task envelope 现在可以带 `HMAC` 签名，供 peer 验签。
+- `非对称身份`：节点现在也可以用兼容 `ssh-keygen` 的 `Ed25519` 密钥为 card、任务和回执签名。
 - `兼容多 Agent`：通过通用任务信封和能力名片接口接入不同 Agent。
 
 ### 快速启动
@@ -201,6 +202,13 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - 当 `require_signed_inbox=true` 时，inbox 可以强制要求合法 peer 签名
 - `peer sync` 在缓存远端 capability card 之前会先校验签名
 
+身份层现在也多了一条轻量非对称路径：
+
+- 节点可以在 capability card 里公开 `identity_principal` 和公钥材料
+- 如果配置了 `identity_private_key_path`，节点会用 `ssh-keygen -Y sign` 为 card、task envelope 和 delivery receipt 签名
+- 可信 peer 可以用配置里的 `identity_principal` 和 `identity_public_key` 做验签
+- 这样在不引入重依赖的前提下，已经不再只依赖共享密钥
+
 现在也开始正式处理弱网和异常情况：
 
 - outbox 会在 `pending -> retrying` 之间按指数退避重试
@@ -272,7 +280,7 @@ agentcoin-worker \
 
 ## 测试状态
 
-当前仓库已经带有自动化 `unittest` 测试和跨平台 GitHub Actions CI，覆盖了任务重试、死信、消息 ACK、签名验签、工作流 merge/finalize 和弱网 fallback 等核心路径。
+当前仓库已经带有自动化 `unittest` 测试和跨平台 GitHub Actions CI，覆盖了任务重试、死信、消息 ACK、`HMAC/SSH` 验签、工作流 merge/finalize 和弱网 fallback 等核心路径。
 
 ## 开源协议
 

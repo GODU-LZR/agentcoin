@@ -28,6 +28,7 @@ The MVP now also supports pragmatic signed identity checks:
 - remote task envelopes can be HMAC-signed before entering the outbox
 - inbox delivery can require a valid sender signature
 - peer-card sync can verify a peer signature before caching the card
+- nodes can also use `ssh-keygen` compatible Ed25519 identities for cards, task envelopes, and delivery receipts
 
 ### Agent compatibility through envelopes
 
@@ -166,7 +167,7 @@ The next coordination layer should be built on top of these primitives:
 
 ## Next Milestones
 
-1. Replace the current HMAC MVP with public-key identity, rotation, and stronger peer trust semantics.
+1. Replace the current mixed HMAC / SSH MVP with key rotation, stronger trust bootstrap, and richer receipt semantics.
 2. Add task state transitions and worker execution adapters.
 3. Add encrypted local secrets and stricter outbound policy controls.
 4. Add pluggable protocol bridges for MCP, A2A, and custom agents.

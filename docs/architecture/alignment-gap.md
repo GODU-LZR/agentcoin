@@ -55,6 +55,7 @@ The blueprint calls for gateway-mediated, controlled execution. The repository i
 - loopback bind by default
 - bearer-token protected write endpoints
 - HMAC-signed capability cards and task envelopes
+- SSH-key based node identity for cards, task envelopes, and delivery receipts
 - durable audit-friendly queue state
 - transport and execution failure separation
 
@@ -104,7 +105,7 @@ The blueprint explicitly mentions:
 - stronger isolation guarantees
 - cryptographic receipts
 
-The current implementation now has a pragmatic HMAC-signed identity MVP, but it is still far from the blueprint's stronger target. There is no TEE integration, no attestation, no asymmetric identity layer, and no cryptographic work receipts yet.
+The current implementation now has a pragmatic signed-identity MVP with both HMAC and SSH-key based signatures, but it is still far from the blueprint's stronger target. There is no TEE integration, no attestation, no decentralized trust chain, and no cryptographic proof-of-work receipts yet.
 
 ### 5. Protocol compatibility is still adapter-ready, not standards-complete
 

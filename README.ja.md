@@ -90,6 +90,7 @@ flowchart TB
 - `オフライン優先`: SQLite による task / inbox / outbox 永続化
 - `安全寄りの初期設定`: デフォルトで `127.0.0.1` に bind し、書き込み系 API は Bearer Token 保護
 - `署名付き transport`: capability card と task envelope に `HMAC` 署名を付けて peer 検証できます
+- `非対称 identity`: `ssh-keygen` 互換の `Ed25519` key で card, task, receipt を署名できます
 - `多様な Agent との互換性`: 汎用 task envelope と capability card を採用
 
 ### Quick Start
@@ -186,6 +187,13 @@ pragmatic な署名付き identity check も追加しています。
 - `signing_secret` が設定されていると remote task envelope を自動署名します
 - `require_signed_inbox=true` で inbox 側に peer 署名必須を強制できます
 - `peer sync` は capability card を保存する前に peer secret で署名検証します
+
+identity layer には軽量な非対称経路も追加しました。
+
+- node は capability card に `identity_principal` と public key material を載せられます
+- `identity_private_key_path` があると `ssh-keygen -Y sign` で card, task envelope, delivery receipt を署名します
+- trusted peer は `identity_principal` と `identity_public_key` で検証できます
+- これにより shared-secret のみより強い trust bootstrap を追加できます
 
 弱いネットワークや失敗時の扱いも追加しました。
 

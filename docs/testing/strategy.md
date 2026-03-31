@@ -14,6 +14,7 @@ The current test scope covers:
 - durable outbox and inbox delivery
 - explicit message ACK validation
 - signed peer-card sync and inbox signature verification
+- SSH identity signed delivery receipt verification
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior

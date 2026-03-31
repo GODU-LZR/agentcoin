@@ -3,12 +3,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from agentcoin.models import utc_now
 
 SIGNATURE_FIELD = "_signature"
+IDENTITY_SIGNATURE_FIELD = "_identity_signature"
 SIGNATURE_ALGORITHM = "hmac-sha256"
+IDENTITY_ALGORITHM = "ssh-ed25519"
 
 
 class SignatureError(ValueError):
@@ -16,7 +22,7 @@ class SignatureError(ValueError):
 
 
 def _unsigned_document(document: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in document.items() if key != SIGNATURE_FIELD}
+    return {key: value for key, value in document.items() if key not in {SIGNATURE_FIELD, IDENTITY_SIGNATURE_FIELD}}
 
 
 def _canonical_json(document: dict[str, Any]) -> str:
@@ -92,4 +98,107 @@ def verify_document(
         "key_id": key_id,
         "scope": scope,
         "signed_at": signed_at,
+    }
+
+
+def resolve_public_key(*, private_key_path: str | None = None, public_key: str | None = None) -> str | None:
+    if public_key and public_key.strip():
+        return public_key.strip()
+    if private_key_path:
+        public_key_path = Path(f"{private_key_path}.pub")
+        if public_key_path.exists():
+            return public_key_path.read_text(encoding="utf-8").strip()
+    return None
+
+
+def _require_ssh_keygen() -> str:
+    executable = shutil.which("ssh-keygen")
+    if not executable:
+        raise SignatureError("ssh-keygen is not available")
+    return executable
+
+
+def _run_ssh_keygen(args: list[str], *, input_bytes: bytes | None = None) -> None:
+    completed = subprocess.run(
+        [_require_ssh_keygen(), *args],
+        input=input_bytes,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return
+    message = completed.stderr.decode("utf-8", "ignore").strip() or completed.stdout.decode("utf-8", "ignore").strip()
+    raise SignatureError(message or "ssh-keygen failed")
+
+
+def sign_document_with_ssh(
+    document: dict[str, Any],
+    *,
+    private_key_path: str,
+    principal: str,
+    namespace: str,
+    public_key: str | None = None,
+) -> dict[str, Any]:
+    resolved_public_key = resolve_public_key(private_key_path=private_key_path, public_key=public_key)
+    if not resolved_public_key:
+        raise SignatureError("public key is not available for SSH identity signing")
+
+    signed_document = dict(document)
+    payload = _canonical_json(_unsigned_document(signed_document)).encode("utf-8")
+    with tempfile.TemporaryDirectory(prefix="agentcoin-sign-") as temp_dir:
+        payload_path = Path(temp_dir) / "payload.json"
+        payload_path.write_bytes(payload)
+        _run_ssh_keygen(["-Y", "sign", "-f", private_key_path, "-n", namespace, str(payload_path)])
+        signature_path = Path(f"{payload_path}.sig")
+        signature_value = signature_path.read_text(encoding="utf-8")
+
+    signed_document[IDENTITY_SIGNATURE_FIELD] = {
+        "alg": IDENTITY_ALGORITHM,
+        "principal": principal,
+        "namespace": namespace,
+        "public_key": resolved_public_key,
+        "value": signature_value,
+    }
+    return signed_document
+
+
+def verify_document_with_ssh(
+    document: dict[str, Any],
+    *,
+    public_key: str,
+    principal: str,
+    expected_namespace: str,
+) -> dict[str, Any]:
+    signature = document.get(IDENTITY_SIGNATURE_FIELD)
+    if not isinstance(signature, dict):
+        raise SignatureError("missing identity signature")
+
+    namespace = str(signature.get("namespace") or "").strip()
+    signature_value = str(signature.get("value") or "").strip()
+    algorithm = str(signature.get("alg") or IDENTITY_ALGORITHM).strip()
+    signature_principal = str(signature.get("principal") or "").strip()
+
+    if not namespace or not signature_value or not signature_principal:
+        raise SignatureError("identity signature is incomplete")
+    if namespace != expected_namespace:
+        raise SignatureError(f"unexpected identity namespace: {namespace}")
+    if signature_principal != principal:
+        raise SignatureError(f"unexpected identity principal: {signature_principal}")
+
+    payload = _canonical_json(_unsigned_document(document)).encode("utf-8")
+    with tempfile.TemporaryDirectory(prefix="agentcoin-verify-") as temp_dir:
+        signature_path = Path(temp_dir) / "payload.sig"
+        allowed_signers_path = Path(temp_dir) / "allowed_signers"
+        signature_path.write_text(signature_value, encoding="utf-8")
+        allowed_signers_path.write_text(f"{principal} {public_key.strip()}\n", encoding="utf-8")
+        _run_ssh_keygen(
+            ["-Y", "verify", "-f", str(allowed_signers_path), "-I", principal, "-n", namespace, "-s", str(signature_path)],
+            input_bytes=payload,
+        )
+
+    return {
+        "verified": True,
+        "alg": algorithm,
+        "principal": principal,
+        "namespace": namespace,
     }

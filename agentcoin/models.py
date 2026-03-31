@@ -27,6 +27,7 @@ class AgentCard:
     secure_by_default: bool = True
     endpoints: dict[str, str] = field(default_factory=dict)
     network: dict[str, Any] = field(default_factory=dict)
+    identity: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

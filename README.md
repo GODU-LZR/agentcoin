@@ -97,6 +97,7 @@ The repository now includes a minimal cross-platform reference node built with P
 - `Offline-first`: uses SQLite-backed local task, inbox, and outbox persistence.
 - `Secure-by-default`: binds to `127.0.0.1` and protects write endpoints with a bearer token.
 - `Signed transport`: capability cards and task envelopes can carry HMAC signatures for peer verification.
+- `Asymmetric identity`: nodes can also sign cards, task envelopes, and delivery receipts with `ssh-keygen` compatible Ed25519 keys.
 - `Agent-friendly`: exposes generic task envelopes and capability-card endpoints that can front different agent runtimes.
 
 ### Quick Start
@@ -201,6 +202,13 @@ The node now also supports pragmatic signed identity checks:
 - inbox delivery can require a valid peer signature with `require_signed_inbox=true`
 - synchronized peer cards are verified against the configured peer secret before being cached
 
+The identity layer now also has a lightweight asymmetric option:
+
+- nodes can advertise `identity_principal` and public key material in the capability card
+- if `identity_private_key_path` is configured, the node signs cards, task envelopes, and delivery receipts with `ssh-keygen -Y sign`
+- trusted peers can verify those signatures with configured `identity_principal` and `identity_public_key`
+- this keeps the runtime dependency-light while moving beyond shared-secret-only trust
+
 Weak-network handling is now more explicit too:
 
 - outbox entries move from `pending` to `retrying` with exponential backoff
@@ -274,8 +282,8 @@ Current implementation status:
 - whitepaper and language landing pages are in place;
 - a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, handle dead-letter lanes, and track Git-like workflow convergence;
 - automated `unittest` coverage and cross-platform GitHub Actions CI are in place for the current MVP surface;
-- peer routing, Git-native review policy, and HMAC-signed peer verification are implemented in the MVP;
-- ontology, public-key identity, attestation, protocol bridges, and PoAW settlement are not implemented yet.
+- peer routing, Git-native review policy, HMAC verification, and SSH-key based node identity are implemented in the MVP;
+- ontology, stronger key rotation, attestation, protocol bridges, and PoAW settlement are not implemented yet.
 
 ## Connectivity Direction
 

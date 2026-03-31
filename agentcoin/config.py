@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agentcoin.models import AgentCard
+from agentcoin.security import resolve_public_key
 
 
 @dataclass(slots=True)
@@ -15,6 +16,8 @@ class PeerConfig:
     url: str
     auth_token: str | None = None
     signing_secret: str | None = None
+    identity_principal: str | None = None
+    identity_public_key: str | None = None
     overlay_endpoint: str | None = None
     overlay_addresses: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -35,6 +38,9 @@ class NodeConfig:
     auth_token: str = "change-me"
     signing_secret: str | None = None
     require_signed_inbox: bool = False
+    identity_principal: str | None = None
+    identity_private_key_path: str | None = None
+    identity_public_key: str | None = None
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
     sync_interval_seconds: int = 15
@@ -56,6 +62,10 @@ class NodeConfig:
     @property
     def base_url(self) -> str:
         return self.advertise_url or f"http://{self.host}:{self.port}"
+
+    @property
+    def resolved_identity_public_key(self) -> str | None:
+        return resolve_public_key(private_key_path=self.identity_private_key_path, public_key=self.identity_public_key)
 
     @property
     def card(self) -> AgentCard:
@@ -80,6 +90,11 @@ class NodeConfig:
                 "overlay_network": self.overlay_network,
                 "overlay_endpoint": self.overlay_endpoint,
                 "overlay_addresses": self.overlay_addresses,
+            },
+            identity={
+                "scheme": "ssh-ed25519" if self.resolved_identity_public_key and self.identity_principal else "",
+                "principal": self.identity_principal,
+                "public_key": self.resolved_identity_public_key,
             },
         )
 

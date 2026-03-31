@@ -12,6 +12,7 @@ from urllib import error, request
 
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.node import AgentCoinNode
+from agentcoin.security import sign_document_with_ssh
 
 
 def _free_port() -> int:
@@ -23,13 +24,18 @@ def _free_port() -> int:
 class NodeHarness:
     def __init__(self, *, node_id: str, token: str, db_path: str, capabilities: list[str], peers: list[PeerConfig] | None = None,
                  local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None,
-                 signing_secret: str | None = None, require_signed_inbox: bool = False) -> None:
+                 signing_secret: str | None = None, require_signed_inbox: bool = False,
+                 identity_principal: str | None = None, identity_private_key_path: str | None = None,
+                 identity_public_key: str | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
             auth_token=token,
             signing_secret=signing_secret,
             require_signed_inbox=require_signed_inbox,
+            identity_principal=identity_principal,
+            identity_private_key_path=identity_private_key_path,
+            identity_public_key=identity_public_key,
             host="127.0.0.1",
             port=self.port,
             database_path=db_path,
@@ -94,6 +100,15 @@ class NodeIntegrationTests(unittest.TestCase):
         (repo_path / "README.txt").write_text("hello\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.txt"], cwd=repo_path, check=True, capture_output=True, text=True)
         subprocess.run(["git", "commit", "-m", "init"], cwd=repo_path, check=True, capture_output=True, text=True)
+
+    def _generate_identity(self, key_path: Path, principal: str) -> tuple[str, str]:
+        subprocess.run(
+            ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", principal, "-f", str(key_path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return str(key_path), Path(f"{key_path}.pub").read_text(encoding="utf-8").strip()
 
     def test_outbox_delivery_ack_and_inbox_dedupe(self) -> None:
         node_b = NodeHarness(
@@ -206,6 +221,89 @@ class NodeIntegrationTests(unittest.TestCase):
                     },
                 },
             )
+            self.assertEqual(bad_status, 400)
+            self.assertIn("signature", bad_payload["error"])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_ssh_identity_signed_delivery_and_receipt_verification(self) -> None:
+        key_a, pub_a = self._generate_identity(Path(self.tempdir.name) / "id_a", "node-a")
+        key_b, pub_b = self._generate_identity(Path(self.tempdir.name) / "id_b", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-b.db"),
+            capabilities=["worker"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-a",
+                    name="Node A",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-a",
+                    identity_principal="node-a",
+                    identity_public_key=pub_a,
+                )
+            ],
+            require_signed_inbox=True,
+            identity_principal="node-b",
+            identity_private_key_path=key_b,
+            identity_public_key=pub_b,
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b,
+                )
+            ],
+            identity_principal="node-a",
+            identity_private_key_path=key_a,
+            identity_public_key=pub_a,
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.config.peers[0].url = node_a.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["status"], "ok")
+            self.assertTrue(sync_payload["items"][0]["identity_signed"])
+
+            self._post(
+                f"{node_a.base_url}/v1/tasks",
+                "token-a",
+                {"id": "ssh-deliver-1", "kind": "notify", "payload": {"x": 7}, "deliver_to": "node-b"},
+            )
+            flush_status, flushed = self._post(f"{node_a.base_url}/v1/outbox/flush", "token-a", {})
+            self.assertEqual(flush_status, 200)
+            self.assertEqual(flushed["flushed"], 1)
+
+            _, tasks = self._get(f"{node_b.base_url}/v1/tasks")
+            received = [item for item in tasks["items"] if item["id"] == "ssh-deliver-1"]
+            self.assertEqual(len(received), 1)
+            self.assertTrue(received[0]["payload"]["_verification"]["verified"])
+            self.assertEqual(received[0]["payload"]["_verification"]["principal"], "node-a")
+
+            tampered = sign_document_with_ssh(
+                {"id": "ssh-bad-1", "kind": "notify", "payload": {"x": 8}, "sender": "node-a"},
+                private_key_path=key_a,
+                principal="node-a",
+                namespace="agentcoin-task",
+                public_key=pub_a,
+            )
+            tampered["_identity_signature"]["value"] = tampered["_identity_signature"]["value"].replace("A", "B", 1)
+            bad_status, bad_payload = self._post(f"{node_b.base_url}/v1/inbox", "token-b", tampered)
             self.assertEqual(bad_status, 400)
             self.assertIn("signature", bad_payload["error"])
         finally:

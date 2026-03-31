@@ -8,6 +8,8 @@
   "auth_token": "change-me",
   "signing_secret": "replace-with-node-shared-secret",
   "require_signed_inbox": true,
+  "identity_principal": "agentcoin-local",
+  "identity_private_key_path": "./var/identity/id_ed25519",
   "database_path": "./var/agentcoin.db",
   "git_root": ".",
   "sync_interval_seconds": 15,
@@ -42,6 +44,8 @@
       "url": "http://100.64.0.2:8080",
       "auth_token": "peer-b-token",
       "signing_secret": "replace-with-peer-b-shared-secret",
+      "identity_principal": "agentcoin-peer-b",
+      "identity_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEPEERPUBLICKEY agentcoin-peer-b",
       "overlay_endpoint": "agentcoin-b.tailnet.internal:8080",
       "overlay_addresses": [
         "100.64.0.2"
