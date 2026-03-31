@@ -52,6 +52,8 @@ It also supports capability-card synchronization from configured peers. This all
 
 The task queue now includes lease-based locking primitives. Workers can atomically claim work, renew the lease while executing, and explicitly acknowledge completion or failure.
 
+The message queue layer now also requires explicit delivery acknowledgement. A receiver returns an ACK payload and the sender only marks the outbox item as delivered after validating that ACK. This separates `task completion` from `message delivery`.
+
 ## Coordination Direction
 
 The next coordination layer should be built on top of these primitives:

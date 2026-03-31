@@ -124,3 +124,9 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - `POST /v1/tasks/ack`
 
 これは複数 agent による task coordination の土台です。
+
+inter-node message delivery には explicit ACK も追加しました。
+
+- inbox は `message_id` で idempotent
+- receiver は `ack` を返す
+- outbox は有効な ACK を受けたときだけ delivered になります

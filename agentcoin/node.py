@@ -7,6 +7,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error, request
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.models import TaskEnvelope
@@ -186,9 +187,22 @@ class AgentCoinNode:
                             return
                         payload = self._read_json()
                         sender = str(payload.get("sender") or "peer")
-                        message_id = node.store.receive_inbox(sender, payload)
-                        node.store.add_task(TaskEnvelope.from_dict(payload))
-                        self._json_response(HTTPStatus.CREATED, {"message_id": message_id})
+                        message_id, duplicate = node.store.receive_inbox(sender, payload)
+                        if not duplicate:
+                            node.store.add_task(TaskEnvelope.from_dict(payload))
+                        ack_id = str(uuid4())
+                        node.store.save_delivery_receipt(ack_id, message_id, sender)
+                        self._json_response(
+                            HTTPStatus.CREATED,
+                            {
+                                "message_id": message_id,
+                                "duplicate": duplicate,
+                                "ack": {
+                                    "ack_id": ack_id,
+                                    "message_id": message_id,
+                                },
+                            },
+                        )
                         return
                     if self.path == "/v1/outbox/flush":
                         if not self._require_auth():
@@ -233,9 +247,12 @@ class AgentCoinNode:
                 with request.urlopen(req, timeout=5) as resp:
                     if resp.status >= 300:
                         raise ValueError(f"peer returned status {resp.status}")
+                    response_payload = json.loads(resp.read().decode("utf-8"))
+                if response_payload.get("ack", {}).get("message_id") != item["id"]:
+                    raise ValueError("missing or invalid message ack")
                 self.store.mark_outbox_delivered(item["id"])
                 delivered += 1
-            except (error.URLError, TimeoutError, ValueError) as exc:
+            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
                 self.store.mark_outbox_failed(item["id"], int(item["attempts"]) + 1, str(exc))
         return delivered
 

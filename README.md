@@ -139,6 +139,12 @@ The local task queue now supports lease-based coordination for multiple agents:
 
 This is the first queue-locking primitive for multi-agent execution.
 
+Inter-node delivery now also uses explicit message acknowledgements:
+
+- inbox writes are idempotent by `message_id`
+- the receiver returns an `ack` payload
+- outbox delivery is only marked successful after a valid ack comes back
+
 ## Status
 
 This repository is currently in the whitepaper and architecture-definition stage. The next implementation target is an MVP that can:

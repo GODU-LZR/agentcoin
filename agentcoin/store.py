@@ -46,6 +46,7 @@ class NodeStore:
                     id TEXT PRIMARY KEY,
                     sender TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
+                    acked INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS outbox (
@@ -59,6 +60,12 @@ class NodeStore:
                     last_error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS delivery_receipts (
+                    ack_id TEXT PRIMARY KEY,
+                    message_id TEXT NOT NULL,
+                    sender TEXT NOT NULL,
+                    created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS peer_cards (
                     peer_id TEXT PRIMARY KEY,
@@ -76,6 +83,7 @@ class NodeStore:
             self._ensure_column(conn, "tasks", "attempts", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "tasks", "result_json", "TEXT")
             self._ensure_column(conn, "tasks", "completed_at", "TEXT")
+            self._ensure_column(conn, "inbox", "acked", "INTEGER NOT NULL DEFAULT 0")
             conn.commit()
         finally:
             conn.close()
@@ -149,19 +157,21 @@ class NodeStore:
         finally:
             conn.close()
 
-    def receive_inbox(self, sender: str, payload: dict[str, Any]) -> str:
+    def receive_inbox(self, sender: str, payload: dict[str, Any]) -> tuple[str, bool]:
         message_id = str(payload.get("id") or f"inbox-{utc_now()}")
         conn = self._connect()
         try:
+            existing = conn.execute("SELECT id FROM inbox WHERE id = ?", (message_id,)).fetchone()
+            duplicate = existing is not None
             conn.execute(
                 """
-                INSERT OR REPLACE INTO inbox (id, sender, payload_json, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT OR REPLACE INTO inbox (id, sender, payload_json, acked, created_at)
+                VALUES (?, ?, ?, COALESCE((SELECT acked FROM inbox WHERE id = ?), 0), ?)
                 """,
-                (message_id, sender, json.dumps(payload, ensure_ascii=False), utc_now()),
+                (message_id, sender, json.dumps(payload, ensure_ascii=False), message_id, utc_now()),
             )
             conn.commit()
-            return message_id
+            return message_id, duplicate
         finally:
             conn.close()
 
@@ -209,6 +219,29 @@ class NodeStore:
         finally:
             conn.close()
 
+    def save_delivery_receipt(self, ack_id: str, message_id: str, sender: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO delivery_receipts (ack_id, message_id, sender, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (ack_id, message_id, sender, utc_now()),
+            )
+            conn.execute("UPDATE inbox SET acked = 1 WHERE id = ?", (message_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def has_delivery_receipt(self, ack_id: str) -> bool:
+        conn = self._connect()
+        try:
+            row = conn.execute("SELECT 1 FROM delivery_receipts WHERE ack_id = ?", (ack_id,)).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def mark_outbox_failed(self, message_id: str, attempts: int, error: str) -> None:
         delay_seconds = min(2 ** min(attempts, 6), 60)
         conn = self._connect()
@@ -233,8 +266,10 @@ class NodeStore:
             leased_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'leased'").fetchone()[0]
             completed_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE status = 'completed'").fetchone()[0]
             inbox_count = conn.execute("SELECT COUNT(*) FROM inbox").fetchone()[0]
+            inbox_acked = conn.execute("SELECT COUNT(*) FROM inbox WHERE acked = 1").fetchone()[0]
             outbox_pending = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'pending'").fetchone()[0]
             outbox_delivered = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'delivered'").fetchone()[0]
+            delivery_receipts = conn.execute("SELECT COUNT(*) FROM delivery_receipts").fetchone()[0]
             peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
             return {
                 "tasks": task_count,
@@ -242,8 +277,10 @@ class NodeStore:
                 "tasks_leased": leased_tasks,
                 "tasks_completed": completed_tasks,
                 "inbox": inbox_count,
+                "inbox_acked": inbox_acked,
                 "outbox_pending": outbox_pending,
                 "outbox_delivered": outbox_delivered,
+                "delivery_receipts": delivery_receipts,
                 "peer_cards": peer_cards,
             }
         finally:
