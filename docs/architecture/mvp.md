@@ -35,10 +35,13 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/peers`
 - `GET /v1/outbox`
 - `POST /v1/tasks`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+
+The node can now resolve `deliver_to` either as a full URL or as a configured `peer_id`. This is better suited for encrypted overlay networks because application code can target stable peer identities instead of embedding raw addresses everywhere.
 
 ## Next Milestones
 
@@ -47,4 +50,3 @@ If a task includes `deliver_to`, the node stores an outbox record and retries de
 3. Add encrypted local secrets and stricter outbound policy controls.
 4. Add pluggable protocol bridges for MCP, A2A, and custom agents.
 5. Add gossip sync and richer offline replay semantics.
-

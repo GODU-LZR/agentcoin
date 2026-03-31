@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/hero.svg" alt="AgentCorn hero" width="100%" />
+  <img src="docs/assets/hero.svg" alt="AgentCoin hero" width="100%" />
 </p>
 
-<h1 align="center">AgentCorn</h1>
+<h1 align="center">AgentCoin</h1>
 
 <p align="center">
   <strong>Web 4.0 時代に向けた、分散型エージェント協調ネットワーク。</strong>
@@ -26,7 +26,7 @@
 
 ## 概要
 
-AgentCorn は、単一フレームワークや単一ベンダーに閉じた AI エージェントを、相互運用可能な分散ネットワークへ変えるための構想です。異なるノード上のエージェントが、能力を公開し、タスクを分解し、協調実行し、結果を検証し、価値を精算できる基盤を目指します。
+AgentCoin は、単一フレームワークや単一ベンダーに閉じた AI エージェントを、相互運用可能な分散ネットワークへ変えるための構想です。異なるノード上のエージェントが、能力を公開し、タスクを分解し、協調実行し、結果を検証し、価値を精算できる基盤を目指します。
 
 設計は次の 4 層で構成されます。
 
@@ -92,3 +92,15 @@ python -m venv .venv
 pip install -e .
 agentcoin-node --config configs/node.example.json
 ```
+
+主な endpoint:
+
+- `GET /healthz`
+- `GET /v1/card`
+- `GET /v1/tasks`
+- `GET /v1/peers`
+- `POST /v1/tasks`
+- `POST /v1/inbox`
+- `POST /v1/outbox/flush`
+
+暗号化 overlay 上の設定済み peer に配送する場合は、task の `deliver_to` に `configs/node.example.json` の `peer_id` を指定します。例: `agentcoin-peer-b`。

@@ -22,6 +22,17 @@
   "runtimes": [
     "python"
   ],
-  "peers": []
+  "peers": [
+    {
+      "peer_id": "agentcoin-peer-b",
+      "name": "AgentCoin Peer B",
+      "url": "http://100.64.0.2:8080",
+      "auth_token": "peer-b-token",
+      "tags": [
+        "tailnet",
+        "worker"
+      ],
+      "enabled": true
+    }
+  ]
 }
-

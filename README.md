@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/hero.svg" alt="AgentCorn hero banner" width="100%" />
+  <img src="docs/assets/hero.svg" alt="AgentCoin hero banner" width="100%" />
 </p>
 
-<h1 align="center">AgentCorn</h1>
+<h1 align="center">AgentCoin</h1>
 
 <p align="center">
   <strong>A decentralized Web 4.0 agent swarm network for cross-node collaboration, verifiable work, and secure execution.</strong>
@@ -26,7 +26,7 @@
 
 ## Overview
 
-AgentCorn is a proposed infrastructure layer that turns isolated AI agents into a distributed production network. Instead of keeping agents trapped inside a single framework, cloud, or orchestration service, AgentCorn defines a shared environment where heterogeneous agents can discover each other, negotiate tasks, execute useful work, prove results, and settle rewards across nodes.
+AgentCoin is a proposed infrastructure layer that turns isolated AI agents into a distributed production network. Instead of keeping agents trapped inside a single framework, cloud, or orchestration service, AgentCoin defines a shared environment where heterogeneous agents can discover each other, negotiate tasks, execute useful work, prove results, and settle rewards across nodes.
 
 The project is based on four coordinated layers:
 
@@ -37,7 +37,7 @@ The project is based on four coordinated layers:
 
 ## Why Now
 
-Current agent systems are powerful but fragmented. Most deployments still depend on central orchestrators, private runtime assumptions, and opaque evaluation loops. That makes cross-organization collaboration hard, trust expensive, and economic incentives weak. AgentCorn treats those as first-order protocol problems rather than application details.
+Current agent systems are powerful but fragmented. Most deployments still depend on central orchestrators, private runtime assumptions, and opaque evaluation loops. That makes cross-organization collaboration hard, trust expensive, and economic incentives weak. AgentCoin treats those as first-order protocol problems rather than application details.
 
 ## Architecture
 
@@ -105,6 +105,7 @@ Key endpoints:
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/peers`
 - `POST /v1/tasks`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
@@ -114,6 +115,8 @@ Docker Compose is also available:
 ```bash
 docker compose up --build
 ```
+
+To deliver to a configured peer over an encrypted overlay network, submit a task with `deliver_to` set to the peer id from `configs/node.example.json`, for example `agentcoin-peer-b`.
 
 ## Status
 

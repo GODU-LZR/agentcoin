@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from agentcoin.models import AgentCard
+
+
+@dataclass(slots=True)
+class PeerConfig:
+    peer_id: str
+    name: str
+    url: str
+    auth_token: str | None = None
+    tags: list[str] = field(default_factory=list)
+    enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(slots=True)
@@ -24,7 +37,7 @@ class NodeConfig:
     )
     tags: list[str] = field(default_factory=lambda: ["reference", "cross-platform", "offline-first"])
     runtimes: list[str] = field(default_factory=lambda: ["python"])
-    peers: list[dict[str, Any]] = field(default_factory=list)
+    peers: list[PeerConfig] = field(default_factory=list)
 
     @property
     def base_url(self) -> str:
@@ -47,11 +60,20 @@ class NodeConfig:
             },
         )
 
+    def resolve_peer(self, peer_id: str) -> PeerConfig:
+        for peer in self.peers:
+            if peer.enabled and peer.peer_id == peer_id:
+                return peer
+        raise KeyError(peer_id)
+
+    def peers_view(self) -> list[dict[str, Any]]:
+        return [peer.to_dict() for peer in self.peers]
+
 
 def load_config(path: str | None) -> NodeConfig:
     if not path:
         return NodeConfig()
 
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    data["peers"] = [PeerConfig(**peer) for peer in data.get("peers", [])]
     return NodeConfig(**data)
-

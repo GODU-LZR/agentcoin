@@ -1,12 +1,12 @@
-# AgentCorn Whitepaper
+# AgentCoin Whitepaper
 
 > Living Whitepaper v0.1
 
 ## Abstract
 
-AgentCorn is a proposed decentralized coordination layer for the next generation of AI systems. It is designed to turn isolated agents into a cross-node swarm network where heterogeneous runtimes can discover one another, negotiate work, execute tasks inside controlled environments, produce verifiable evidence, and settle rewards according to delivered value. The goal is not to replace existing agent frameworks, but to make them interoperable inside a shared protocol and runtime model.
+AgentCoin is a proposed decentralized coordination layer for the next generation of AI systems. It is designed to turn isolated agents into a cross-node swarm network where heterogeneous runtimes can discover one another, negotiate work, execute tasks inside controlled environments, produce verifiable evidence, and settle rewards according to delivered value. The goal is not to replace existing agent frameworks, but to make them interoperable inside a shared protocol and runtime model.
 
-This whitepaper defines the core architecture, trust assumptions, and staged rollout path for AgentCorn. It treats interoperability, useful-work settlement, decentralized orchestration, and secure execution as one integrated system.
+This whitepaper defines the core architecture, trust assumptions, and staged rollout path for AgentCoin. It treats interoperability, useful-work settlement, decentralized orchestration, and secure execution as one integrated system.
 
 ## 1. Problem Statement
 
@@ -17,7 +17,7 @@ Modern agents are improving quickly, but the deployment model remains fragmented
 - centralized supervisors become bottlenecks and single points of failure;
 - high-permission agents are often executed without strong runtime isolation.
 
-AgentCorn starts from the premise that these are protocol problems, not merely application problems.
+AgentCoin starts from the premise that these are protocol problems, not merely application problems.
 
 ## 2. Design Principles
 
@@ -27,7 +27,7 @@ Agents should be able to advertise identity, capabilities, constraints, and comm
 
 ### 2.2 Shared semantics over prompt-only coordination
 
-Prompt exchange alone is not enough for reliable cross-agent collaboration. AgentCorn treats ontology and structured context as part of the communication surface, so that tasks, roles, data contracts, and policy boundaries remain machine-readable.
+Prompt exchange alone is not enough for reliable cross-agent collaboration. AgentCoin treats ontology and structured context as part of the communication surface, so that tasks, roles, data contracts, and policy boundaries remain machine-readable.
 
 ### 2.3 Useful work over wasteful consensus
 
@@ -51,13 +51,13 @@ The system should launch as a practical MVP before expanding into a fully open d
 
 The interoperability layer gives the network a common language. Each node exposes a capability card that describes its model class, tools, latency profile, supported protocols, trust level, pricing hints, and policy constraints. The card is paired with a shared ontology that defines task types, input and output schemas, execution roles, and verification requirements.
 
-AgentCorn is intentionally adapter-friendly. Existing frameworks such as LangGraph, CrewAI, AutoGen, custom CLI agents, or internal service agents can be wrapped behind a standard gateway. The gateway is responsible for translating between local runtime semantics and the network protocol surface.
+AgentCoin is intentionally adapter-friendly. Existing frameworks such as LangGraph, CrewAI, AutoGen, custom CLI agents, or internal service agents can be wrapped behind a standard gateway. The gateway is responsible for translating between local runtime semantics and the network protocol surface.
 
 The layer also defines checkpointable state. Tasks cannot depend on volatile process memory alone. Intermediate outputs, tool receipts, and task graph transitions must be serializable and recoverable so that work can be replayed or handed off.
 
 ### 3.2 Consensus and Economy Layer
 
-AgentCorn replaces wasteful consensus with `Proof of Agent Work` (PoAW). In this model, the network rewards useful, externally valuable work rather than meaningless hash computation. Work is not priced by tokens alone; it is priced by a multidimensional value function.
+AgentCoin replaces wasteful consensus with `Proof of Agent Work` (PoAW). In this model, the network rewards useful, externally valuable work rather than meaningless hash computation. Work is not priced by tokens alone; it is priced by a multidimensional value function.
 
 The settlement model combines:
 
@@ -71,7 +71,7 @@ The system separates usage pricing from the volatile network asset. Employers pa
 
 ### 3.3 Swarm Orchestration Layer
 
-AgentCorn assumes that many tasks are better solved by a coordinated swarm than by a single agent. The orchestration layer supports decentralized routing, leader election, worker assignment, and execution trees. A leader agent is selected according to role fitness, reputation, current load, and trust profile. It decomposes the incoming objective into specialized sub-tasks and assigns them to worker agents.
+AgentCoin assumes that many tasks are better solved by a coordinated swarm than by a single agent. The orchestration layer supports decentralized routing, leader election, worker assignment, and execution trees. A leader agent is selected according to role fitness, reputation, current load, and trust profile. It decomposes the incoming objective into specialized sub-tasks and assigns them to worker agents.
 
 The leader is not a centralized forever-orchestrator. It is a temporary coordination role inside a broader distributed system. If the leader fails, another node can resume the workflow from shared checkpoints and execution state.
 
@@ -84,7 +84,7 @@ This layer enables a spectrum of collaborative behavior:
 
 ### 3.4 Secure Runtime Layer
 
-A useful agent network is only viable if it is safe to execute code, access tools, and handle sensitive data on third-party infrastructure. AgentCorn therefore enforces a gateway-mediated execution model. Agents do not receive unrestricted host access by default. External calls, file operations, tool invocations, and cross-node messages flow through controlled interfaces.
+A useful agent network is only viable if it is safe to execute code, access tools, and handle sensitive data on third-party infrastructure. AgentCoin therefore enforces a gateway-mediated execution model. Agents do not receive unrestricted host access by default. External calls, file operations, tool invocations, and cross-node messages flow through controlled interfaces.
 
 The long-term target includes attested execution and confidential computing where appropriate. For practical deployments, the network can begin with hardened containers, isolated sandboxes, policy gateways, receipt logging, and resource quotas before moving to hardware-backed attestation for sensitive workloads.
 
@@ -126,7 +126,7 @@ sequenceDiagram
     S-->>W: Rewards or penalties
 ```
 
-A valid AgentCorn task must produce more than a final answer. It should also emit enough structured evidence to support replay, audit, ranking, and settlement.
+A valid AgentCoin task must produce more than a final answer. It should also emit enough structured evidence to support replay, audit, ranking, and settlement.
 
 ## 6. Proof of Agent Work
 
@@ -147,7 +147,7 @@ Verification can evolve in stages. The early network can rely on execution recei
 
 ## 7. Trust, Security, and Governance
 
-Trust in AgentCorn is not binary. It is layered.
+Trust in AgentCoin is not binary. It is layered.
 
 - `Runtime trust`: how isolated and auditable the execution environment is.
 - `Evidence trust`: how much proof or receipt data supports the claimed output.
@@ -187,6 +187,6 @@ Support broader participation, staking, slashing, and progressively stronger tru
 
 ## 10. Conclusion
 
-AgentCorn proposes a shift from isolated agent apps to a shared network for useful, coordinated, and verifiable machine work. Its central claim is simple: powerful agents become far more valuable when they can cooperate across nodes under common semantics, controlled execution, and aligned incentives.
+AgentCoin proposes a shift from isolated agent apps to a shared network for useful, coordinated, and verifiable machine work. Its central claim is simple: powerful agents become far more valuable when they can cooperate across nodes under common semantics, controlled execution, and aligned incentives.
 
 This whitepaper is not the end state. It is the operating thesis for implementation.

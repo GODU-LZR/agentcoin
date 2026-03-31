@@ -3,13 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib import error, request
 from urllib.parse import urlparse
 
-from agentcoin.config import NodeConfig
+from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.models import TaskEnvelope
 from agentcoin.store import NodeStore
 
@@ -23,6 +22,21 @@ class AgentCoinNode:
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
+
+    def _resolve_delivery(self, target: str) -> tuple[str, str | None, str]:
+        parsed = urlparse(target)
+        if parsed.scheme in {"http", "https"}:
+            return target, self.config.auth_token, "url"
+
+        peer = self.config.resolve_peer(target)
+        return f"{peer.url.rstrip('/')}/v1/inbox", peer.auth_token, peer.peer_id
+
+    @staticmethod
+    def _sanitize_peer(peer: PeerConfig) -> dict:
+        payload = peer.to_dict()
+        if payload.get("auth_token"):
+            payload["auth_token"] = "***"
+        return payload
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
@@ -76,6 +90,12 @@ class AgentCoinNode:
                 if self.path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
+                if self.path == "/v1/peers":
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": [node._sanitize_peer(peer) for peer in node.config.peers]},
+                    )
+                    return
                 if self.path == "/v1/outbox":
                     self._json_response(HTTPStatus.OK, {"items": node.store.get_pending_outbox()})
                     return
@@ -90,7 +110,11 @@ class AgentCoinNode:
                         task = TaskEnvelope.from_dict(payload)
                         node.store.add_task(task)
                         if task.deliver_to:
-                            node.store.queue_outbox(task.id, task.deliver_to, node.config.auth_token, task.to_dict())
+                            target_url, auth_token, target_ref = node._resolve_delivery(task.deliver_to)
+                            task.payload.setdefault("_delivery", {})
+                            task.payload["_delivery"].update({"target_ref": target_ref})
+                            node.store.add_task(task)
+                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict())
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
                     if self.path == "/v1/inbox":

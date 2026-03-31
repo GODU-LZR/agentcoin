@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/hero.svg" alt="AgentCorn 封面图" width="100%" />
+  <img src="docs/assets/hero.svg" alt="AgentCoin 封面图" width="100%" />
 </p>
 
-<h1 align="center">AgentCorn</h1>
+<h1 align="center">AgentCoin</h1>
 
 <p align="center">
   <strong>一个面向 Web 4.0 的去中心化智能体协作网络，用于跨节点协作、可验证工作量结算与安全执行。</strong>
@@ -26,7 +26,7 @@
 
 ## 项目概览
 
-AgentCorn 试图把分散在不同框架、不同组织和不同节点中的智能体，组织成一个可互操作、可组队、可验证、可结算的生产网络。它不是单一 Agent 框架，而是一层让异构 Agent 能互联协作的协议与运行基础设施。
+AgentCoin 试图把分散在不同框架、不同组织和不同节点中的智能体，组织成一个可互操作、可组队、可验证、可结算的生产网络。它不是单一 Agent 框架，而是一层让异构 Agent 能互联协作的协议与运行基础设施。
 
 项目采用四层架构：
 
@@ -111,9 +111,12 @@ docker compose up --build
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/tasks`
+- `GET /v1/peers`
 - `POST /v1/tasks`
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
+
+如果要通过加密覆盖网络把任务投递给配置好的节点，可以在提交任务时把 `deliver_to` 设置为 `configs/node.example.json` 里的 `peer_id`，例如 `agentcoin-peer-b`。
 
 ## 通信方向
 
