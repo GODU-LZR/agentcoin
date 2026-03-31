@@ -6,6 +6,8 @@
   "port": 8080,
   "advertise_url": "http://100.64.0.1:8080",
   "auth_token": "change-me",
+  "signing_secret": "replace-with-node-shared-secret",
+  "require_signed_inbox": true,
   "database_path": "./var/agentcoin.db",
   "git_root": ".",
   "sync_interval_seconds": 15,
@@ -39,6 +41,7 @@
       "name": "AgentCoin Peer B",
       "url": "http://100.64.0.2:8080",
       "auth_token": "peer-b-token",
+      "signing_secret": "replace-with-peer-b-shared-secret",
       "overlay_endpoint": "agentcoin-b.tailnet.internal:8080",
       "overlay_addresses": [
         "100.64.0.2"

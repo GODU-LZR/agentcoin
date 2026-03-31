@@ -96,6 +96,7 @@ flowchart TB
 - `轻量化`：本地运行不依赖额外框架。
 - `离线优先`：基于 SQLite 持久化任务、inbox、outbox。
 - `默认安全`：默认仅绑定 `127.0.0.1`，写接口要求 Bearer Token。
+- `签名传输`：capability card 和 task envelope 现在可以带 `HMAC` 签名，供 peer 验签。
 - `兼容多 Agent`：通过通用任务信封和能力名片接口接入不同 Agent。
 
 ### 快速启动
@@ -193,6 +194,13 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - 接收端返回 `ack`
 - outbox 只有收到有效 ACK 才会标记为成功送达
 
+参考节点现在也支持一版务实的签名身份校验：
+
+- `GET /v1/card` 可以返回带 `HMAC` 签名的 capability card
+- 配置了 `signing_secret` 后，发往远端的 task envelope 会自动签名
+- 当 `require_signed_inbox=true` 时，inbox 可以强制要求合法 peer 签名
+- `peer sync` 在缓存远端 capability card 之前会先校验签名
+
 现在也开始正式处理弱网和异常情况：
 
 - outbox 会在 `pending -> retrying` 之间按指数退避重试
@@ -264,7 +272,7 @@ agentcoin-worker \
 
 ## 测试状态
 
-当前仓库已经带有自动化 `unittest` 测试和跨平台 GitHub Actions CI，覆盖了任务重试、死信、消息 ACK、工作流 merge/finalize 和弱网 fallback 等核心路径。
+当前仓库已经带有自动化 `unittest` 测试和跨平台 GitHub Actions CI，覆盖了任务重试、死信、消息 ACK、签名验签、工作流 merge/finalize 和弱网 fallback 等核心路径。
 
 ## 开源协议
 

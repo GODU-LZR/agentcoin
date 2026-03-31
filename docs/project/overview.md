@@ -76,6 +76,8 @@ Configuration defines:
 
 - node identity and bind settings
 - auth token
+- HMAC signing secret
+- inbound signature requirement
 - persistence path
 - peer definitions
 - overlay metadata
@@ -184,12 +186,14 @@ Current baseline:
 
 - binds to `127.0.0.1` by default
 - protects write APIs with bearer token when configured
+- supports HMAC-signed capability cards and task envelopes
+- can require signed inbox delivery from configured peers
 - avoids mandatory external runtime dependencies
 - treats transport and execution failure as separate accountability domains
 
 Still missing for later milestones:
 
-- request signing
+- public-key request signing
 - stronger peer identity verification
 - encrypted secret storage
 - richer ACL and outbound policy
@@ -253,10 +257,10 @@ Recommended medium-term direction:
 
 ## Current Limitations
 
-- no cryptographic signing yet
+- no public-key signing or key rotation yet
 - no plugin adapter system yet
 - worker execution is still a skeleton
-- no full review policy or branch protection engine yet
+- review policy and branch protection are still MVP-grade rather than production-grade
 - no production-grade authN/authZ model yet
 
 ## Current Verification
@@ -271,11 +275,11 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 
 ## Near-Term Roadmap
 
-1. Review gate and branch protection
-2. Signed envelopes and stronger peer identity
-3. Automated tests and CI
-4. MCP / A2A / custom runtime adapters
-5. More structured workflow governance
+1. Upgrade HMAC signatures to stronger asymmetric identity and key rotation
+2. Add MCP / A2A / custom runtime adapters
+3. Expand workflow governance, rejection handling, and policy controls
+4. Harden authN/authZ, secret handling, and outbound ACLs
+5. Add PoAW, reputation, and settlement scaffolding
 
 ## Document Map
 

@@ -12,6 +12,7 @@ from uuid import uuid4
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope
+from agentcoin.security import SignatureError, sign_document, verify_document
 from agentcoin.store import NodeStore
 
 LOG = logging.getLogger("agentcoin.node")
@@ -39,7 +40,38 @@ class AgentCoinNode:
         payload = peer.to_dict()
         if payload.get("auth_token"):
             payload["auth_token"] = "***"
+        if payload.get("signing_secret"):
+            payload["signing_secret"] = "***"
         return payload
+
+    def _sign_document(self, document: dict, scope: str) -> dict:
+        if not self.config.signing_secret:
+            return dict(document)
+        return sign_document(document, secret=self.config.signing_secret, key_id=self.config.node_id, scope=scope)
+
+    def _verify_peer_card(self, peer: PeerConfig, card: dict) -> dict | None:
+        if not peer.signing_secret:
+            return None
+        return verify_document(card, secret=peer.signing_secret, expected_scope="agent-card", expected_key_id=peer.peer_id)
+
+    def _verify_inbox_document(self, payload: dict) -> dict | None:
+        sender = str(payload.get("sender") or "").strip()
+        shared_secret = None
+        expected_key_id = None
+        if sender:
+            try:
+                peer = self.config.resolve_peer(sender)
+                shared_secret = peer.signing_secret
+                expected_key_id = peer.peer_id
+            except KeyError:
+                shared_secret = None
+
+        requires_signature = self.config.require_signed_inbox or bool(shared_secret) or "_signature" in payload
+        if not requires_signature:
+            return None
+        if not shared_secret:
+            raise SignatureError("no shared signing secret configured for sender")
+        return verify_document(payload, secret=shared_secret, expected_scope="task-envelope", expected_key_id=expected_key_id)
 
     def sync_peer_cards(self) -> list[dict]:
         synced: list[dict] = []
@@ -53,9 +85,10 @@ class AgentCoinNode:
                     if resp.status >= 300:
                         raise ValueError(f"peer returned status {resp.status}")
                     card = json.loads(resp.read().decode("utf-8"))
+                verification = self._verify_peer_card(peer, card)
                 self.store.save_peer_card(peer.peer_id, source_url, card)
-                synced.append({"peer_id": peer.peer_id, "status": "ok"})
-            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+                synced.append({"peer_id": peer.peer_id, "status": "ok", "signed": bool(verification)})
+            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError, SignatureError) as exc:
                 synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc)})
         return synced
 
@@ -164,7 +197,7 @@ class AgentCoinNode:
                     )
                     return
                 if path == "/v1/card":
-                    self._json_response(HTTPStatus.OK, node.config.card.to_dict())
+                    self._json_response(HTTPStatus.OK, node._sign_document(node.config.card.to_dict(), scope="agent-card"))
                     return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
@@ -219,6 +252,8 @@ class AgentCoinNode:
                             return
                         payload = self._read_json()
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
+                        if task.sender == "local":
+                            task.sender = node.config.node_id
                         if bool(payload.get("attach_git_context")):
                             base_ref = str(payload.get("git_base_ref") or "HEAD")
                             target_ref = payload.get("git_target_ref")
@@ -229,7 +264,8 @@ class AgentCoinNode:
                             task.payload.setdefault("_delivery", {})
                             task.payload["_delivery"].update({"target_ref": target_ref})
                             node.store.add_task(task)
-                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict(), task_id=task.id)
+                            outbound = node._sign_document(task.to_dict(), scope="task-envelope")
+                            node.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
                         return
                     if self.path == "/v1/workflows/fanout":
@@ -306,7 +342,8 @@ class AgentCoinNode:
                             return
                         payload = self._read_json()
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
-                        task.sender = task.sender or node.config.node_id
+                        if task.sender == "local":
+                            task.sender = node.config.node_id
                         prefer_local = bool(payload.get("prefer_local"))
                         target = None
                         if task.deliver_to:
@@ -327,7 +364,8 @@ class AgentCoinNode:
                             task.payload.setdefault("_delivery", {})
                             task.payload["_delivery"].update({"target_ref": target_ref, "dispatch_mode": "planner"})
                             node.store.add_task(task)
-                            node.store.queue_outbox(task.id, target_url, auth_token, task.to_dict(), task_id=task.id)
+                            outbound = node._sign_document(task.to_dict(), scope="task-envelope")
+                            node.store.queue_outbox(task.id, target_url, auth_token, outbound, task_id=task.id)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
                         return
                     if self.path == "/v1/tasks/claim":
@@ -418,12 +456,16 @@ class AgentCoinNode:
                             return
                         payload = self._read_json()
                         sender = str(payload.get("sender") or "peer")
+                        verification = node._verify_inbox_document(payload)
                         message_id, duplicate = node.store.receive_inbox(sender, payload)
                         if not duplicate:
                             local_payload = dict(payload)
                             local_payload["deliver_to"] = None
                             local_payload["delivery_status"] = "local"
                             local_payload["last_error"] = None
+                            if verification:
+                                local_payload.setdefault("payload", {})
+                                local_payload["payload"]["_verification"] = verification
                             node.store.add_task(node._normalize_task(TaskEnvelope.from_dict(local_payload), node.config))
                         ack_id = str(uuid4())
                         node.store.save_delivery_receipt(ack_id, message_id, sender)
@@ -436,6 +478,7 @@ class AgentCoinNode:
                                     "ack_id": ack_id,
                                     "message_id": message_id,
                                 },
+                                "verified": bool(verification),
                             },
                         )
                         return
@@ -463,6 +506,8 @@ class AgentCoinNode:
                         return
                     self._json_response(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 except ValueError as exc:
+                    self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                except SignatureError as exc:
                     self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 except json.JSONDecodeError:
                     self._json_response(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})

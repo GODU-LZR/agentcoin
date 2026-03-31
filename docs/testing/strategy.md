@@ -13,6 +13,7 @@ The current test scope covers:
 - peer-card synchronization
 - durable outbox and inbox delivery
 - explicit message ACK validation
+- signed peer-card sync and inbox signature verification
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior
@@ -63,6 +64,7 @@ Manual validation is still used for exploratory and design-phase scenarios that 
 The following behaviors are now covered either by automated tests or previously repeated manual verification:
 
 - peer card sync and peer-id based delivery
+- signed card verification and signed inbox acceptance / rejection
 - lease queue prevents duplicate claim by multiple workers
 - inbox dedupe and explicit delivery ACK
 - planner dispatch to matching peer capability

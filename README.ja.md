@@ -89,6 +89,7 @@ flowchart TB
 - `軽量`: 追加ランタイム依存を極力排除
 - `オフライン優先`: SQLite による task / inbox / outbox 永続化
 - `安全寄りの初期設定`: デフォルトで `127.0.0.1` に bind し、書き込み系 API は Bearer Token 保護
+- `署名付き transport`: capability card と task envelope に `HMAC` 署名を付けて peer 検証できます
 - `多様な Agent との互換性`: 汎用 task envelope と capability card を採用
 
 ### Quick Start
@@ -179,6 +180,13 @@ inter-node message delivery には explicit ACK も追加しました。
 - receiver は `ack` を返す
 - outbox は有効な ACK を受けたときだけ delivered になります
 
+pragmatic な署名付き identity check も追加しています。
+
+- `GET /v1/card` は `HMAC` 署名付き capability card を返せます
+- `signing_secret` が設定されていると remote task envelope を自動署名します
+- `require_signed_inbox=true` で inbox 側に peer 署名必須を強制できます
+- `peer sync` は capability card を保存する前に peer secret で署名検証します
+
 弱いネットワークや失敗時の扱いも追加しました。
 
 - outbox は `pending -> retrying` と指数バックオフで再送
@@ -239,7 +247,7 @@ protected merge もサポートしました。
 
 ## Test Status
 
-現在のリポジトリには、自動 `unittest` とクロスプラットフォーム GitHub Actions CI が含まれており、retry, dead-letter, delivery ACK, workflow merge/finalize, 弱ネットワーク fallback を検証します。
+現在のリポジトリには、自動 `unittest` とクロスプラットフォーム GitHub Actions CI が含まれており、retry, dead-letter, delivery ACK, 署名検証, workflow merge/finalize, 弱ネットワーク fallback を検証します。
 
 ## License
 

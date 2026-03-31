@@ -54,6 +54,7 @@ The blueprint calls for gateway-mediated, controlled execution. The repository i
 
 - loopback bind by default
 - bearer-token protected write endpoints
+- HMAC-signed capability cards and task envelopes
 - durable audit-friendly queue state
 - transport and execution failure separation
 
@@ -103,7 +104,7 @@ The blueprint explicitly mentions:
 - stronger isolation guarantees
 - cryptographic receipts
 
-The current implementation has only the software-side baseline. There is no TEE integration, no attestation, and no cryptographic work receipts yet.
+The current implementation now has a pragmatic HMAC-signed identity MVP, but it is still far from the blueprint's stronger target. There is no TEE integration, no attestation, no asymmetric identity layer, and no cryptographic work receipts yet.
 
 ### 5. Protocol compatibility is still adapter-ready, not standards-complete
 
@@ -126,7 +127,7 @@ This is the correct direction for an MVP, but it means the repository currently 
 If the goal is to converge back toward the original blueprint, the most important remaining work is:
 
 1. JSON-LD / ontology-backed capability and task semantics
-2. signed identity and envelope verification
+2. stronger signed identity and envelope verification beyond the current HMAC MVP
 3. PoAW scoring and settlement pipeline
 4. stronger execution isolation and attestation
 5. MCP / A2A bridge adapters
@@ -134,7 +135,7 @@ If the goal is to converge back toward the original blueprint, the most importan
 ## Recommended Next Completion Path
 
 1. finish Git-native review and approval policy
-2. add signed envelopes and peer identity
+2. upgrade signed envelopes and peer identity from shared-secret HMAC to stronger asymmetric trust
 3. add protocol bridge layer for MCP / A2A-style agents
 4. add semantic capability schema
 5. then implement PoAW and settlement

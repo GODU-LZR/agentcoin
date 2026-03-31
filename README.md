@@ -96,6 +96,7 @@ The repository now includes a minimal cross-platform reference node built with P
 - `Lightweight`: no third-party runtime dependencies are required for the local node.
 - `Offline-first`: uses SQLite-backed local task, inbox, and outbox persistence.
 - `Secure-by-default`: binds to `127.0.0.1` and protects write endpoints with a bearer token.
+- `Signed transport`: capability cards and task envelopes can carry HMAC signatures for peer verification.
 - `Agent-friendly`: exposes generic task envelopes and capability-card endpoints that can front different agent runtimes.
 
 ### Quick Start
@@ -193,6 +194,13 @@ Inter-node delivery now also uses explicit message acknowledgements:
 - the receiver returns an `ack` payload
 - outbox delivery is only marked successful after a valid ack comes back
 
+The node now also supports pragmatic signed identity checks:
+
+- `GET /v1/card` can return an HMAC-signed capability card
+- outbound remote task envelopes are signed when `signing_secret` is configured
+- inbox delivery can require a valid peer signature with `require_signed_inbox=true`
+- synchronized peer cards are verified against the configured peer secret before being cached
+
 Weak-network handling is now more explicit too:
 
 - outbox entries move from `pending` to `retrying` with exponential backoff
@@ -266,7 +274,8 @@ Current implementation status:
 - whitepaper and language landing pages are in place;
 - a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, handle dead-letter lanes, and track Git-like workflow convergence;
 - automated `unittest` coverage and cross-platform GitHub Actions CI are in place for the current MVP surface;
-- peer routing, execution adapters, and cryptographic verification are not implemented yet.
+- peer routing, Git-native review policy, and HMAC-signed peer verification are implemented in the MVP;
+- ontology, public-key identity, attestation, protocol bridges, and PoAW settlement are not implemented yet.
 
 ## Connectivity Direction
 

@@ -22,11 +22,14 @@ def _free_port() -> int:
 
 class NodeHarness:
     def __init__(self, *, node_id: str, token: str, db_path: str, capabilities: list[str], peers: list[PeerConfig] | None = None,
-                 local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None) -> None:
+                 local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None,
+                 signing_secret: str | None = None, require_signed_inbox: bool = False) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
             auth_token=token,
+            signing_secret=signing_secret,
+            require_signed_inbox=require_signed_inbox,
             host="127.0.0.1",
             port=self.port,
             database_path=db_path,
@@ -124,6 +127,87 @@ class NodeIntegrationTests(unittest.TestCase):
             _, tasks_after = self._get(f"{node_b.base_url}/v1/tasks")
             received_after = [item for item in tasks_after["items"] if item["id"] == "deliver-1"]
             self.assertEqual(len(received_after), 1)
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_signed_peer_sync_and_signed_inbox_verification(self) -> None:
+        shared_a = "node-a-shared-secret"
+        shared_b = "node-b-shared-secret"
+        peer_for_a = PeerConfig(
+            peer_id="node-b",
+            name="Node B",
+            url="http://127.0.0.1:1",
+            auth_token="token-b",
+            signing_secret=shared_b,
+        )
+        peer_for_b = PeerConfig(
+            peer_id="node-a",
+            name="Node A",
+            url="http://127.0.0.1:1",
+            auth_token="token-a",
+            signing_secret=shared_a,
+        )
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "signed-b.db"),
+            capabilities=["worker"],
+            peers=[peer_for_b],
+            signing_secret=shared_b,
+            require_signed_inbox=True,
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "signed-a.db"),
+            capabilities=["planner"],
+            peers=[peer_for_a],
+            signing_secret=shared_a,
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.config.peers[0].url = node_a.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["status"], "ok")
+            self.assertTrue(sync_payload["items"][0]["signed"])
+
+            self._post(
+                f"{node_a.base_url}/v1/tasks",
+                "token-a",
+                {"id": "signed-deliver-1", "kind": "notify", "payload": {"x": 2}, "deliver_to": "node-b"},
+            )
+            _, flushed = self._post(f"{node_a.base_url}/v1/outbox/flush", "token-a", {})
+            self.assertEqual(flushed["flushed"], 1)
+
+            _, tasks = self._get(f"{node_b.base_url}/v1/tasks")
+            received = [item for item in tasks["items"] if item["id"] == "signed-deliver-1"]
+            self.assertEqual(len(received), 1)
+            self.assertTrue(received[0]["payload"]["_verification"]["verified"])
+            self.assertEqual(received[0]["payload"]["_verification"]["key_id"], "node-a")
+
+            bad_status, bad_payload = self._post(
+                f"{node_b.base_url}/v1/inbox",
+                "token-b",
+                {
+                    "id": "unsigned-deliver-1",
+                    "kind": "notify",
+                    "payload": {"x": 3},
+                    "sender": "node-a",
+                    "_signature": {
+                        "alg": "hmac-sha256",
+                        "key_id": "node-a",
+                        "scope": "task-envelope",
+                        "signed_at": "2026-01-01T00:00:00Z",
+                        "value": "deadbeef",
+                    },
+                },
+            )
+            self.assertEqual(bad_status, 400)
+            self.assertIn("signature", bad_payload["error"])
         finally:
             node_a.stop()
             node_b.stop()

@@ -14,6 +14,7 @@ class PeerConfig:
     name: str
     url: str
     auth_token: str | None = None
+    signing_secret: str | None = None
     overlay_endpoint: str | None = None
     overlay_addresses: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
@@ -32,6 +33,8 @@ class NodeConfig:
     port: int = 8080
     advertise_url: str | None = None
     auth_token: str = "change-me"
+    signing_secret: str | None = None
+    require_signed_inbox: bool = False
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
     sync_interval_seconds: int = 15

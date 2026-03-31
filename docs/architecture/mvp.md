@@ -22,6 +22,13 @@ Tasks, inbound messages, and outbound deliveries are stored in SQLite. This give
 
 All write endpoints require a bearer token when `auth_token` is set. The default bind address is `127.0.0.1`, which keeps the node local until the operator explicitly opens it to a network.
 
+The MVP now also supports pragmatic signed identity checks:
+
+- capability cards can be returned with a node-level HMAC signature
+- remote task envelopes can be HMAC-signed before entering the outbox
+- inbox delivery can require a valid sender signature
+- peer-card sync can verify a peer signature before caching the card
+
 ### Agent compatibility through envelopes
 
 The node does not assume a specific agent runtime. It accepts generic task envelopes and capability cards so different agent systems can be adapted behind the same interface.
@@ -159,7 +166,7 @@ The next coordination layer should be built on top of these primitives:
 
 ## Next Milestones
 
-1. Add peer registry and signed capability cards.
+1. Replace the current HMAC MVP with public-key identity, rotation, and stronger peer trust semantics.
 2. Add task state transitions and worker execution adapters.
 3. Add encrypted local secrets and stricter outbound policy controls.
 4. Add pluggable protocol bridges for MCP, A2A, and custom agents.
