@@ -169,6 +169,7 @@ Still missing for later milestones:
 - encrypted secret storage
 - richer ACL and outbound policy
 - attestation and verifiable execution proofs
+- broader CI and release automation
 
 ## API Groups
 
@@ -228,11 +229,20 @@ Recommended medium-term direction:
 ## Current Limitations
 
 - no cryptographic signing yet
-- no automated test suite yet
 - no plugin adapter system yet
 - worker execution is still a skeleton
 - no full review policy or branch protection engine yet
 - no production-grade authN/authZ model yet
+
+## Current Verification
+
+The repository now includes:
+
+- `unittest`-based store tests
+- `unittest`-based in-process node integration tests
+- GitHub Actions CI for macOS, Linux, and Windows
+
+The current automated coverage focuses on the stable MVP paths rather than exhaustive protocol coverage.
 
 ## Near-Term Roadmap
 

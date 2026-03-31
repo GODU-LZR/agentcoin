@@ -108,6 +108,14 @@ pip install -e .
 agentcoin-node --config configs/node.example.json
 ```
 
+自動テスト:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unittest` を実行します。
+
 主な endpoint:
 
 - `GET /healthz`
@@ -205,6 +213,10 @@ workflow の収束フェーズも追加しました。
 - `GET /v1/workflows/summary?workflow_id=...` で branch, role, status, ready, blocked, leaf task を要約表示
 - `POST /v1/workflows/finalize` で open task がなくなった workflow の終端状態を永続化
 - planner が `fanout` を実行すると親 task は自動で completed になり、root が queued のまま残りません
+
+## Test Status
+
+現在のリポジトリには、自動 `unittest` とクロスプラットフォーム GitHub Actions CI が含まれており、retry, dead-letter, delivery ACK, workflow merge/finalize, 弱ネットワーク fallback を検証します。
 
 ## License
 

@@ -147,6 +147,14 @@ Docker Compose is also available:
 docker compose up --build
 ```
 
+Automated tests can be run with:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+GitHub Actions CI now runs syntax checks and the `unittest` suite on macOS, Linux, and Windows.
+
 To deliver to a configured peer over an encrypted overlay network, submit a task with `deliver_to` set to the peer id from `configs/node.example.json`, for example `agentcoin-peer-b`.
 
 The node can also fetch and cache remote capability cards:
@@ -234,6 +242,7 @@ Current implementation status:
 
 - whitepaper and language landing pages are in place;
 - a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, handle dead-letter lanes, and track Git-like workflow convergence;
+- automated `unittest` coverage and cross-platform GitHub Actions CI are in place for the current MVP surface;
 - peer routing, execution adapters, and cryptographic verification are not implemented yet.
 
 ## Connectivity Direction

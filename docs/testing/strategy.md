@@ -19,14 +19,16 @@ The current test scope covers:
 
 ## What Exists Today
 
-The repository does not yet contain an automated unit or integration test suite.
+The repository now contains an initial automated test suite using Python `unittest`.
 
-Validation has been done by:
+Current automated checks include:
 
-- `python -m py_compile` on runtime modules
-- local loopback multi-node simulations
-- manual endpoint verification using Python scripts and HTTP requests
-- failure-path validation with unreachable peers
+- store-level lifecycle tests
+- in-process node integration tests
+- `python -m py_compile` syntax checks
+- GitHub Actions CI on macOS, Linux, and Windows
+
+Manual validation is still used for exploratory and design-phase scenarios that are not yet encoded as stable tests.
 
 ## Minimum Verification Matrix
 
@@ -55,7 +57,7 @@ Validation has been done by:
 
 ## Verified Behaviors
 
-The following behaviors have already been manually verified in this repository history:
+The following behaviors are now covered either by automated tests or previously repeated manual verification:
 
 - peer card sync and peer-id based delivery
 - lease queue prevents duplicate claim by multiple workers
@@ -190,8 +192,8 @@ The MVP should not be considered stable until:
 
 ## Next Testing Milestones
 
-1. Add `unittest`-based store and node tests
-2. Add in-process multi-node integration tests
-3. Add GitHub Actions CI
-4. Add Docker smoke tests
-5. Add cross-platform verification notes
+1. Expand edge-case coverage for lease renewal and replay APIs
+2. Add Docker smoke tests
+3. Add GitHub Actions artifact capture for failing integration runs
+4. Add cross-platform verification notes
+5. Add performance and weak-network stress tests

@@ -121,6 +121,14 @@ agentcoin-node --config configs/node.example.json
 docker compose up --build
 ```
 
+自动化测试可以这样运行：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+GitHub Actions CI 现在会在 macOS、Linux、Windows 上运行语法检查和当前的 `unittest` 测试集。
+
 当前这版节点已经能提供：
 
 - `GET /healthz`
@@ -230,6 +238,10 @@ agentcoin-worker \
 - AgentCoin 自身协议继续跑在加密覆盖网络地址之上
 
 详见 [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)。
+
+## 测试状态
+
+当前仓库已经带有自动化 `unittest` 测试和跨平台 GitHub Actions CI，覆盖了任务重试、死信、消息 ACK、工作流 merge/finalize 和弱网 fallback 等核心路径。
 
 ## 开源协议
 
