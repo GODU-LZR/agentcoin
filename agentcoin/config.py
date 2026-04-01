@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agentcoin.models import AgentCard
+from agentcoin.onchain import OnchainBindings
 from agentcoin.security import resolve_public_key
 
 
@@ -50,6 +51,7 @@ class NodeConfig:
     task_retry_backoff_seconds: int = 5
     local_dispatch_fallback: bool = True
     bridges: list[str] = field(default_factory=lambda: ["mcp", "a2a"])
+    onchain: OnchainBindings = field(default_factory=OnchainBindings)
     overlay_network: str = "tailnet"
     overlay_endpoint: str | None = None
     overlay_addresses: list[str] = field(default_factory=list)
@@ -91,16 +93,21 @@ class NodeConfig:
                 "bridge_export": f"{self.base_url}/v1/bridges/export",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",
                 "git_diff": f"{self.base_url}/v1/git/diff" if self.git_root else "",
+                "onchain_status": f"{self.base_url}/v1/onchain/status" if self.onchain.enabled else "",
+                "onchain_bind": f"{self.base_url}/v1/onchain/task-bind" if self.onchain.enabled else "",
             },
             network={
                 "overlay_network": self.overlay_network,
                 "overlay_endpoint": self.overlay_endpoint,
                 "overlay_addresses": self.overlay_addresses,
+                "onchain": self.onchain.to_dict(),
             },
             identity={
                 "scheme": "ssh-ed25519" if self.resolved_identity_public_key and self.identity_principal else "",
                 "principal": self.identity_principal,
                 "public_key": self.resolved_identity_public_key,
+                "did": self.onchain.local_did,
+                "controller_address": self.onchain.local_controller_address,
             },
         )
 
@@ -120,4 +127,5 @@ def load_config(path: str | None) -> NodeConfig:
 
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     data["peers"] = [PeerConfig(**peer) for peer in data.get("peers", [])]
+    data["onchain"] = OnchainBindings(**data.get("onchain", {}))
     return NodeConfig(**data)

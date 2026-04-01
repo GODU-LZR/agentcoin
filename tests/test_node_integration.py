@@ -14,6 +14,7 @@ from urllib import error, request
 from agentcoin.adapters import AdapterPolicy
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.node import AgentCoinNode
+from agentcoin.onchain import OnchainBindings
 from agentcoin.security import sign_document_with_ssh, verify_document
 from agentcoin.worker import WorkerLoop
 
@@ -29,7 +30,7 @@ class NodeHarness:
                  local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None,
                  signing_secret: str | None = None, require_signed_inbox: bool = False,
                  identity_principal: str | None = None, identity_private_key_path: str | None = None,
-                 identity_public_key: str | None = None) -> None:
+                 identity_public_key: str | None = None, onchain: OnchainBindings | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -50,6 +51,7 @@ class NodeHarness:
             outbox_max_attempts=outbox_max_attempts,
             task_retry_limit=2,
             task_retry_backoff_seconds=1,
+            onchain=onchain or OnchainBindings(),
         )
         self.node = AgentCoinNode(self.config)
         self.thread = threading.Thread(target=self.node.serve_forever, daemon=True)
@@ -1013,6 +1015,92 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(actions_after["items"]), 2)
             self.assertEqual(actions_after["items"][0]["action_type"], "quarantine-release")
             self.assertEqual(actions_after["items"][0]["operator_id"], "admin-1")
+        finally:
+            node.stop()
+
+    def test_onchain_task_binding_and_receipt_generation(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example.invalid",
+            explorer_base_url="https://testnet.bscscan.com",
+            did_registry_address="0x000000000000000000000000000000000000d1d0",
+            staking_pool_address="0x00000000000000000000000000000000000057a0",
+            bounty_escrow_address="0x000000000000000000000000000000000000b077",
+            local_did="did:agentcoin:test:worker-1",
+            local_controller_address="0x1111111111111111111111111111111111111111",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="onchain-node",
+            token="token-onchain",
+            db_path=str(Path(self.tempdir.name) / "onchain.db"),
+            capabilities=["worker"],
+            signing_secret="onchain-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            _, status_payload = self._get(f"{node.base_url}/v1/onchain/status")
+            self.assertTrue(status_payload["enabled"])
+            self.assertEqual(status_payload["local_identity"]["did"], "did:agentcoin:test:worker-1")
+
+            created_status, created = self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-onchain",
+                {
+                    "id": "onchain-task-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 42,
+                },
+            )
+            self.assertEqual(created_status, 201)
+            self.assertEqual(created["task"]["payload"]["_onchain"]["job_id"], 42)
+            self.assertIsNotNone(created["task"]["payload"]["_onchain"]["spec_hash"])
+
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-onchain",
+                {"worker_id": "worker-onchain-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            task = claim["task"]
+            self.assertEqual(task["id"], "onchain-task-1")
+
+            ack_status, ack_payload = self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-onchain",
+                {
+                    "task_id": "onchain-task-1",
+                    "worker_id": "worker-onchain-1",
+                    "lease_token": task["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-onchain-1"},
+                },
+            )
+            self.assertEqual(ack_status, 200)
+            self.assertTrue(ack_payload["ok"])
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            stored = [item for item in tasks["items"] if item["id"] == "onchain-task-1"][0]
+            receipt = stored["result"]["_onchain_receipt"]
+            self.assertEqual(receipt["job_id"], 42)
+            self.assertEqual(receipt["intended_contract_action"], "completeJob")
+            self.assertIn("submission_hash", receipt)
+            self.assertTrue(receipt["receipt_uri"].startswith("ipfs://agentcoin-receipts/"))
+            verification = verify_document(
+                receipt,
+                secret="onchain-secret",
+                expected_scope="onchain-receipt",
+                expected_key_id="onchain-node",
+            )
+            self.assertTrue(verification["verified"])
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=onchain-task-1")
+            self.assertEqual(replay["onchain_receipt"]["job_id"], 42)
+            self.assertEqual(replay["onchain_status"]["job_id"], 42)
         finally:
             node.stop()
 

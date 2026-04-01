@@ -101,6 +101,13 @@ flowchart TB
 - `StakingPool`: native BNB の stake / lock / unlock / slash
 - `BountyEscrow`: funded job lifecycle と evaluator-driven settlement
 
+Python reference node にも最初の on-chain integration skeleton を追加しました。
+
+- `attach_onchain_context=true` で task に `spec_hash`、`job_id`、contract reference を束ねられます
+- `GET /v1/onchain/status` で local BNB Chain binding を確認できます
+- `POST /v1/onchain/task-bind` で既存 task に on-chain job metadata を付与できます
+- 成功した task ACK は `submission_hash`、`result_hash`、`receipt_uri`、intended contract action を含む signed `_onchain_receipt` を持てます
+
 ### Quick Start
 
 ```bash
@@ -141,6 +148,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`
+- `GET /v1/onchain/status`
 - `GET /v1/reputation`
 - `GET /v1/violations`
 - `GET /v1/quarantines`
@@ -163,6 +171,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/outbox/flush`
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
+- `POST /v1/onchain/task-bind`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

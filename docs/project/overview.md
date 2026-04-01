@@ -15,6 +15,7 @@ The current repository contains:
 - Git-native repository inspection and task context attachment
 - local governance primitives for policy violations, reputation, and quarantine
 - an on-chain scaffold for DID, staking, and bounty escrow on BNB Chain
+- a node-side on-chain integration skeleton for task binding and signed submission receipts
 
 ## Design Goals
 

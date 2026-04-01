@@ -16,6 +16,18 @@
     "mcp",
     "a2a"
   ],
+  "onchain": {
+    "enabled": true,
+    "chain_id": 97,
+    "rpc_url": "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+    "explorer_base_url": "https://testnet.bscscan.com",
+    "did_registry_address": "0x000000000000000000000000000000000000d1d0",
+    "staking_pool_address": "0x00000000000000000000000000000000000057a0",
+    "bounty_escrow_address": "0x000000000000000000000000000000000000b077",
+    "local_did": "0x6167656e74636f696e2d6c6f63616c0000000000000000000000000000000000",
+    "local_controller_address": "0x1111111111111111111111111111111111111111",
+    "receipt_base_uri": "ipfs://agentcoin-receipts"
+  },
   "sync_interval_seconds": 15,
   "max_body_bytes": 262144,
   "outbox_max_attempts": 5,

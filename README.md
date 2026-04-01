@@ -108,6 +108,13 @@ The repository now also includes a first on-chain scaffold for the BNB Chain tra
 - `StakingPool`: native BNB stake, lock, unlock, and slash flow
 - `BountyEscrow`: funded jobs, worker acceptance, submission, completion, rejection, refund, and slash flow
 
+The Python node now also has a first on-chain integration skeleton:
+
+- `attach_onchain_context=true` can bind `spec_hash`, `job_id`, and contract references to a task
+- `GET /v1/onchain/status` exposes the local BNB Chain binding
+- `POST /v1/onchain/task-bind` can attach or update on-chain job metadata for an existing task
+- successful task ACKs can emit a signed `_onchain_receipt` carrying `submission_hash`, `result_hash`, `receipt_uri`, and intended contract action
+
 ### Quick Start
 
 ```bash
@@ -140,6 +147,7 @@ Key endpoints:
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`
+- `GET /v1/onchain/status`
 - `GET /v1/reputation`
 - `GET /v1/violations`
 - `GET /v1/quarantines`
@@ -162,6 +170,7 @@ Key endpoints:
 - `POST /v1/outbox/flush`
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
+- `POST /v1/onchain/task-bind`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

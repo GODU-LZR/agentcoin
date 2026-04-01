@@ -5,6 +5,7 @@ import logging
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib import error, request
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -13,6 +14,7 @@ from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope
+from agentcoin.onchain import OnchainRuntime
 from agentcoin.security import (
     SignatureError,
     sign_document,
@@ -30,6 +32,7 @@ class AgentCoinNode:
         self.config = config
         self.store = NodeStore(config.database_path)
         self.git = GitWorkspace(config.git_root) if config.git_root else None
+        self.onchain = OnchainRuntime(config.onchain)
         self.bridges = BridgeRegistry(config.bridges)
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
         self._sync_stop = threading.Event()
@@ -238,6 +241,25 @@ class AgentCoinNode:
         }
         return self._sign_document(document, hmac_scope="governance-receipt", identity_namespace="agentcoin-governance")
 
+    def _bind_onchain_context(self, task: TaskEnvelope, *, job_id: int | None = None) -> TaskEnvelope:
+        if not self.onchain.enabled:
+            return task
+        payload = dict(task.payload)
+        task_dict = task.to_dict()
+        task_dict["payload"] = payload
+        payload["_onchain"] = self.onchain.task_context(task_dict, job_id=job_id)
+        task.payload = payload
+        return task
+
+    def _task_onchain_receipt(self, task: dict, *, result: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.onchain.enabled:
+            return None
+        if not task.get("payload", {}).get("_onchain"):
+            return None
+        action = "completeJob" if result.get("adapter", {}).get("status") != "rejected" else "rejectJob"
+        receipt = self.onchain.result_receipt(task, result=result, action=action)
+        return self._sign_document(receipt, hmac_scope="onchain-receipt", identity_namespace="agentcoin-onchain")
+
     def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
         if prefer_local and self._supports_capabilities(required_capabilities):
             return {"target_type": "local", "target_ref": self.config.node_id}
@@ -338,6 +360,9 @@ class AgentCoinNode:
                         node._sign_document(node.config.card.to_dict(), hmac_scope="agent-card", identity_namespace="agentcoin-card"),
                     )
                     return
+                if path == "/v1/onchain/status":
+                    self._json_response(HTTPStatus.OK, node.onchain.status())
+                    return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
@@ -425,6 +450,8 @@ class AgentCoinNode:
                             "task": task,
                             "audits": node.store.list_execution_audits(task_id=task_id, limit=200),
                             "bridge_export_preview": export_preview,
+                            "onchain_status": task.get("payload", {}).get("_onchain"),
+                            "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
                         },
                     )
                     return
@@ -458,8 +485,28 @@ class AgentCoinNode:
                             base_ref = str(payload.get("git_base_ref") or "HEAD")
                             target_ref = payload.get("git_target_ref")
                             task.payload["_git"] = node._require_git().task_context(base_ref=base_ref, target_ref=target_ref)
+                        if bool(payload.get("attach_onchain_context")):
+                            task = node._bind_onchain_context(task, job_id=payload.get("onchain_job_id"))
                         node._persist_task_delivery(task)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict()})
+                        return
+                    if self.path == "/v1/onchain/task-bind":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        merged_payload = dict(task["payload"])
+                        merged_payload["_onchain"] = node.onchain.task_context(task, job_id=payload.get("job_id"))
+                        updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {"ok": updated, "task_id": task_id, "onchain": merged_payload.get("_onchain")},
+                        )
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():
@@ -537,6 +584,8 @@ class AgentCoinNode:
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
                         if task.sender == "local":
                             task.sender = node.config.node_id
+                        if bool(payload.get("attach_onchain_context")):
+                            task = node._bind_onchain_context(task, job_id=payload.get("onchain_job_id"))
                         prefer_local = bool(payload.get("prefer_local"))
                         target = None
                         if task.deliver_to:
@@ -564,6 +613,8 @@ class AgentCoinNode:
                         dispatch = bool(payload.get("dispatch"))
                         prefer_local = bool(payload.get("prefer_local"))
                         task = node._normalize_task(node.bridges.import_task(protocol, message, task_overrides), node.config)
+                        if bool(payload.get("attach_onchain_context")):
+                            task = node._bind_onchain_context(task, job_id=payload.get("onchain_job_id"))
                         target = None
                         if dispatch:
                             if task.deliver_to:
@@ -630,12 +681,19 @@ class AgentCoinNode:
                         if not self._require_auth():
                             return
                         payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "")
+                        task = node.store.get_task(task_id)
+                        result_payload = dict(payload.get("result") or {})
+                        if task:
+                            onchain_receipt = node._task_onchain_receipt(task, result=result_payload)
+                            if onchain_receipt:
+                                result_payload["_onchain_receipt"] = onchain_receipt
                         ok = node.store.ack_task(
-                            task_id=str(payload.get("task_id") or ""),
+                            task_id=task_id,
                             worker_id=str(payload.get("worker_id") or ""),
                             lease_token=str(payload.get("lease_token") or ""),
                             success=bool(payload.get("success")),
-                            result=dict(payload.get("result") or {}),
+                            result=result_payload,
                             error_message=payload.get("error_message"),
                             requeue=bool(payload.get("requeue")),
                         )
