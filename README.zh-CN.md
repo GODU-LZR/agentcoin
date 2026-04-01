@@ -79,6 +79,7 @@ flowchart TB
 - 项目说明：[docs/project/overview.md](docs/project/overview.md)
 - 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
 - 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)
+- 执行路线图：[docs/architecture/implementation-roadmap.md](docs/architecture/implementation-roadmap.md)
 - Agent 适配策略：[docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
 - OpenClaw 集成：[docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 - 链上路线图：[docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)

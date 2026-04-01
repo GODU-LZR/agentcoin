@@ -161,6 +161,8 @@ class NodeStore:
                     reason TEXT NOT NULL,
                     evidence_hash TEXT,
                     severity TEXT NOT NULL,
+                    bond_amount_wei TEXT NOT NULL DEFAULT '0',
+                    bond_status TEXT NOT NULL DEFAULT 'none',
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     resolution_json TEXT,
@@ -219,6 +221,8 @@ class NodeStore:
             self._ensure_column(conn, "tasks", "completed_at", "TEXT")
             self._ensure_column(conn, "inbox", "acked", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "outbox", "task_id", "TEXT")
+            self._ensure_column(conn, "disputes", "bond_amount_wei", "TEXT NOT NULL DEFAULT '0'")
+            self._ensure_column(conn, "disputes", "bond_status", "TEXT NOT NULL DEFAULT 'none'")
             self._ensure_column(conn, "settlement_relays", "final_status", "TEXT NOT NULL DEFAULT 'completed'")
             self._ensure_column(conn, "settlement_relays", "last_successful_index", "INTEGER NOT NULL DEFAULT -1")
             self._ensure_column(conn, "settlement_relays", "next_index", "INTEGER NOT NULL DEFAULT 0")
@@ -679,6 +683,8 @@ class NodeStore:
             "reason": row["reason"],
             "evidence_hash": row["evidence_hash"],
             "severity": row["severity"],
+            "bond_amount_wei": str(row["bond_amount_wei"] or "0"),
+            "bond_status": row["bond_status"],
             "status": row["status"],
             "payload": json.loads(row["payload_json"] or "{}"),
             "resolution": json.loads(row["resolution_json"]) if row["resolution_json"] else None,
@@ -780,10 +786,13 @@ class NodeStore:
         actor_type: str = "worker",
         severity: str = "medium",
         evidence_hash: str | None = None,
+        bond_amount_wei: str | int | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         dispute_id = str(uuid4())
+        normalized_bond_amount = str(bond_amount_wei or "0").strip() or "0"
+        bond_status = "locked" if normalized_bond_amount != "0" else "none"
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -791,8 +800,8 @@ class NodeStore:
                 """
                 INSERT INTO disputes
                 (id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
-                 status, payload_json, resolution_json, created_at, updated_at, resolved_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, ?, ?, NULL)
+                 bond_amount_wei, bond_status, status, payload_json, resolution_json, created_at, updated_at, resolved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, ?, ?, NULL)
                 """,
                 (
                     dispute_id,
@@ -803,6 +812,8 @@ class NodeStore:
                     reason,
                     evidence_hash,
                     str(severity or "medium").strip().lower() or "medium",
+                    normalized_bond_amount,
+                    bond_status,
                     json.dumps(payload or {}, ensure_ascii=False),
                     now,
                     now,
@@ -818,6 +829,8 @@ class NodeStore:
                     "task_id": task_id,
                     "challenger_id": challenger_id,
                     "evidence_hash": evidence_hash,
+                    "bond_amount_wei": normalized_bond_amount,
+                    "bond_status": bond_status,
                     "context": payload or {},
                 },
                 created_at=now,
@@ -834,6 +847,8 @@ class NodeStore:
                     "reason": reason,
                     "evidence_hash": evidence_hash,
                     "severity": str(severity or "medium").strip().lower() or "medium",
+                    "bond_amount_wei": normalized_bond_amount,
+                    "bond_status": bond_status,
                     "status": "open",
                     "payload": payload or {},
                     "resolution": None,
@@ -861,6 +876,7 @@ class NodeStore:
             row = conn.execute(
                 """
                 SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       bond_amount_wei, bond_status,
                        status, payload_json, resolution_json, created_at, updated_at, resolved_at
                 FROM disputes
                 WHERE id = ?
@@ -880,24 +896,19 @@ class NodeStore:
                 "payload": payload or {},
             }
             resolution_name = str(resolution["status"])
-            conn.execute(
-                """
-                UPDATE disputes
-                SET status = ?, resolution_json = ?, updated_at = ?, resolved_at = ?
-                WHERE id = ?
-                """,
-                (
-                    resolution["status"],
-                    json.dumps(resolution, ensure_ascii=False),
-                    now,
-                    now,
-                    dispute_id,
-                ),
-            )
             actor_id = row["actor_id"]
             actor_type = str(row["actor_type"] or "worker")
             challenger_id = str(row["challenger_id"] or "")
+            bond_amount_wei = str(row["bond_amount_wei"] or "0")
+            bond_status = str(row["bond_status"] or "none")
+            bond_outcome: dict[str, Any] = {
+                "bond_amount_wei": bond_amount_wei,
+                "previous_status": bond_status,
+                "status": bond_status,
+            }
             if resolution_name == "upheld":
+                if bond_amount_wei != "0":
+                    bond_outcome["status"] = "awarded"
                 if actor_id:
                     self._record_policy_violation_with_conn(
                         conn,
@@ -927,9 +938,26 @@ class NodeStore:
                             "dispute_id": dispute_id,
                             "actor_id": actor_id,
                             "severity": row["severity"],
+                            "bond_amount_wei": bond_amount_wei,
+                            "bond_status": bond_outcome["status"],
                         },
                         created_at=now,
                     )
+                    if bond_amount_wei != "0":
+                        self._insert_score_event(
+                            conn,
+                            actor_id=challenger_id,
+                            actor_type="reviewer",
+                            task_id=row["task_id"],
+                            event_type="dispute-bond-awarded",
+                            points=3,
+                            payload={
+                                "dispute_id": dispute_id,
+                                "bond_amount_wei": bond_amount_wei,
+                                "actor_id": actor_id,
+                            },
+                            created_at=now,
+                        )
                     self._apply_reputation_delta_with_conn(
                         conn,
                         actor_id=challenger_id,
@@ -938,10 +966,14 @@ class NodeStore:
                         metadata_update={
                             "last_dispute_outcome": "upheld",
                             "last_dispute_id": dispute_id,
+                            "last_dispute_bond_outcome": bond_outcome["status"],
+                            "last_dispute_bond_amount_wei": bond_amount_wei,
                         },
                         updated_at=now,
                     )
             elif resolution_name == "dismissed":
+                if bond_amount_wei != "0":
+                    bond_outcome["status"] = "slashed"
                 if actor_id:
                     self._insert_score_event(
                         conn,
@@ -964,6 +996,8 @@ class NodeStore:
                         metadata_update={
                             "last_dispute_outcome": "dismissed",
                             "last_dispute_id": dispute_id,
+                            "last_dispute_bond_outcome": "cleared",
+                            "last_dispute_bond_amount_wei": bond_amount_wei,
                         },
                         updated_at=now,
                     )
@@ -978,9 +1012,26 @@ class NodeStore:
                         payload={
                             "dispute_id": dispute_id,
                             "actor_id": actor_id,
+                            "bond_amount_wei": bond_amount_wei,
+                            "bond_status": bond_outcome["status"],
                         },
                         created_at=now,
                     )
+                    if bond_amount_wei != "0":
+                        self._insert_score_event(
+                            conn,
+                            actor_id=challenger_id,
+                            actor_type="reviewer",
+                            task_id=row["task_id"],
+                            event_type="dispute-bond-slashed",
+                            points=-3,
+                            payload={
+                                "dispute_id": dispute_id,
+                                "bond_amount_wei": bond_amount_wei,
+                                "actor_id": actor_id,
+                            },
+                            created_at=now,
+                        )
                     self._apply_reputation_delta_with_conn(
                         conn,
                         actor_id=challenger_id,
@@ -989,9 +1040,27 @@ class NodeStore:
                         metadata_update={
                             "last_dispute_outcome": "dismissed",
                             "last_dispute_id": dispute_id,
+                            "last_dispute_bond_outcome": bond_outcome["status"],
+                            "last_dispute_bond_amount_wei": bond_amount_wei,
                         },
                         updated_at=now,
                     )
+            resolution["bond_outcome"] = bond_outcome
+            conn.execute(
+                """
+                UPDATE disputes
+                SET status = ?, bond_status = ?, resolution_json = ?, updated_at = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (
+                    resolution["status"],
+                    bond_outcome["status"],
+                    json.dumps(resolution, ensure_ascii=False),
+                    now,
+                    now,
+                    dispute_id,
+                ),
+            )
             self._insert_governance_action(
                 conn,
                 actor_id=row["actor_id"] or row["challenger_id"],
@@ -1003,6 +1072,7 @@ class NodeStore:
                     "dispute_id": dispute_id,
                     "operator_id": operator_id,
                     "resolution": resolution,
+                    "bond_outcome": bond_outcome,
                 },
                 created_at=now,
             )
@@ -1010,6 +1080,7 @@ class NodeStore:
             updated = conn.execute(
                 """
                 SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       bond_amount_wei, bond_status,
                        status, payload_json, resolution_json, created_at, updated_at, resolved_at
                 FROM disputes
                 WHERE id = ?
@@ -1045,6 +1116,7 @@ class NodeStore:
             rows = conn.execute(
                 f"""
                 SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       bond_amount_wei, bond_status,
                        status, payload_json, resolution_json, created_at, updated_at, resolved_at
                 FROM disputes
                 {where_clause}

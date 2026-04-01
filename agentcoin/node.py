@@ -1654,6 +1654,10 @@ class AgentCoinNode:
                             reason=reason,
                             evidence_hash=str(payload.get("evidence_hash") or "").strip() or None,
                             severity=str(payload.get("severity") or "medium").strip() or "medium",
+                            bond_amount_wei=(
+                                str(payload.get("bond_amount_wei") or "").strip()
+                                or str(node.config.challenge_bond_required_wei)
+                            ),
                             payload=dict(payload.get("payload") or {}),
                         )
                         self._json_response(HTTPStatus.CREATED, result)

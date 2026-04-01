@@ -35,6 +35,7 @@ class NodeHarness:
                  identity_principal: str | None = None, identity_private_key_path: str | None = None,
                  identity_public_key: str | None = None, onchain: OnchainBindings | None = None,
                  network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
+                 challenge_bond_required_wei: int = 0,
                  bridges: list[str] | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
@@ -58,6 +59,7 @@ class NodeHarness:
             outbox_max_attempts=outbox_max_attempts,
             task_retry_limit=2,
             task_retry_backoff_seconds=1,
+            challenge_bond_required_wei=challenge_bond_required_wei,
             network=network or OutboundNetworkConfig(),
             onchain=onchain or OnchainBindings(),
         )
@@ -1895,6 +1897,7 @@ class NodeIntegrationTests(unittest.TestCase):
             db_path=str(Path(self.tempdir.name) / "challenge.db"),
             capabilities=["worker"],
             signing_secret="challenge-secret",
+            challenge_bond_required_wei=7000000000000000,
             onchain=onchain,
         )
         node.start()
@@ -1944,10 +1947,13 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(dispute_status, 201)
             self.assertEqual(dispute_payload["dispute"]["status"], "open")
+            self.assertEqual(dispute_payload["dispute"]["bond_amount_wei"], "7000000000000000")
+            self.assertEqual(dispute_payload["dispute"]["bond_status"], "locked")
 
             _, disputes = self._get(f"{node.base_url}/v1/disputes?task_id=challenge-task-1&status=open")
             self.assertEqual(len(disputes["items"]), 1)
             self.assertEqual(disputes["items"][0]["challenger_id"], "reviewer-challenge-1")
+            self.assertEqual(disputes["items"][0]["bond_amount_wei"], "7000000000000000")
 
             _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             settlement = preview["settlement"]
@@ -1974,6 +1980,7 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(resolve_status, 200)
             self.assertEqual(resolved["dispute"]["status"], "dismissed")
+            self.assertEqual(resolved["dispute"]["bond_status"], "slashed")
 
             _, preview_after_dismiss = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             self.assertEqual(preview_after_dismiss["settlement"]["recommended_resolution"], "completeJob")
@@ -2005,6 +2012,7 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(resolve_status_2, 200)
             self.assertEqual(resolved_2["dispute"]["status"], "upheld")
+            self.assertEqual(resolved_2["dispute"]["bond_status"], "awarded")
 
             _, preview_after_upheld = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             self.assertEqual(preview_after_upheld["settlement"]["recommended_resolution"], "slashJob")

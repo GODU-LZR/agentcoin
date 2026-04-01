@@ -72,6 +72,7 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Execution roadmap: [docs/architecture/implementation-roadmap.md](docs/architecture/implementation-roadmap.md)
 - Agent adapter strategy: [docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
 - OpenClaw integration: [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 - On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)

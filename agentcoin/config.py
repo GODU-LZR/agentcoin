@@ -51,6 +51,7 @@ class NodeConfig:
     task_retry_limit: int = 3
     task_retry_backoff_seconds: int = 5
     local_dispatch_fallback: bool = True
+    challenge_bond_required_wei: int = 0
     bridges: list[str] = field(default_factory=lambda: ["mcp", "a2a"])
     network: OutboundNetworkConfig = field(default_factory=OutboundNetworkConfig)
     onchain: OnchainBindings = field(default_factory=OnchainBindings)

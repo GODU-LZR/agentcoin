@@ -436,15 +436,18 @@ class NodeStoreTests(unittest.TestCase):
             reason="output quality challenge",
             evidence_hash="evidence-123",
             severity="high",
+            bond_amount_wei="25000000000000000",
             payload={"notes": "needs recheck"},
         )
         self.assertTrue(opened["ok"])
         self.assertEqual(opened["dispute"]["status"], "open")
         self.assertEqual(opened["dispute"]["evidence_hash"], "evidence-123")
+        self.assertEqual(opened["dispute"]["bond_status"], "locked")
 
         disputes = self.store.list_disputes(task_id="dispute-task", status="open")
         self.assertEqual(len(disputes), 1)
         self.assertEqual(disputes[0]["challenger_id"], "reviewer-1")
+        self.assertEqual(disputes[0]["bond_amount_wei"], "25000000000000000")
 
         resolved = self.store.resolve_dispute(
             dispute_id=disputes[0]["id"],
@@ -456,6 +459,8 @@ class NodeStoreTests(unittest.TestCase):
         assert resolved is not None
         self.assertEqual(resolved["status"], "upheld")
         self.assertEqual(resolved["resolution"]["operator_id"], "operator-1")
+        self.assertEqual(resolved["bond_status"], "awarded")
+        self.assertEqual(resolved["resolution"]["bond_outcome"]["status"], "awarded")
 
         worker_reputation = self.store.get_actor_reputation("worker-disputed")
         self.assertEqual(worker_reputation["score"], 70)
@@ -463,11 +468,13 @@ class NodeStoreTests(unittest.TestCase):
 
         reviewer_reputation = self.store.get_actor_reputation("reviewer-1", actor_type="reviewer")
         self.assertEqual(reviewer_reputation["score"], 105)
+        self.assertEqual(reviewer_reputation["metadata"]["last_dispute_bond_outcome"], "awarded")
 
         dispute_events = self.store.list_score_events(task_id="dispute-task")
         event_types = {item["event_type"] for item in dispute_events}
         self.assertIn("policy-violation", event_types)
         self.assertIn("dispute-upheld", event_types)
+        self.assertIn("dispute-bond-awarded", event_types)
 
         actions = self.store.list_governance_actions(actor_id="worker-disputed")
         action_types = {item["action_type"] for item in actions}
@@ -484,6 +491,7 @@ class NodeStoreTests(unittest.TestCase):
             reason="false alarm",
             evidence_hash="evidence-dismiss",
             severity="medium",
+            bond_amount_wei="9000000000000000",
         )
         dispute_id = opened["dispute"]["id"]
         resolved = self.store.resolve_dispute(
@@ -494,13 +502,17 @@ class NodeStoreTests(unittest.TestCase):
         )
         assert resolved is not None
         self.assertEqual(resolved["status"], "dismissed")
+        self.assertEqual(resolved["bond_status"], "slashed")
 
         worker_reputation = self.store.get_actor_reputation("worker-dismissed")
         self.assertEqual(worker_reputation["score"], 103)
+        self.assertEqual(worker_reputation["metadata"]["last_dispute_bond_outcome"], "cleared")
         reviewer_reputation = self.store.get_actor_reputation("reviewer-dismiss", actor_type="reviewer")
         self.assertEqual(reviewer_reputation["score"], 95)
+        self.assertEqual(reviewer_reputation["metadata"]["last_dispute_bond_outcome"], "slashed")
 
         dispute_events = self.store.list_score_events(task_id="dismiss-task")
         event_types = {item["event_type"] for item in dispute_events}
         self.assertIn("dispute-cleared", event_types)
         self.assertIn("dispute-dismissed", event_types)
+        self.assertIn("dispute-bond-slashed", event_types)
