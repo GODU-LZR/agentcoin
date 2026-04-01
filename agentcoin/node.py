@@ -13,7 +13,7 @@ from uuid import uuid4
 from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.gitops import GitWorkspace
-from agentcoin.models import TaskEnvelope
+from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.security import (
@@ -262,6 +262,15 @@ class AgentCoinNode:
         action = "completeJob" if result.get("adapter", {}).get("status") != "rejected" else "rejectJob"
         receipt = self.onchain.result_receipt(task, result=result, action=action)
         return self._sign_document(receipt, hmac_scope="onchain-receipt", identity_namespace="agentcoin-onchain")
+
+    def _chain_rpc_call(self, rpc_url: str, request_payload: dict[str, Any], *, timeout: float = 10) -> dict[str, Any]:
+        return self.transport.request_json(
+            rpc_url,
+            method="POST",
+            payload=request_payload,
+            headers={"Accept": "application/json"},
+            timeout=timeout,
+        )
 
     def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
         if prefer_local and self._supports_capabilities(required_capabilities):
@@ -573,6 +582,86 @@ class AgentCoinNode:
                             identity_namespace="agentcoin-onchain-rpc",
                         )
                         self._json_response(HTTPStatus.OK, {"rpc_payload": signed_rpc_payload})
+                        return
+                    if self.path == "/v1/onchain/rpc-plan":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        action = str(payload.get("action") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not action:
+                            raise ValueError("action is required")
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        intent = node.onchain.transaction_intent(task, action=action, params=dict(payload.get("params") or {}))
+                        rpc_options = dict(payload.get("rpc") or {})
+                        rpc_payload = node.onchain.rpc_payload_for_intent(intent, rpc=rpc_options)
+                        probes = node.onchain.rpc_probe_payloads(rpc_payload, rpc=rpc_options)
+                        live_results: dict[str, Any] = {}
+                        timeout = float(payload.get("timeout_seconds") or 10)
+                        resolve_live = bool(payload.get("resolve_live", True))
+                        rpc_url = str(rpc_payload.get("rpc_url") or "").strip()
+                        if resolve_live and not rpc_url:
+                            raise ValueError("rpc_url is required for resolve_live plan")
+                        for probe in probes:
+                            if not resolve_live:
+                                break
+                            response = node._chain_rpc_call(rpc_url, probe["request"], timeout=timeout)
+                            probe["response"] = response
+                            if "result" in response:
+                                live_results[probe["name"]] = response["result"]
+                        planned_rpc_payload = node.onchain.apply_rpc_probe_results(rpc_payload, live_results)
+                        plan = {
+                            "kind": "evm-json-rpc-plan",
+                            "intent": intent,
+                            "rpc_payload": planned_rpc_payload,
+                            "probes": probes,
+                            "live_results": live_results,
+                            "transport": node.config.network.transport_profile(),
+                            "resolved_live": resolve_live,
+                            "generated_at": utc_now(),
+                        }
+                        signed_plan = node._sign_document(
+                            plan,
+                            hmac_scope="onchain-rpc-plan",
+                            identity_namespace="agentcoin-onchain-rpc-plan",
+                        )
+                        self._json_response(HTTPStatus.OK, {"plan": signed_plan})
+                        return
+                    if self.path == "/v1/onchain/rpc/send-raw":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        raw_transaction = str(payload.get("raw_transaction") or "").strip()
+                        if not raw_transaction:
+                            raise ValueError("raw_transaction is required")
+                        timeout = float(payload.get("timeout_seconds") or 10)
+                        rpc_payload = node.onchain.raw_transaction_payload(
+                            raw_transaction,
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                            request_id=str(payload.get("request_id") or "").strip() or None,
+                        )
+                        rpc_url = str(rpc_payload.get("rpc_url") or "").strip()
+                        if not rpc_url:
+                            raise ValueError("rpc_url is required")
+                        response = node._chain_rpc_call(rpc_url, rpc_payload["request"], timeout=timeout)
+                        relay = {
+                            "kind": "evm-json-rpc-relay",
+                            "rpc_payload": rpc_payload,
+                            "response": response,
+                            "tx_hash": response.get("result"),
+                            "transport": node.config.network.transport_profile(),
+                            "generated_at": rpc_payload.get("generated_at"),
+                        }
+                        signed_relay = node._sign_document(
+                            relay,
+                            hmac_scope="onchain-rpc-relay",
+                            identity_namespace="agentcoin-onchain-rpc-relay",
+                        )
+                        self._json_response(HTTPStatus.OK, {"relay": signed_relay})
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():

@@ -8,6 +8,8 @@ import tempfile
 import threading
 import time
 import unittest
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import error, request
 
@@ -69,6 +71,57 @@ class NodeHarness:
 
     def stop(self) -> None:
         self.node.shutdown()
+        self.thread.join(timeout=2)
+
+
+class RpcHarness:
+    def __init__(self, responses: dict[str, object]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, object]] = []
+        self.port = _free_port()
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), self._build_handler())
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def _build_handler(self) -> type[BaseHTTPRequestHandler]:
+        harness = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                payload = json.loads(raw.decode("utf-8"))
+                harness.calls.append(payload)
+                method = str(payload.get("method") or "")
+                response = harness.responses.get(method)
+                if callable(response):
+                    response = response(payload)
+                body = {
+                    "jsonrpc": "2.0",
+                    "id": payload.get("id"),
+                    "result": response,
+                }
+                encoded = json.dumps(body).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    def start(self) -> None:
+        self.thread.start()
+        time.sleep(0.2)
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
         self.thread.join(timeout=2)
 
 
@@ -1198,6 +1251,115 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(replay["onchain_intent_preview"]["estimateGas"]["rpc_method"], "eth_estimateGas")
         finally:
             node.stop()
+
+    def test_onchain_rpc_plan_and_raw_relay(self) -> None:
+        rpc = RpcHarness(
+            {
+                "eth_getTransactionCount": "0x9",
+                "eth_gasPrice": "0x12a05f200",
+                "eth_estimateGas": "0x5208",
+                "eth_sendRawTransaction": "0xabc123",
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x000000000000000000000000000000000000b077",
+            local_did="did:agentcoin:test:worker-2",
+            local_controller_address="0x1111111111111111111111111111111111111111",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="onchain-rpc-node",
+            token="token-rpc",
+            db_path=str(Path(self.tempdir.name) / "onchain-rpc.db"),
+            capabilities=["worker"],
+            signing_secret="onchain-rpc-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-rpc",
+                {
+                    "id": "onchain-rpc-task-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"x": 2},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 88,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-rpc",
+                {"worker_id": "worker-onchain-rpc", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            task = claim["task"]
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-rpc",
+                {
+                    "task_id": "onchain-rpc-task-1",
+                    "worker_id": "worker-onchain-rpc",
+                    "lease_token": task["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-onchain-rpc"},
+                },
+            )
+
+            _, plan_payload = self._post(
+                f"{node.base_url}/v1/onchain/rpc-plan",
+                "token-rpc",
+                {
+                    "task_id": "onchain-rpc-task-1",
+                    "action": "submitWork",
+                    "rpc": {
+                        "data": "0xdeadbeef",
+                        "include_estimate_gas": True,
+                    },
+                },
+            )
+            plan = plan_payload["plan"]
+            self.assertEqual(plan["kind"], "evm-json-rpc-plan")
+            self.assertTrue(plan["resolved_live"])
+            self.assertEqual(plan["rpc_payload"]["transaction"]["nonce"], "0x9")
+            self.assertEqual(plan["rpc_payload"]["transaction"]["gasPrice"], "0x12a05f200")
+            self.assertEqual(plan["rpc_payload"]["transaction"]["gas"], "0x5208")
+            self.assertEqual(plan["rpc_payload"]["request"]["params"][0]["data"], "0xdeadbeef")
+            self.assertFalse(plan["rpc_payload"]["call"]["abi_encoding_required"])
+            self.assertEqual([item["method"] for item in rpc.calls[:3]], ["eth_getTransactionCount", "eth_gasPrice", "eth_estimateGas"])
+            plan_verification = verify_document(
+                plan,
+                secret="onchain-rpc-secret",
+                expected_scope="onchain-rpc-plan",
+                expected_key_id="onchain-rpc-node",
+            )
+            self.assertTrue(plan_verification["verified"])
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/rpc/send-raw",
+                "token-rpc",
+                {"raw_transaction": "0x1234abcd"},
+            )
+            relay = relay_payload["relay"]
+            self.assertEqual(relay["tx_hash"], "0xabc123")
+            self.assertEqual(relay["rpc_payload"]["request"]["method"], "eth_sendRawTransaction")
+            self.assertEqual(relay["rpc_payload"]["request"]["params"], ["0x1234abcd"])
+            relay_verification = verify_document(
+                relay,
+                secret="onchain-rpc-secret",
+                expected_scope="onchain-rpc-relay",
+                expected_key_id="onchain-rpc-node",
+            )
+            self.assertTrue(relay_verification["verified"])
+            self.assertEqual(rpc.calls[-1]["method"], "eth_sendRawTransaction")
+        finally:
+            node.stop()
+            rpc.stop()
 
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(

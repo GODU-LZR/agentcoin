@@ -116,6 +116,8 @@ The Python node now also has a first on-chain integration skeleton:
 - successful task ACKs can emit a signed `_onchain_receipt` carrying `submission_hash`, `result_hash`, `receipt_uri`, and intended contract action
 - `POST /v1/onchain/intents/build` can build signed EVM transaction intents for `createJob`, `acceptJob`, `submitWork`, `completeJob`, `rejectJob`, and `slashJob`
 - `POST /v1/onchain/rpc-payload` can build signed JSON-RPC payload skeletons for `eth_sendTransaction`, `eth_estimateGas`, and `eth_call`
+- `POST /v1/onchain/rpc-plan` can resolve live nonce, gas price, and gas estimates through JSON-RPC before an external signer or wallet submits the transaction
+- `POST /v1/onchain/rpc/send-raw` can relay an externally signed raw transaction to the configured RPC endpoint
 
 The node now also has a unified outbound transport layer for weak-network and VPN/proxy-heavy environments:
 
@@ -182,6 +184,8 @@ Key endpoints:
 - `POST /v1/onchain/task-bind`
 - `POST /v1/onchain/intents/build`
 - `POST /v1/onchain/rpc-payload`
+- `POST /v1/onchain/rpc-plan`
+- `POST /v1/onchain/rpc/send-raw`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

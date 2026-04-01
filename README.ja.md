@@ -109,6 +109,8 @@ Python reference node にも最初の on-chain integration skeleton を追加し
 - 成功した task ACK は `submission_hash`、`result_hash`、`receipt_uri`、intended contract action を含む signed `_onchain_receipt` を持てます
 - `POST /v1/onchain/intents/build` で `createJob`、`acceptJob`、`submitWork`、`completeJob`、`rejectJob`、`slashJob` 向けの signed EVM transaction intent を生成できます
 - `POST /v1/onchain/rpc-payload` で `eth_sendTransaction`、`eth_estimateGas`、`eth_call` 向けの signed JSON-RPC payload skeleton を生成できます
+- `POST /v1/onchain/rpc-plan` で live JSON-RPC から nonce、gas price、gas estimate を引き、外部 signer や wallet 向けの plan を返せます
+- `POST /v1/onchain/rpc/send-raw` で外部署名済み raw transaction を RPC endpoint へ relay できます
 
 node には VPN / proxy 環境に合わせた統一 outbound transport も追加しました。
 
@@ -183,6 +185,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/onchain/task-bind`
 - `POST /v1/onchain/intents/build`
 - `POST /v1/onchain/rpc-payload`
+- `POST /v1/onchain/rpc-plan`
+- `POST /v1/onchain/rpc/send-raw`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

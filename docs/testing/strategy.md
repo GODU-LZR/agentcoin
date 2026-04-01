@@ -29,6 +29,7 @@ The current test scope covers:
 - Git repository status, diff, branch, and task-context attachment
 - weak-network retry, dead-letter, and local fallback
 - on-chain JSON-RPC payload generation and signature verification
+- live JSON-RPC planning and raw transaction relay against a local mock RPC
 
 ## What Exists Today
 

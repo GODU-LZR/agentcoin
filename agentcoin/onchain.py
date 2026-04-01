@@ -215,6 +215,138 @@ class OnchainRuntime:
         }
         return payload
 
+    def rpc_request(self, method: str, params: list[Any] | None = None, *, request_id: str | None = None) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id or f"agentcoin-rpc-{method}",
+            "method": method,
+            "params": list(params or []),
+        }
+
+    def rpc_probe_payloads(self, payload: dict[str, Any], *, rpc: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        rpc = rpc or {}
+        tx = dict(payload.get("transaction") or {})
+        task_id = str(payload.get("intent", {}).get("task_id") or "task")
+        block = str(rpc.get("block") or "pending")
+        probes: list[dict[str, Any]] = []
+
+        if tx.get("from") and bool(rpc.get("include_nonce", True)):
+            probes.append(
+                {
+                    "name": "nonce",
+                    "rpc_method": "eth_getTransactionCount",
+                    "request": self.rpc_request(
+                        "eth_getTransactionCount",
+                        [tx["from"], block],
+                        request_id=f"agentcoin-{task_id}-nonce",
+                    ),
+                }
+            )
+        if bool(rpc.get("include_gas_price", True)):
+            probes.append(
+                {
+                    "name": "gasPrice",
+                    "rpc_method": "eth_gasPrice",
+                    "request": self.rpc_request(
+                        "eth_gasPrice",
+                        [],
+                        request_id=f"agentcoin-{task_id}-gas-price",
+                    ),
+                }
+            )
+        should_estimate_gas = bool(rpc.get("include_estimate_gas", True))
+        if payload.get("call", {}).get("abi_encoding_required") and not tx.get("data"):
+            should_estimate_gas = bool(rpc.get("force_estimate_gas"))
+        if should_estimate_gas:
+            probes.append(
+                {
+                    "name": "gas",
+                    "rpc_method": "eth_estimateGas",
+                    "request": self.rpc_request(
+                        "eth_estimateGas",
+                        [tx],
+                        request_id=f"agentcoin-{task_id}-estimate-gas",
+                    ),
+                }
+            )
+        return probes
+
+    def apply_rpc_probe_results(
+        self,
+        payload: dict[str, Any],
+        results: dict[str, Any],
+    ) -> dict[str, Any]:
+        planned = json.loads(_canonical_json(payload))
+        tx = dict(planned.get("transaction") or {})
+        request_params = list(planned.get("request", {}).get("params") or [])
+        primary = dict(request_params[0] or {}) if request_params and isinstance(request_params[0], dict) else {}
+        mappings = {
+            "nonce": "nonce",
+            "gas": "gas",
+            "gasPrice": "gasPrice",
+            "maxFeePerGas": "maxFeePerGas",
+            "maxPriorityFeePerGas": "maxPriorityFeePerGas",
+        }
+        recommendations: dict[str, Any] = {}
+        for result_name, tx_key in mappings.items():
+            raw = results.get(result_name)
+            encoded = self._rpc_result_quantity(raw)
+            if encoded is None:
+                continue
+            tx[tx_key] = encoded
+            primary[tx_key] = encoded
+            recommendations[result_name] = encoded
+        if primary:
+            if request_params:
+                request_params[0] = primary
+            else:
+                request_params = [primary]
+        planned["transaction"] = tx
+        planned["request"]["params"] = request_params
+        planned["recommended"] = recommendations
+        return planned
+
+    def raw_transaction_payload(
+        self,
+        raw_transaction: str,
+        *,
+        rpc_url: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        raw = str(raw_transaction or "").strip()
+        if not raw:
+            raise ValueError("raw_transaction is required")
+        return {
+            "kind": "evm-json-rpc-payload",
+            "rpc_url": rpc_url or self.bindings.rpc_url,
+            "chain_id": self.bindings.chain_id,
+            "rpc_method": "eth_sendRawTransaction",
+            "request": self.rpc_request(
+                "eth_sendRawTransaction",
+                [raw],
+                request_id=request_id or f"agentcoin-raw-tx-{sha256_hex({'raw_transaction': raw})[:12]}",
+            ),
+            "raw_transaction": raw,
+            "generated_at": utc_now(),
+        }
+
+    @staticmethod
+    def _rpc_result_quantity(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, dict) and "result" in value:
+            return OnchainRuntime._rpc_result_quantity(value.get("result"))
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            if raw.lower().startswith("0x"):
+                return raw.lower()
+            return _hex_quantity(raw)
+        if isinstance(value, int):
+            return _hex_quantity(value)
+        return None
+
     def job_ref(self, job_id: int | None) -> str | None:
         if job_id is None:
             return None

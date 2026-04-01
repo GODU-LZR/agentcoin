@@ -87,6 +87,8 @@ The outbound transport path is now centralized as well:
 - `POST /v1/outbox/flush`
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/rpc-payload`
+- `POST /v1/onchain/rpc-plan`
+- `POST /v1/onchain/rpc/send-raw`
 - `POST /v1/peers/sync`
 
 The node can now resolve `deliver_to` either as a full URL or as a configured `peer_id`. This is better suited for encrypted overlay networks because application code can target stable peer identities instead of embedding raw addresses everywhere.
@@ -123,6 +125,8 @@ The node now also has a first on-chain build layer:
 - signed EVM transaction intents for `createJob`, `acceptJob`, `submitWork`, `completeJob`, `rejectJob`, and `slashJob`
 - signed JSON-RPC payload skeletons for `eth_sendTransaction`, `eth_estimateGas`, and `eth_call`
 - explicit `abi_encoding_required` markers so a future signer/broadcaster can stay decoupled from the coordination runtime
+- live RPC planning for nonce, gas price, and gas estimate discovery
+- raw transaction relay for externally signed transactions
 
 The node now also has a first protocol-bridge layer:
 
