@@ -35,6 +35,12 @@ class RuntimeRegistry:
                 title="HTTP JSON Runtime Adapter",
                 description="Execute a task by forwarding a normalized envelope to an HTTP JSON agent runtime.",
             ),
+            "ollama-chat": RuntimeAdapterDescriptor(
+                runtime="ollama-chat",
+                version="0.1",
+                title="Ollama Chat Runtime Adapter",
+                description="Execute a task by calling an Ollama-compatible local chat endpoint.",
+            ),
             "cli-json": RuntimeAdapterDescriptor(
                 runtime="cli-json",
                 version="0.1",

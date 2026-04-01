@@ -132,6 +132,7 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `GET /v1/runtimes` 可列出内置 runtime adapter
 - `POST /v1/runtimes/bind` 可把 runtime adapter 绑定到已有任务
 - `http-json` 可通过同一套出站网络策略调用 HTTP Agent
+- `ollama-chat` 可直接调用本地 Ollama 兼容聊天接口，适合离线和私有部署
 - `cli-json` 可通过 stdin/stdout JSON 调用本地 CLI Agent 包装器
 - bridge adapter 和 runtime adapter 被刻意拆开，协议兼容不再强绑定执行方式
 

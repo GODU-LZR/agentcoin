@@ -125,6 +125,7 @@ worker runtime には最初の agent-adapter layer も追加しました。
 - `GET /v1/runtimes` で built-in runtime adapter を列挙できます
 - `POST /v1/runtimes/bind` で既存 task に runtime adapter を束ねられます
 - `http-json` は同じ outbound transport policy を使って HTTP agent runtime を呼び出せます
+- `ollama-chat` は local Ollama 互換 chat endpoint を呼び出せるので、offline と private execution に向きます
 - `cli-json` は stdin/stdout JSON で local CLI agent wrapper を実行できます
 - bridge adapter と runtime adapter を分けることで、protocol compatibility と execution mode を分離しています
 

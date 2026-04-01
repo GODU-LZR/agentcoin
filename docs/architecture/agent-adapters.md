@@ -25,6 +25,7 @@ They write protocol context into `payload._bridge`.
 These decide how a worker actually invokes an agent runtime.
 
 - `http-json`
+- `ollama-chat`
 - `cli-json`
 
 They write runtime context into `payload._runtime`.
@@ -85,6 +86,34 @@ Task binding shape:
 
 The worker sends JSON over `stdin` and expects JSON on `stdout`.
 
+### 3. Ollama Chat Agent
+
+Best for:
+
+- local private inference
+- offline-first laptop or workstation execution
+- weak-network environments where the model must stay on the node
+- WSL or Docker-hosted local models
+
+Task binding shape:
+
+```json
+{
+  "_runtime": {
+    "runtime": "ollama-chat",
+    "endpoint": "http://127.0.0.1:11434/api/chat",
+    "model": "qwen2.5:7b",
+    "prompt": "Summarize this task",
+    "options": {
+      "temperature": 0
+    },
+    "timeout_seconds": 60
+  }
+}
+```
+
+The worker sends a non-streaming Ollama-style chat request and normalizes the assistant message into the task result.
+
 ## How To Adapt Common Agent Categories
 
 ### LangGraph / custom Python agents
@@ -102,6 +131,12 @@ The worker sends JSON over `stdin` and expects JSON on `stdout`.
 - expose a narrow HTTP execution endpoint
 - map incoming task payload into that framework's planner/worker call
 - return normalized JSON result
+
+### Ollama-hosted local models
+
+- use `ollama-chat`
+- keep endpoint allowlists restricted to local or overlay addresses
+- prefer this path for private or weak-network deployments
 
 ### Shell / script / codegen agents
 
@@ -124,7 +159,6 @@ This means AgentCoin can adapt many agent shapes without making every worker ful
 
 - `openai-responses`
 - `langgraph-http`
-- `ollama-http`
 - `webhook-callback`
 - `container-job`
 

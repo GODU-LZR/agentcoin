@@ -173,6 +173,56 @@ class HttpAgentHarness:
         self.thread.join(timeout=2)
 
 
+class OllamaHarness:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.port = _free_port()
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), self._build_handler())
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/api/chat"
+
+    def _build_handler(self) -> type[BaseHTTPRequestHandler]:
+        harness = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                payload = json.loads(raw.decode("utf-8"))
+                harness.calls.append(payload)
+                response = {
+                    "model": payload.get("model"),
+                    "message": {
+                        "role": "assistant",
+                        "content": f"ollama:{payload.get('messages', [{}])[-1].get('content', '')}",
+                    },
+                    "done": True,
+                    "done_reason": "stop",
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    def start(self) -> None:
+        self.thread.start()
+        time.sleep(0.2)
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self.thread.join(timeout=2)
+
+
 class NodeIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -1526,6 +1576,74 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
             http_agent.stop()
+
+    def test_runtime_adapter_ollama_chat(self) -> None:
+        ollama = OllamaHarness()
+        ollama.start()
+        node = NodeHarness(
+            node_id="runtime-ollama-node",
+            token="token-ollama",
+            db_path=str(Path(self.tempdir.name) / "runtime-ollama.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("ollama-chat", runtime_names)
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-ollama",
+                {
+                    "id": "runtime-ollama-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "hello ollama"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/runtimes/bind",
+                "token-ollama",
+                {
+                    "task_id": "runtime-ollama-1",
+                    "runtime": "ollama-chat",
+                    "options": {
+                        "endpoint": ollama.url,
+                        "model": "qwen2.5:7b",
+                        "prompt": "hello ollama",
+                        "options": {"temperature": 0},
+                        "timeout_seconds": 10,
+                    },
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "ollama-chat")
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-ollama",
+                worker_id="worker-ollama-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["ollama-chat"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-ollama-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "ollama-chat")
+            self.assertEqual(task["result"]["adapter"]["model"], "qwen2.5:7b")
+            self.assertEqual(task["result"]["runtime_execution"]["assistant_message"]["content"], "ollama:hello ollama")
+            self.assertEqual(ollama.calls[0]["model"], "qwen2.5:7b")
+            self.assertFalse(ollama.calls[0]["stream"])
+            self.assertEqual(ollama.calls[0]["messages"][0]["content"], "hello ollama")
+        finally:
+            node.stop()
+            ollama.stop()
 
     def test_adapter_policy_allows_sandboxed_local_command(self) -> None:
         workspace = Path(self.tempdir.name) / "workspace"

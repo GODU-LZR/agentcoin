@@ -164,6 +164,8 @@ class ExecutionAdapterRegistry:
             )
         if runtime_kind == "http-json":
             return self._execute_http_runtime(task, runtime=runtime, worker_id=worker_id)
+        if runtime_kind == "ollama-chat":
+            return self._execute_ollama_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "cli-json":
             return self._execute_cli_runtime(task, runtime=runtime, worker_id=worker_id)
         return self._rejected_result(
@@ -334,6 +336,109 @@ class ExecutionAdapterRegistry:
             "protocol": "http-json",
             "endpoint": endpoint,
             "status": "completed",
+        }
+        return result
+
+    @staticmethod
+    def _normalize_ollama_messages(task: dict[str, Any], runtime: dict[str, Any]) -> list[dict[str, str]]:
+        raw_messages = runtime.get("messages") or task.get("payload", {}).get("messages")
+        if isinstance(raw_messages, list) and raw_messages:
+            normalized: list[dict[str, str]] = []
+            for item in raw_messages:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "user").strip() or "user"
+                content = str(item.get("content") or "")
+                normalized.append({"role": role, "content": content})
+            if normalized:
+                return normalized
+        prompt = runtime.get("prompt")
+        if prompt is None:
+            prompt = task.get("payload", {}).get("input")
+        if prompt is None:
+            prompt = task.get("payload", {})
+        if isinstance(prompt, str):
+            content = prompt
+        else:
+            content = json.dumps(prompt, ensure_ascii=False)
+        return [{"role": "user", "content": content}]
+
+    def _execute_ollama_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        endpoint = str(runtime.get("endpoint") or "http://127.0.0.1:11434/api/chat").strip()
+        if not self.policy.http_host_allowed(endpoint):
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:ollama-chat",
+                reason="runtime endpoint host is not allowlisted",
+                extra={"runtime": "ollama-chat", "endpoint": endpoint},
+            )
+        model = str(runtime.get("model") or "").strip()
+        if not model:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:ollama-chat",
+                reason="runtime.model is required",
+                extra={"runtime": "ollama-chat", "endpoint": endpoint},
+            )
+        request_body = {
+            "model": model,
+            "messages": self._normalize_ollama_messages(task, runtime),
+            "stream": False,
+        }
+        if "options" in runtime:
+            request_body["options"] = dict(runtime.get("options") or {})
+        if "format" in runtime:
+            request_body["format"] = runtime.get("format")
+        if "keep_alive" in runtime:
+            request_body["keep_alive"] = runtime.get("keep_alive")
+        headers = dict(runtime.get("headers") or {})
+        try:
+            response = self.transport.request_json(
+                endpoint,
+                method="POST",
+                payload=request_body,
+                headers=headers,
+                timeout=float(runtime.get("timeout_seconds") or 60),
+            )
+        except Exception as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:ollama-chat",
+                reason=str(exc),
+                extra={"runtime": "ollama-chat", "endpoint": endpoint, "model": model},
+            )
+        assistant_message = dict(response.get("message") or {})
+        result = self._base_result(task, worker_id=worker_id)
+        result["adapter"] = {
+            "mode": "runtime-adapter",
+            "protocol": "ollama-chat",
+            "status": "completed",
+            "endpoint": endpoint,
+            "model": model,
+        }
+        result["policy_receipt"] = {
+            "mode": "runtime-adapter",
+            "protocol": "ollama-chat",
+            "decision": "allowed",
+            "runtime": "ollama-chat",
+            "endpoint": endpoint,
+            "model": model,
+        }
+        result["runtime_execution"] = {
+            "runtime": "ollama-chat",
+            "endpoint": endpoint,
+            "request": request_body,
+            "response": response,
+            "assistant_message": assistant_message,
+        }
+        result["execution_receipt"] = {
+            "protocol": "ollama-chat",
+            "endpoint": endpoint,
+            "model": model,
+            "done": bool(response.get("done")),
         }
         return result
 

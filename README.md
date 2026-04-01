@@ -132,6 +132,7 @@ The worker runtime now also has a first agent-adapter layer:
 - `GET /v1/runtimes` lists built-in runtime adapters
 - `POST /v1/runtimes/bind` can attach a runtime adapter to an existing task
 - `http-json` can call an HTTP agent runtime through the same outbound transport policy
+- `ollama-chat` can call a local Ollama-compatible chat endpoint for offline and private execution
 - `cli-json` can invoke a local agent wrapper over stdin/stdout JSON
 - bridge adapters and runtime adapters are intentionally separate, so protocol import/export does not have to dictate execution mode
 
