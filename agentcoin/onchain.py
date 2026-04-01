@@ -55,6 +55,11 @@ class OnchainBindings:
     local_did: str | None = None
     local_controller_address: str | None = None
     receipt_base_uri: str | None = None
+    settlement_policy_version: str = "0.1"
+    settlement_complete_threshold: int = 60
+    settlement_slash_negative_points_threshold: int = 30
+    settlement_challenge_on_open_dispute: bool = True
+    settlement_challenge_on_escalated_dispute: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -442,8 +447,10 @@ class OnchainRuntime:
         if adapter_rejected:
             recommended_resolution = "rejectJob"
             resolution_params = {}
-        elif open_disputes or escalated_disputes:
-            first = (open_disputes or escalated_disputes)[0]
+        elif (self.bindings.settlement_challenge_on_open_dispute and open_disputes) or (
+            self.bindings.settlement_challenge_on_escalated_dispute and escalated_disputes
+        ):
+            first = open_disputes[0] if open_disputes else escalated_disputes[0]
             recommended_resolution = "challengeJob"
             resolution_params = {
                 "evidence_hash": str(first.get("evidence_hash") or ""),
@@ -456,7 +463,7 @@ class OnchainRuntime:
                 "recipient": self.bindings.local_controller_address or "0x0000000000000000000000000000000000000000",
                 "reason": f"upheld dispute: {str(first.get('reason') or 'dispute')}",
             }
-        elif quarantined or severe_violation or negative_points <= -30:
+        elif quarantined or severe_violation or negative_points <= -int(self.bindings.settlement_slash_negative_points_threshold):
             recommended_resolution = "slashJob"
             resolution_params = {
                 "slash_amount_wei": str(slash_amount),
@@ -483,6 +490,13 @@ class OnchainRuntime:
             "recommended_sequence": sequence,
             "score": score,
             "slash_amount_wei": str(slash_amount),
+            "settlement_policy": {
+                "version": self.bindings.settlement_policy_version,
+                "complete_threshold": int(self.bindings.settlement_complete_threshold),
+                "slash_negative_points_threshold": int(self.bindings.settlement_slash_negative_points_threshold),
+                "challenge_on_open_dispute": bool(self.bindings.settlement_challenge_on_open_dispute),
+                "challenge_on_escalated_dispute": bool(self.bindings.settlement_challenge_on_escalated_dispute),
+            },
             "resolution_params": resolution_params,
             "intents": intents,
             "generated_at": utc_now(),

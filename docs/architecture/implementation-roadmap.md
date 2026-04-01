@@ -52,7 +52,7 @@ Status legend:
 - `[x]` `challenge-upheld`
 - `[x]` `challenge-dismissed`
 - `[x]` score policy version
-- `[ ]` configurable weights
+- `[x]` configurable weights
 
 ## Phase 5
 
@@ -60,10 +60,10 @@ Status legend:
 - `[ ]` separate local score
 - `[ ]` separate review score
 - `[ ]` separate network trust score
-- `[ ]` separate slash threshold
+- `[x]` separate slash threshold
 - `[ ]` separate challenge threshold
-- `[ ]` separate complete threshold
-- `[ ]` settlement preview bound to policy version
+- `[x]` separate complete threshold
+- `[x]` settlement preview bound to policy version
 
 ## Phase 6
 

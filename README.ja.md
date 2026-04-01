@@ -149,6 +149,7 @@ runtime には最小の local `PoAW` ledger も追加しました。
 - task completion / failure は `deterministic-pass`、`deterministic-fail`、`subjective-approve`、`subjective-reject` に細分化されました
 - dispute flow は `challenge-open`、`challenge-upheld`、`challenge-dismissed` を記録します
 - summary は `poaw_policy_version` と現在の score weight table を返します
+- node config から `poaw_policy_version` と `poaw_score_weights` を上書きできるようになりました
 - `GET /v1/poaw/events` で raw event ledger を取得できます
 - `GET /v1/poaw/summary` で actor / task 単位の points 集計を取得できます
 - これはまだ chain settlement engine ではなく、local useful-work accounting skeleton です
@@ -157,6 +158,7 @@ runtime には最小の on-chain settlement preview も追加しました。
 
 - `GET /v1/onchain/settlement-preview?task_id=...` で completed task を推奨 on-chain action に変換できます
 - preview は local `PoAW` summary、task-specific violation、worker reputation を合わせて評価します
+- preview は versioned settlement policy と configurable な complete/slash threshold も返します
 - open dispute がある場合は recommendation を `challengeJob` に寄せます
 - これは signed preview であり、自動送信ではありません
 

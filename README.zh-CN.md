@@ -156,6 +156,7 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - 任务完成与失败现在会细分成 `deterministic-pass`、`deterministic-fail`、`subjective-approve`、`subjective-reject`
 - dispute 流程现在会写入 `challenge-open`、`challenge-upheld`、`challenge-dismissed`
 - summary 现在会暴露 `poaw_policy_version` 和当前评分权重表
+- 节点现在也可以通过配置覆盖 `poaw_policy_version` 和 `poaw_score_weights`
 - `GET /v1/poaw/events` 可查看原始事件账本
 - `GET /v1/poaw/summary` 可按 actor 或 task 汇总积分
 - 这仍然只是本地 useful-work 记账骨架，还不是链上结算引擎
@@ -164,6 +165,7 @@ worker 运行时现在也有了第一版 Agent 适配层：
 
 - `GET /v1/onchain/settlement-preview?task_id=...` 可把已完成任务映射成推荐链上动作
 - 预览会综合本地 `PoAW` 汇总、任务级违规记录和 worker 信誉状态
+- 预览现在也会暴露带版本号的 settlement policy，以及可配置的 complete/slash threshold
 - 开放中的 dispute 现在会把推荐动作切到 `challengeJob`
 - 这仍然只是签名预览，不会自动广播交易
 

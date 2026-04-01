@@ -40,7 +40,11 @@ LOG = logging.getLogger("agentcoin.node")
 class AgentCoinNode:
     def __init__(self, config: NodeConfig) -> None:
         self.config = config
-        self.store = NodeStore(config.database_path)
+        self.store = NodeStore(
+            config.database_path,
+            poaw_policy_version=config.poaw_policy_version,
+            poaw_score_weights=config.poaw_score_weights,
+        )
         self.git = GitWorkspace(config.git_root) if config.git_root else None
         self.transport = OutboundTransport(config.network)
         self.onchain = OnchainRuntime(config.onchain)

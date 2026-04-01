@@ -36,6 +36,8 @@ class NodeHarness:
                  identity_public_key: str | None = None, onchain: OnchainBindings | None = None,
                  network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
                  challenge_bond_required_wei: int = 0,
+                 poaw_policy_version: str = "0.2",
+                 poaw_score_weights: dict[str, int] | None = None,
                  bridges: list[str] | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
@@ -60,6 +62,8 @@ class NodeHarness:
             task_retry_limit=2,
             task_retry_backoff_seconds=1,
             challenge_bond_required_wei=challenge_bond_required_wei,
+            poaw_policy_version=poaw_policy_version,
+            poaw_score_weights=poaw_score_weights or {},
             network=network or OutboundNetworkConfig(),
             onchain=onchain or OnchainBindings(),
         )
@@ -3091,6 +3095,83 @@ class NodeIntegrationTests(unittest.TestCase):
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=poaw-task-1")
             self.assertEqual(replay["poaw_summary"]["event_count"], 2)
             self.assertEqual(len(replay["poaw_events"]), 2)
+        finally:
+            node.stop()
+
+    def test_poaw_and_settlement_policies_are_configurable(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:policy-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+            settlement_policy_version="0.2-test",
+            settlement_complete_threshold=75,
+            settlement_slash_negative_points_threshold=22,
+        )
+        node = NodeHarness(
+            node_id="poaw-policy-node",
+            token="token-poaw-policy",
+            db_path=str(Path(self.tempdir.name) / "poaw-policy.db"),
+            capabilities=["worker"],
+            signing_secret="poaw-policy-secret",
+            poaw_policy_version="0.3-test",
+            poaw_score_weights={
+                "worker_base": 20,
+                "kind_code_bonus": 5,
+                "workflow_bonus": 0,
+                "required_capability_bonus_cap": 0,
+                "approved_bonus": 0,
+                "merged_bonus": 0,
+            },
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-poaw-policy",
+                {
+                    "id": "poaw-policy-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 97,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-poaw-policy",
+                {"worker_id": "worker-policy-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-poaw-policy",
+                {
+                    "task_id": "poaw-policy-task-1",
+                    "worker_id": "worker-policy-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-policy-1"},
+                },
+            )
+
+            _, summary = self._get(f"{node.base_url}/v1/poaw/summary?actor_id=worker-policy-1&actor_type=worker")
+            self.assertEqual(summary["poaw_policy_version"], "0.3-test")
+            self.assertEqual(summary["positive_points"], 25)
+            self.assertEqual(summary["score_weights"]["worker_base"], 20)
+            self.assertEqual(summary["score_weights"]["kind_code_bonus"], 5)
+
+            _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=poaw-policy-task-1")
+            settlement = preview["settlement"]
+            self.assertEqual(settlement["settlement_policy"]["version"], "0.2-test")
+            self.assertEqual(settlement["settlement_policy"]["complete_threshold"], 75)
+            self.assertEqual(settlement["settlement_policy"]["slash_negative_points_threshold"], 22)
         finally:
             node.stop()
 

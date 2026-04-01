@@ -10,6 +10,21 @@ from agentcoin.net import OutboundNetworkConfig
 from agentcoin.onchain import OnchainBindings
 from agentcoin.security import resolve_public_key
 
+DEFAULT_POAW_SCORE_WEIGHTS: dict[str, int] = {
+    "worker_base": 10,
+    "reviewer_base": 8,
+    "planner_base": 6,
+    "aggregator_base": 9,
+    "kind_code_bonus": 2,
+    "kind_review_bonus": 2,
+    "kind_merge_bonus": 3,
+    "kind_plan_bonus": 1,
+    "workflow_bonus": 1,
+    "required_capability_bonus_cap": 3,
+    "approved_bonus": 2,
+    "merged_bonus": 1,
+}
+
 
 @dataclass(slots=True)
 class PeerConfig:
@@ -52,6 +67,8 @@ class NodeConfig:
     task_retry_backoff_seconds: int = 5
     local_dispatch_fallback: bool = True
     challenge_bond_required_wei: int = 0
+    poaw_policy_version: str = "0.2"
+    poaw_score_weights: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_POAW_SCORE_WEIGHTS))
     bridges: list[str] = field(default_factory=lambda: ["mcp", "a2a"])
     network: OutboundNetworkConfig = field(default_factory=OutboundNetworkConfig)
     onchain: OnchainBindings = field(default_factory=OnchainBindings)

@@ -9,9 +9,9 @@ from uuid import uuid4
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.semantics import capabilities_satisfy
 
-POAW_POLICY_VERSION = "0.2"
+DEFAULT_POAW_POLICY_VERSION = "0.2"
 
-POAW_SCORE_WEIGHTS: dict[str, int] = {
+DEFAULT_POAW_SCORE_WEIGHTS: dict[str, int] = {
     "worker_base": 10,
     "reviewer_base": 8,
     "planner_base": 6,
@@ -28,9 +28,19 @@ POAW_SCORE_WEIGHTS: dict[str, int] = {
 
 
 class NodeStore:
-    def __init__(self, database_path: str) -> None:
+    def __init__(
+        self,
+        database_path: str,
+        *,
+        poaw_policy_version: str = DEFAULT_POAW_POLICY_VERSION,
+        poaw_score_weights: dict[str, int] | None = None,
+    ) -> None:
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.poaw_policy_version = str(poaw_policy_version or DEFAULT_POAW_POLICY_VERSION).strip() or DEFAULT_POAW_POLICY_VERSION
+        merged_weights = dict(DEFAULT_POAW_SCORE_WEIGHTS)
+        merged_weights.update({str(key): int(value) for key, value in dict(poaw_score_weights or {}).items()})
+        self.poaw_score_weights = merged_weights
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -891,7 +901,7 @@ class NodeStore:
                     "dispute_id": dispute_id,
                     "actor_id": actor_id,
                     "severity": str(severity or "medium").strip().lower() or "medium",
-                    "poaw_policy_version": POAW_POLICY_VERSION,
+                    "poaw_policy_version": self.poaw_policy_version,
                 },
                 created_at=now,
             )
@@ -1004,7 +1014,7 @@ class NodeStore:
                             "severity": row["severity"],
                             "bond_amount_wei": bond_amount_wei,
                             "bond_status": bond_outcome["status"],
-                            "poaw_policy_version": POAW_POLICY_VERSION,
+                            "poaw_policy_version": self.poaw_policy_version,
                         },
                         created_at=now,
                     )
@@ -1079,7 +1089,7 @@ class NodeStore:
                             "actor_id": actor_id,
                             "bond_amount_wei": bond_amount_wei,
                             "bond_status": bond_outcome["status"],
-                            "poaw_policy_version": POAW_POLICY_VERSION,
+                            "poaw_policy_version": self.poaw_policy_version,
                         },
                         created_at=now,
                     )
@@ -1363,8 +1373,8 @@ class NodeStore:
                 "actor_id": actor_id,
                 "actor_type": actor_type,
                 "task_id": task_id,
-                "poaw_policy_version": POAW_POLICY_VERSION,
-                "score_weights": dict(POAW_SCORE_WEIGHTS),
+                "poaw_policy_version": self.poaw_policy_version,
+                "score_weights": dict(self.poaw_score_weights),
                 "event_count": int(totals["event_count"] or 0),
                 "total_points": int(totals["total_points"] or 0),
                 "positive_points": int(totals["positive_points"] or 0),
@@ -1534,8 +1544,8 @@ class NodeStore:
         items = self.list_settlement_relays(task_id=task_id, limit=1)
         return items[0] if items else None
 
-    @staticmethod
     def _completion_score_event(
+        self,
         *,
         task_id: str,
         worker_id: str,
@@ -1550,18 +1560,18 @@ class NodeStore:
         role_name = str(role or "worker").strip().lower() or "worker"
         kind_name = str(kind or "generic").strip().lower() or "generic"
         role_base = {
-            "worker": POAW_SCORE_WEIGHTS["worker_base"],
-            "reviewer": POAW_SCORE_WEIGHTS["reviewer_base"],
-            "planner": POAW_SCORE_WEIGHTS["planner_base"],
-            "aggregator": POAW_SCORE_WEIGHTS["aggregator_base"],
+            "worker": self.poaw_score_weights["worker_base"],
+            "reviewer": self.poaw_score_weights["reviewer_base"],
+            "planner": self.poaw_score_weights["planner_base"],
+            "aggregator": self.poaw_score_weights["aggregator_base"],
         }.get(role_name, 5)
         kind_bonus = {
-            "code": POAW_SCORE_WEIGHTS["kind_code_bonus"],
-            "exec": POAW_SCORE_WEIGHTS["kind_code_bonus"],
-            "tool-call": POAW_SCORE_WEIGHTS["kind_code_bonus"],
-            "review": POAW_SCORE_WEIGHTS["kind_review_bonus"],
-            "merge": POAW_SCORE_WEIGHTS["kind_merge_bonus"],
-            "plan": POAW_SCORE_WEIGHTS["kind_plan_bonus"],
+            "code": self.poaw_score_weights["kind_code_bonus"],
+            "exec": self.poaw_score_weights["kind_code_bonus"],
+            "tool-call": self.poaw_score_weights["kind_code_bonus"],
+            "review": self.poaw_score_weights["kind_review_bonus"],
+            "merge": self.poaw_score_weights["kind_merge_bonus"],
+            "plan": self.poaw_score_weights["kind_plan_bonus"],
         }.get(kind_name, 0)
         points = role_base + kind_bonus
         score_components = {
@@ -1573,20 +1583,20 @@ class NodeStore:
             "merged_bonus": 0,
         }
         if workflow_id:
-            points += POAW_SCORE_WEIGHTS["workflow_bonus"]
-            score_components["workflow_bonus"] = POAW_SCORE_WEIGHTS["workflow_bonus"]
+            points += self.poaw_score_weights["workflow_bonus"]
+            score_components["workflow_bonus"] = self.poaw_score_weights["workflow_bonus"]
         if required_capabilities:
-            required_bonus = min(POAW_SCORE_WEIGHTS["required_capability_bonus_cap"], len(required_capabilities))
+            required_bonus = min(self.poaw_score_weights["required_capability_bonus_cap"], len(required_capabilities))
             points += required_bonus
             score_components["required_capabilities_bonus"] = required_bonus
         approved = bool((result or {}).get("approved"))
         merged = bool((result or {}).get("merged"))
         if approved:
-            points += POAW_SCORE_WEIGHTS["approved_bonus"]
-            score_components["approved_bonus"] = POAW_SCORE_WEIGHTS["approved_bonus"]
+            points += self.poaw_score_weights["approved_bonus"]
+            score_components["approved_bonus"] = self.poaw_score_weights["approved_bonus"]
         if merged:
-            points += POAW_SCORE_WEIGHTS["merged_bonus"]
-            score_components["merged_bonus"] = POAW_SCORE_WEIGHTS["merged_bonus"]
+            points += self.poaw_score_weights["merged_bonus"]
+            score_components["merged_bonus"] = self.poaw_score_weights["merged_bonus"]
         event_type = "task-completed"
         if kind_name in {"code", "exec", "tool-call"}:
             event_type = "deterministic-pass"
@@ -1608,13 +1618,13 @@ class NodeStore:
                 "result_keys": sorted((result or {}).keys()),
                 "approved": approved,
                 "merged": merged,
-                "poaw_policy_version": POAW_POLICY_VERSION,
+                "poaw_policy_version": self.poaw_policy_version,
                 "score_components": score_components,
             },
         )
 
-    @staticmethod
     def _failure_score_event(
+        self,
         *,
         task_id: str,
         worker_id: str,
@@ -1647,7 +1657,7 @@ class NodeStore:
                 "delivery_status": delivery_status,
                 "required_capabilities": required_capabilities,
                 "error_message": error_message,
-                "poaw_policy_version": POAW_POLICY_VERSION,
+                "poaw_policy_version": self.poaw_policy_version,
             },
         )
 
@@ -1861,7 +1871,7 @@ class NodeStore:
                 "reason": reason,
                 "severity": severity_name,
                 "penalty": penalty,
-                "poaw_policy_version": POAW_POLICY_VERSION,
+                "poaw_policy_version": self.poaw_policy_version,
                 **(payload or {}),
             },
             created_at=now,

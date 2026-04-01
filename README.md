@@ -156,6 +156,7 @@ The runtime now also has a first local `PoAW` ledger:
 - task completion and failure now use finer event types such as `deterministic-pass`, `deterministic-fail`, `subjective-approve`, and `subjective-reject`
 - dispute flows now emit `challenge-open`, `challenge-upheld`, and `challenge-dismissed`
 - summaries now expose `poaw_policy_version` and the active score weight table
+- nodes can now override `poaw_policy_version` and `poaw_score_weights` through config
 - `GET /v1/poaw/events` exposes the raw event ledger
 - `GET /v1/poaw/summary` exposes aggregated points by actor or task
 - this is a local scoring skeleton for useful-work accounting, not a chain settlement engine yet
@@ -164,6 +165,7 @@ The runtime now also has a first on-chain settlement preview:
 
 - `GET /v1/onchain/settlement-preview?task_id=...` maps a completed task into recommended on-chain actions
 - the preview combines local `PoAW` summaries, task-specific violations, and worker reputation
+- the preview now also exposes a versioned settlement policy with configurable complete/slash thresholds
 - open disputes can now shift the recommendation toward `challengeJob`
 - resolved disputes now also feed back into local score events and reputation
 - the result is a signed operator preview, not an auto-broadcasted settlement
