@@ -3078,13 +3078,14 @@ class NodeIntegrationTests(unittest.TestCase):
             _, events = self._get(f"{node.base_url}/v1/poaw/events?actor_id=worker-poaw-http")
             self.assertEqual(len(events["items"]), 2)
             self.assertEqual(events["items"][0]["event_type"], "policy-violation")
-            self.assertEqual(events["items"][1]["event_type"], "review-approved")
+            self.assertEqual(events["items"][1]["event_type"], "subjective-approve")
 
             _, summary = self._get(f"{node.base_url}/v1/poaw/summary?actor_id=worker-poaw-http&actor_type=worker")
             self.assertEqual(summary["event_count"], 2)
             self.assertEqual(summary["positive_points"], 14)
             self.assertEqual(summary["negative_points"], -15)
             self.assertEqual(summary["total_points"], -1)
+            self.assertEqual(summary["poaw_policy_version"], "0.2")
             self.assertEqual(summary["reputation"]["violations"], 1)
 
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=poaw-task-1")

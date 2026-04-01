@@ -146,6 +146,9 @@ runtime には最小の local `PoAW` ledger も追加しました。
 
 - successful ACK は正の score event を記録します
 - policy violation は負の score event を記録します
+- task completion / failure は `deterministic-pass`、`deterministic-fail`、`subjective-approve`、`subjective-reject` に細分化されました
+- dispute flow は `challenge-open`、`challenge-upheld`、`challenge-dismissed` を記録します
+- summary は `poaw_policy_version` と現在の score weight table を返します
 - `GET /v1/poaw/events` で raw event ledger を取得できます
 - `GET /v1/poaw/summary` で actor / task 単位の points 集計を取得できます
 - これはまだ chain settlement engine ではなく、local useful-work accounting skeleton です

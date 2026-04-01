@@ -9,6 +9,23 @@ from uuid import uuid4
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.semantics import capabilities_satisfy
 
+POAW_POLICY_VERSION = "0.2"
+
+POAW_SCORE_WEIGHTS: dict[str, int] = {
+    "worker_base": 10,
+    "reviewer_base": 8,
+    "planner_base": 6,
+    "aggregator_base": 9,
+    "kind_code_bonus": 2,
+    "kind_review_bonus": 2,
+    "kind_merge_bonus": 3,
+    "kind_plan_bonus": 1,
+    "workflow_bonus": 1,
+    "required_capability_bonus_cap": 3,
+    "approved_bonus": 2,
+    "merged_bonus": 1,
+}
+
 
 class NodeStore:
     def __init__(self, database_path: str) -> None:
@@ -863,6 +880,21 @@ class NodeStore:
                 },
                 created_at=now,
             )
+            self._insert_score_event(
+                conn,
+                actor_id=challenger_id,
+                actor_type="reviewer",
+                task_id=task_id,
+                event_type="challenge-open",
+                points=0,
+                payload={
+                    "dispute_id": dispute_id,
+                    "actor_id": actor_id,
+                    "severity": str(severity or "medium").strip().lower() or "medium",
+                    "poaw_policy_version": POAW_POLICY_VERSION,
+                },
+                created_at=now,
+            )
             conn.commit()
             return {
                 "ok": True,
@@ -964,7 +996,7 @@ class NodeStore:
                         actor_id=challenger_id,
                         actor_type="reviewer",
                         task_id=row["task_id"],
-                        event_type="dispute-upheld",
+                        event_type="challenge-upheld",
                         points=8,
                         payload={
                             "dispute_id": dispute_id,
@@ -972,6 +1004,7 @@ class NodeStore:
                             "severity": row["severity"],
                             "bond_amount_wei": bond_amount_wei,
                             "bond_status": bond_outcome["status"],
+                            "poaw_policy_version": POAW_POLICY_VERSION,
                         },
                         created_at=now,
                     )
@@ -1039,13 +1072,14 @@ class NodeStore:
                         actor_id=challenger_id,
                         actor_type="reviewer",
                         task_id=row["task_id"],
-                        event_type="dispute-dismissed",
+                        event_type="challenge-dismissed",
                         points=-5,
                         payload={
                             "dispute_id": dispute_id,
                             "actor_id": actor_id,
                             "bond_amount_wei": bond_amount_wei,
                             "bond_status": bond_outcome["status"],
+                            "poaw_policy_version": POAW_POLICY_VERSION,
                         },
                         created_at=now,
                     )
@@ -1329,6 +1363,8 @@ class NodeStore:
                 "actor_id": actor_id,
                 "actor_type": actor_type,
                 "task_id": task_id,
+                "poaw_policy_version": POAW_POLICY_VERSION,
+                "score_weights": dict(POAW_SCORE_WEIGHTS),
                 "event_count": int(totals["event_count"] or 0),
                 "total_points": int(totals["total_points"] or 0),
                 "positive_points": int(totals["positive_points"] or 0),
@@ -1514,31 +1550,48 @@ class NodeStore:
         role_name = str(role or "worker").strip().lower() or "worker"
         kind_name = str(kind or "generic").strip().lower() or "generic"
         role_base = {
-            "worker": 10,
-            "reviewer": 8,
-            "planner": 6,
-            "aggregator": 9,
+            "worker": POAW_SCORE_WEIGHTS["worker_base"],
+            "reviewer": POAW_SCORE_WEIGHTS["reviewer_base"],
+            "planner": POAW_SCORE_WEIGHTS["planner_base"],
+            "aggregator": POAW_SCORE_WEIGHTS["aggregator_base"],
         }.get(role_name, 5)
         kind_bonus = {
-            "code": 2,
-            "review": 2,
-            "merge": 3,
-            "plan": 1,
+            "code": POAW_SCORE_WEIGHTS["kind_code_bonus"],
+            "exec": POAW_SCORE_WEIGHTS["kind_code_bonus"],
+            "tool-call": POAW_SCORE_WEIGHTS["kind_code_bonus"],
+            "review": POAW_SCORE_WEIGHTS["kind_review_bonus"],
+            "merge": POAW_SCORE_WEIGHTS["kind_merge_bonus"],
+            "plan": POAW_SCORE_WEIGHTS["kind_plan_bonus"],
         }.get(kind_name, 0)
         points = role_base + kind_bonus
+        score_components = {
+            "role_base": role_base,
+            "kind_bonus": kind_bonus,
+            "workflow_bonus": 0,
+            "required_capabilities_bonus": 0,
+            "approved_bonus": 0,
+            "merged_bonus": 0,
+        }
         if workflow_id:
-            points += 1
+            points += POAW_SCORE_WEIGHTS["workflow_bonus"]
+            score_components["workflow_bonus"] = POAW_SCORE_WEIGHTS["workflow_bonus"]
         if required_capabilities:
-            points += min(3, len(required_capabilities))
+            required_bonus = min(POAW_SCORE_WEIGHTS["required_capability_bonus_cap"], len(required_capabilities))
+            points += required_bonus
+            score_components["required_capabilities_bonus"] = required_bonus
         approved = bool((result or {}).get("approved"))
         merged = bool((result or {}).get("merged"))
         if approved:
-            points += 2
+            points += POAW_SCORE_WEIGHTS["approved_bonus"]
+            score_components["approved_bonus"] = POAW_SCORE_WEIGHTS["approved_bonus"]
         if merged:
-            points += 1
+            points += POAW_SCORE_WEIGHTS["merged_bonus"]
+            score_components["merged_bonus"] = POAW_SCORE_WEIGHTS["merged_bonus"]
         event_type = "task-completed"
+        if kind_name in {"code", "exec", "tool-call"}:
+            event_type = "deterministic-pass"
         if kind_name == "review":
-            event_type = "review-approved" if approved else "review-completed"
+            event_type = "subjective-approve" if approved else "subjective-complete"
         elif kind_name == "merge":
             event_type = "merge-completed"
         return (
@@ -1555,6 +1608,46 @@ class NodeStore:
                 "result_keys": sorted((result or {}).keys()),
                 "approved": approved,
                 "merged": merged,
+                "poaw_policy_version": POAW_POLICY_VERSION,
+                "score_components": score_components,
+            },
+        )
+
+    @staticmethod
+    def _failure_score_event(
+        *,
+        task_id: str,
+        worker_id: str,
+        role: str,
+        kind: str,
+        workflow_id: str | None,
+        branch: str,
+        delivery_status: str,
+        required_capabilities: list[str],
+        error_message: str | None,
+    ) -> tuple[str, int, dict[str, Any]]:
+        kind_name = str(kind or "generic").strip().lower() or "generic"
+        event_type = "task-failed"
+        points = -10
+        if kind_name in {"code", "exec", "tool-call"}:
+            event_type = "deterministic-fail"
+            points = -12
+        elif kind_name == "review":
+            event_type = "subjective-reject"
+            points = -8
+        return (
+            event_type,
+            points,
+            {
+                "worker_id": worker_id,
+                "role": str(role or "worker").strip().lower() or "worker",
+                "kind": kind_name,
+                "workflow_id": workflow_id,
+                "branch": branch,
+                "delivery_status": delivery_status,
+                "required_capabilities": required_capabilities,
+                "error_message": error_message,
+                "poaw_policy_version": POAW_POLICY_VERSION,
             },
         )
 
@@ -1768,6 +1861,7 @@ class NodeStore:
                 "reason": reason,
                 "severity": severity_name,
                 "penalty": penalty,
+                "poaw_policy_version": POAW_POLICY_VERSION,
                 **(payload or {}),
             },
             created_at=now,
@@ -3055,6 +3149,28 @@ class NodeStore:
                         },
                         created_at=now,
                     )
+                    if status == "dead-letter":
+                        event_type, points, event_payload = self._failure_score_event(
+                            task_id=task_id,
+                            worker_id=worker_id,
+                            role=str(row["role"] or "worker"),
+                            kind=str(row["kind"] or "generic"),
+                            workflow_id=row["workflow_id"],
+                            branch=str(row["branch"] or "main"),
+                            delivery_status=str(row["delivery_status"] or "local"),
+                            required_capabilities=json.loads(row["required_capabilities_json"] or "[]"),
+                            error_message=error_message,
+                        )
+                        self._insert_score_event(
+                            conn,
+                            actor_id=worker_id,
+                            actor_type="worker",
+                            task_id=task_id,
+                            event_type=event_type,
+                            points=points,
+                            payload=event_payload,
+                            created_at=now,
+                        )
             else:
                 failure = {"error": error_message} if error_message else {"error": "task failed"}
                 updated = conn.execute(
@@ -3086,6 +3202,27 @@ class NodeStore:
                             "error_message": error_message,
                             "result": failure,
                         },
+                        created_at=now,
+                    )
+                    event_type, points, event_payload = self._failure_score_event(
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        role=str(row["role"] or "worker"),
+                        kind=str(row["kind"] or "generic"),
+                        workflow_id=row["workflow_id"],
+                        branch=str(row["branch"] or "main"),
+                        delivery_status=str(row["delivery_status"] or "local"),
+                        required_capabilities=json.loads(row["required_capabilities_json"] or "[]"),
+                        error_message=error_message,
+                    )
+                    self._insert_score_event(
+                        conn,
+                        actor_id=worker_id,
+                        actor_type="worker",
+                        task_id=task_id,
+                        event_type=event_type,
+                        points=points,
+                        payload=event_payload,
                         created_at=now,
                     )
             conn.commit()

@@ -153,6 +153,9 @@ The runtime now also has a first local `PoAW` ledger:
 
 - successful ACKs generate durable positive score events
 - policy violations generate durable negative score events
+- task completion and failure now use finer event types such as `deterministic-pass`, `deterministic-fail`, `subjective-approve`, and `subjective-reject`
+- dispute flows now emit `challenge-open`, `challenge-upheld`, and `challenge-dismissed`
+- summaries now expose `poaw_policy_version` and the active score weight table
 - `GET /v1/poaw/events` exposes the raw event ledger
 - `GET /v1/poaw/summary` exposes aggregated points by actor or task
 - this is a local scoring skeleton for useful-work accounting, not a chain settlement engine yet

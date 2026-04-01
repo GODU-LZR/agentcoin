@@ -153,6 +153,9 @@ worker 运行时现在也有了第一版 Agent 适配层：
 
 - 成功 ACK 会写入正向 score event
 - 策略违规会写入负向 score event
+- 任务完成与失败现在会细分成 `deterministic-pass`、`deterministic-fail`、`subjective-approve`、`subjective-reject`
+- dispute 流程现在会写入 `challenge-open`、`challenge-upheld`、`challenge-dismissed`
+- summary 现在会暴露 `poaw_policy_version` 和当前评分权重表
 - `GET /v1/poaw/events` 可查看原始事件账本
 - `GET /v1/poaw/summary` 可按 actor 或 task 汇总积分
 - 这仍然只是本地 useful-work 记账骨架，还不是链上结算引擎

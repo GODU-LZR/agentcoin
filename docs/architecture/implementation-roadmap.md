@@ -43,15 +43,15 @@ Status legend:
 
 ## Phase 4
 
-- `[ ]` finer `PoAW` event taxonomy
-- `[ ]` `deterministic-pass`
-- `[ ]` `deterministic-fail`
-- `[ ]` `subjective-approve`
-- `[ ]` `subjective-reject`
-- `[ ]` `challenge-open`
-- `[ ]` `challenge-upheld`
-- `[ ]` `challenge-dismissed`
-- `[ ]` score policy version
+- `[x]` finer `PoAW` event taxonomy
+- `[x]` `deterministic-pass`
+- `[x]` `deterministic-fail`
+- `[x]` `subjective-approve`
+- `[x]` `subjective-reject`
+- `[x]` `challenge-open`
+- `[x]` `challenge-upheld`
+- `[x]` `challenge-dismissed`
+- `[x]` score policy version
 - `[ ]` configurable weights
 
 ## Phase 5

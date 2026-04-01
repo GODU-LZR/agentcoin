@@ -316,8 +316,9 @@ class NodeStoreTests(unittest.TestCase):
 
         score_events = self.store.list_score_events(actor_id="worker-audit")
         self.assertEqual(len(score_events), 1)
-        self.assertEqual(score_events[0]["event_type"], "task-completed")
-        self.assertEqual(score_events[0]["points"], 10)
+        self.assertEqual(score_events[0]["event_type"], "deterministic-pass")
+        self.assertEqual(score_events[0]["points"], 12)
+        self.assertEqual(score_events[0]["payload"]["poaw_policy_version"], "0.2")
 
     def test_poaw_summary_aggregates_completion_and_violation_events(self) -> None:
         self.store.add_task(
@@ -360,12 +361,15 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(len(events), 2)
         self.assertEqual(events[0]["event_type"], "policy-violation")
         self.assertEqual(events[0]["points"], -15)
+        self.assertEqual(events[1]["event_type"], "subjective-approve")
 
         summary = self.store.summarize_score_events(actor_id="reviewer-poaw", actor_type="worker")
         self.assertEqual(summary["event_count"], 2)
         self.assertEqual(summary["total_points"], -1)
         self.assertEqual(summary["positive_points"], 14)
         self.assertEqual(summary["negative_points"], -15)
+        self.assertEqual(summary["poaw_policy_version"], "0.2")
+        self.assertIn("worker_base", summary["score_weights"])
         self.assertEqual(summary["reputation"]["violations"], 1)
 
     def test_policy_violations_update_reputation_and_block_claim(self) -> None:
@@ -473,7 +477,8 @@ class NodeStoreTests(unittest.TestCase):
         dispute_events = self.store.list_score_events(task_id="dispute-task")
         event_types = {item["event_type"] for item in dispute_events}
         self.assertIn("policy-violation", event_types)
-        self.assertIn("dispute-upheld", event_types)
+        self.assertIn("challenge-open", event_types)
+        self.assertIn("challenge-upheld", event_types)
         self.assertIn("dispute-bond-awarded", event_types)
 
         actions = self.store.list_governance_actions(actor_id="worker-disputed")
@@ -514,8 +519,47 @@ class NodeStoreTests(unittest.TestCase):
         dispute_events = self.store.list_score_events(task_id="dismiss-task")
         event_types = {item["event_type"] for item in dispute_events}
         self.assertIn("dispute-cleared", event_types)
-        self.assertIn("dispute-dismissed", event_types)
+        self.assertIn("challenge-open", event_types)
+        self.assertIn("challenge-dismissed", event_types)
         self.assertIn("dispute-bond-slashed", event_types)
+
+    def test_terminal_failure_generates_deterministic_fail_event(self) -> None:
+        self.store.add_task(TaskEnvelope(id="fail-task", kind="exec", payload={}, role="worker"))
+        claimed = self.store.claim_task(worker_id="worker-fail", worker_capabilities=["worker"], lease_seconds=30)
+        assert claimed is not None
+        self.assertTrue(
+            self.store.ack_task(
+                task_id="fail-task",
+                worker_id="worker-fail",
+                lease_token=claimed["lease_token"],
+                success=False,
+                requeue=False,
+                error_message="deterministic mismatch",
+            )
+        )
+        events = self.store.list_score_events(actor_id="worker-fail")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "deterministic-fail")
+        self.assertEqual(events[0]["points"], -12)
+
+    def test_terminal_review_failure_generates_subjective_reject_event(self) -> None:
+        self.store.add_task(TaskEnvelope(id="reject-task", kind="review", payload={}, role="reviewer"))
+        claimed = self.store.claim_task(worker_id="reviewer-fail", worker_capabilities=["reviewer"], lease_seconds=30)
+        assert claimed is not None
+        self.assertTrue(
+            self.store.ack_task(
+                task_id="reject-task",
+                worker_id="reviewer-fail",
+                lease_token=claimed["lease_token"],
+                success=False,
+                requeue=False,
+                error_message="review rejected",
+            )
+        )
+        events = self.store.list_score_events(actor_id="reviewer-fail")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "subjective-reject")
+        self.assertEqual(events[0]["points"], -8)
 
     def test_committee_votes_can_auto_resolve_or_escalate_dispute(self) -> None:
         self.store.add_task(TaskEnvelope(id="committee-task", kind="exec", payload={}, role="worker"))
