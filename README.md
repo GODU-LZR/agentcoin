@@ -178,6 +178,7 @@ It can now also relay that bundle sequentially:
 
 - `POST /v1/onchain/settlement-relay` submits every raw transaction in order and returns one signed relay receipt
 - relay now supports `resume_from_index` so failed multi-step settlement can continue from the first failed step
+- relay receipts are now persisted and exposed for replay / audit
 
 ### Quick Start
 
@@ -208,6 +209,7 @@ Key endpoints:
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
 - `GET /v1/disputes`
+- `GET /v1/onchain/settlement-relays`
 - `GET /v1/onchain/settlement-preview?task_id=...`
 - `POST /v1/onchain/settlement-rpc-plan`
 - `POST /v1/onchain/settlement-raw-bundle`

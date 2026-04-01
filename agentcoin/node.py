@@ -718,6 +718,14 @@ class AgentCoinNode:
                         },
                     )
                     return
+                if path == "/v1/onchain/settlement-relays":
+                    task_id = (query.get("task_id") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": node.store.list_settlement_relays(task_id=task_id, limit=limit)},
+                    )
+                    return
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return
@@ -784,6 +792,7 @@ class AgentCoinNode:
                             "poaw_events": node.store.list_score_events(task_id=task_id, limit=200),
                             "poaw_summary": node.store.summarize_score_events(task_id=task_id),
                             "disputes": node.store.list_disputes(task_id=task_id, limit=200),
+                            "settlement_relays": node.store.list_settlement_relays(task_id=task_id, limit=200),
                             "bridge_export_preview": export_preview,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
@@ -1184,6 +1193,8 @@ class AgentCoinNode:
                             "transport": node.config.network.transport_profile(),
                             "generated_at": utc_now(),
                         }
+                        persisted = node.store.save_settlement_relay(relay)
+                        relay["relay_record_id"] = persisted["id"]
                         signed_relay = node._sign_document(
                             relay,
                             hmac_scope="onchain-settlement-relay",

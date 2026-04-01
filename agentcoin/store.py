@@ -178,6 +178,16 @@ class NodeStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS settlement_relays (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    recommended_resolution TEXT NOT NULL,
+                    completed_steps INTEGER NOT NULL,
+                    step_count INTEGER NOT NULL,
+                    stopped_on_error INTEGER NOT NULL DEFAULT 0,
+                    relay_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -499,6 +509,7 @@ class NodeStore:
             governance_actions = conn.execute("SELECT COUNT(*) FROM governance_actions").fetchone()[0]
             disputes_open = conn.execute("SELECT COUNT(*) FROM disputes WHERE status = 'open'").fetchone()[0]
             score_events = conn.execute("SELECT COUNT(*) FROM score_events").fetchone()[0]
+            settlement_relays = conn.execute("SELECT COUNT(*) FROM settlement_relays").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -521,6 +532,7 @@ class NodeStore:
                 "governance_actions": governance_actions,
                 "disputes_open": disputes_open,
                 "score_events": score_events,
+                "settlement_relays": settlement_relays,
             }
         finally:
             conn.close()
@@ -1095,6 +1107,84 @@ class NodeStore:
             if actor_id:
                 summary["reputation"] = self.get_actor_reputation(actor_id, actor_type=actor_type or "worker")
             return summary
+        finally:
+            conn.close()
+
+    def save_settlement_relay(self, relay: dict[str, Any]) -> dict[str, Any]:
+        relay_id = str(uuid4())
+        created_at = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO settlement_relays
+                (id, task_id, recommended_resolution, completed_steps, step_count, stopped_on_error, relay_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    relay_id,
+                    str(relay.get("task_id") or ""),
+                    str(relay.get("recommended_resolution") or ""),
+                    int(relay.get("completed_steps") or 0),
+                    int(relay.get("step_count") or 0),
+                    1 if bool(relay.get("stopped_on_error")) else 0,
+                    json.dumps(relay, ensure_ascii=False),
+                    created_at,
+                ),
+            )
+            conn.commit()
+            return {
+                "id": relay_id,
+                "task_id": str(relay.get("task_id") or ""),
+                "recommended_resolution": str(relay.get("recommended_resolution") or ""),
+                "completed_steps": int(relay.get("completed_steps") or 0),
+                "step_count": int(relay.get("step_count") or 0),
+                "stopped_on_error": bool(relay.get("stopped_on_error")),
+                "relay": relay,
+                "created_at": created_at,
+            }
+        finally:
+            conn.close()
+
+    def list_settlement_relays(self, task_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if task_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, task_id, recommended_resolution, completed_steps, step_count,
+                           stopped_on_error, relay_json, created_at
+                    FROM settlement_relays
+                    WHERE task_id = ?
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (task_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, task_id, recommended_resolution, completed_steps, step_count,
+                           stopped_on_error, relay_json, created_at
+                    FROM settlement_relays
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "task_id": row["task_id"],
+                    "recommended_resolution": row["recommended_resolution"],
+                    "completed_steps": int(row["completed_steps"] or 0),
+                    "step_count": int(row["step_count"] or 0),
+                    "stopped_on_error": bool(row["stopped_on_error"]),
+                    "relay": json.loads(row["relay_json"] or "{}"),
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
         finally:
             conn.close()
 

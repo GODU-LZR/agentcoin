@@ -2333,6 +2333,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(relay["stopped_on_error"])
             self.assertEqual(relay["submitted_steps"][0]["tx_hash"], "0xsettlement1")
             self.assertEqual(relay["submitted_steps"][1]["tx_hash"], "0xsettlement2")
+            self.assertTrue(relay["relay_record_id"])
             verification = verify_document(
                 relay,
                 secret="settlement-relay-secret",
@@ -2341,6 +2342,15 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(verification["verified"])
             self.assertEqual([call["method"] for call in rpc.calls], ["eth_sendRawTransaction", "eth_sendRawTransaction"])
+
+            _, relay_history = self._get(f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-relay-task-1")
+            self.assertEqual(len(relay_history["items"]), 1)
+            self.assertEqual(relay_history["items"][0]["completed_steps"], 2)
+            self.assertEqual(relay_history["items"][0]["relay"]["recommended_resolution"], "completeJob")
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-relay-task-1")
+            self.assertEqual(len(replay["settlement_relays"]), 1)
+            self.assertEqual(replay["settlement_relays"][0]["relay"]["completed_steps"], 2)
         finally:
             node.stop()
             rpc.stop()

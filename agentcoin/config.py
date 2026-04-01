@@ -112,6 +112,7 @@ class NodeConfig:
                 "onchain_settlement_rpc_plan": f"{self.base_url}/v1/onchain/settlement-rpc-plan" if self.onchain.enabled else "",
                 "onchain_settlement_raw_bundle": f"{self.base_url}/v1/onchain/settlement-raw-bundle" if self.onchain.enabled else "",
                 "onchain_settlement_relay": f"{self.base_url}/v1/onchain/settlement-relay" if self.onchain.enabled else "",
+                "onchain_settlement_relays": f"{self.base_url}/v1/onchain/settlement-relays" if self.onchain.enabled else "",
                 "onchain_rpc_payload": f"{self.base_url}/v1/onchain/rpc-payload" if self.onchain.enabled else "",
                 "onchain_rpc_plan": f"{self.base_url}/v1/onchain/rpc-plan" if self.onchain.enabled else "",
                 "onchain_rpc_send_raw": f"{self.base_url}/v1/onchain/rpc/send-raw" if self.onchain.enabled else "",
