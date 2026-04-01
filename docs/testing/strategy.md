@@ -184,6 +184,7 @@ Target:
 4. release the quarantine through the API
 5. verify the worker can claim again
 6. verify both actions are visible in governance history
+7. if signing is enabled, verify governance receipts pass signature verification
 
 ## Manual Test Commands
 

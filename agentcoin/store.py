@@ -945,13 +945,16 @@ class NodeStore:
 
     @staticmethod
     def _governance_action_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        payload = json.loads(row["payload_json"] or "{}")
         return {
             "id": row["id"],
             "actor_id": row["actor_id"],
             "actor_type": row["actor_type"],
             "action_type": row["action_type"],
             "reason": row["reason"],
-            "payload": json.loads(row["payload_json"] or "{}"),
+            "payload": payload,
+            "operator_id": payload.get("operator_id"),
+            "receipt": payload.get("receipt"),
             "created_at": row["created_at"],
         }
 
@@ -968,6 +971,7 @@ class NodeStore:
     ) -> dict[str, Any]:
         action_id = str(uuid4())
         timestamp = created_at or utc_now()
+        stored_payload = payload or {}
         conn.execute(
             """
             INSERT INTO governance_actions
@@ -980,7 +984,7 @@ class NodeStore:
                 actor_type,
                 action_type,
                 reason,
-                json.dumps(payload or {}, ensure_ascii=False),
+                json.dumps(stored_payload, ensure_ascii=False),
                 timestamp,
             ),
         )
@@ -990,7 +994,9 @@ class NodeStore:
             "actor_type": actor_type,
             "action_type": action_type,
             "reason": reason,
-            "payload": payload or {},
+            "payload": stored_payload,
+            "operator_id": stored_payload.get("operator_id"),
+            "receipt": stored_payload.get("receipt"),
             "created_at": timestamp,
         }
 
@@ -1030,6 +1036,8 @@ class NodeStore:
         actor_type: str = "worker",
         scope: str = "task-claim",
         payload: dict[str, Any] | None = None,
+        operator_id: str | None = None,
+        receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         conn = self._connect()
@@ -1106,7 +1114,12 @@ class NodeStore:
                 actor_type=actor_type,
                 action_type="quarantine-set",
                 reason=reason,
-                payload=payload or {"scope": scope},
+                payload={
+                    "operator_id": operator_id,
+                    "receipt": receipt,
+                    "context": payload or {},
+                    "scope": scope,
+                },
                 created_at=now,
             )
             conn.commit()
@@ -1128,6 +1141,8 @@ class NodeStore:
         reason: str,
         actor_type: str = "worker",
         payload: dict[str, Any] | None = None,
+        operator_id: str | None = None,
+        receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         conn = self._connect()
@@ -1170,7 +1185,11 @@ class NodeStore:
                 actor_type=actor_type,
                 action_type="quarantine-release",
                 reason=reason,
-                payload=payload or {},
+                payload={
+                    "operator_id": operator_id,
+                    "receipt": receipt,
+                    "context": payload or {},
+                },
                 created_at=now,
             )
             conn.commit()

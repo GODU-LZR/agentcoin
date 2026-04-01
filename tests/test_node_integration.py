@@ -14,7 +14,7 @@ from urllib import error, request
 from agentcoin.adapters import AdapterPolicy
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.node import AgentCoinNode
-from agentcoin.security import sign_document_with_ssh
+from agentcoin.security import sign_document_with_ssh, verify_document
 from agentcoin.worker import WorkerLoop
 
 
@@ -933,6 +933,7 @@ class NodeIntegrationTests(unittest.TestCase):
             token="token-operator",
             db_path=str(Path(self.tempdir.name) / "operator-governance.db"),
             capabilities=["worker"],
+            signing_secret="governance-secret",
         )
         node.start()
         try:
@@ -948,6 +949,7 @@ class NodeIntegrationTests(unittest.TestCase):
                 {
                     "actor_id": "worker-operator-1",
                     "actor_type": "worker",
+                    "operator_id": "admin-1",
                     "scope": "task-claim",
                     "reason": "operator investigation hold",
                     "payload": {"operator": "admin"},
@@ -955,6 +957,15 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertTrue(applied["quarantined"])
+            self.assertEqual(applied["action"]["operator_id"], "admin-1")
+            self.assertEqual(applied["action"]["receipt"]["action_type"], "quarantine-set")
+            receipt_verification = verify_document(
+                applied["action"]["receipt"],
+                secret="governance-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="operator-governance-node",
+            )
+            self.assertTrue(receipt_verification["verified"])
 
             worker = WorkerLoop(
                 node_url=node.base_url,
@@ -971,6 +982,7 @@ class NodeIntegrationTests(unittest.TestCase):
             _, actions_before = self._get(f"{node.base_url}/v1/governance-actions?actor_id=worker-operator-1")
             self.assertEqual(len(actions_before["items"]), 1)
             self.assertEqual(actions_before["items"][0]["action_type"], "quarantine-set")
+            self.assertEqual(actions_before["items"][0]["operator_id"], "admin-1")
 
             status, released = self._post(
                 f"{node.base_url}/v1/quarantines/release",
@@ -978,18 +990,29 @@ class NodeIntegrationTests(unittest.TestCase):
                 {
                     "actor_id": "worker-operator-1",
                     "actor_type": "worker",
+                    "operator_id": "admin-1",
                     "reason": "operator cleared worker",
                     "payload": {"operator": "admin"},
                 },
             )
             self.assertEqual(status, 200)
             self.assertFalse(released["quarantined"])
+            self.assertEqual(released["action"]["operator_id"], "admin-1")
+            self.assertEqual(released["action"]["receipt"]["action_type"], "quarantine-release")
+            release_verification = verify_document(
+                released["action"]["receipt"],
+                secret="governance-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="operator-governance-node",
+            )
+            self.assertTrue(release_verification["verified"])
 
             self.assertTrue(worker.run_once())
 
             _, actions_after = self._get(f"{node.base_url}/v1/governance-actions?actor_id=worker-operator-1")
             self.assertEqual(len(actions_after["items"]), 2)
             self.assertEqual(actions_after["items"][0]["action_type"], "quarantine-release")
+            self.assertEqual(actions_after["items"][0]["operator_id"], "admin-1")
         finally:
             node.stop()
 

@@ -171,6 +171,7 @@ Execution governance now also has a first local enforcement layer:
 - repeated violations automatically quarantine the worker id for future task claims
 - operators can inspect reputation, violation history, and active quarantines over HTTP
 - operators can also set and release manual quarantines with a durable governance action log
+- if node signing is enabled, those governance actions also carry a signed governance receipt
 
 ## Delivery and Failure States
 

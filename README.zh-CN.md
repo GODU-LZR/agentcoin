@@ -236,6 +236,7 @@ worker 执行层现在也已经感知 bridge：
 - 重复违规会自动生成 quarantine 记录，并阻止该 worker id 继续 claim 新任务
 - 运维和调度器可以通过 `GET /v1/reputation`、`GET /v1/violations`、`GET /v1/quarantines` 查看当前治理状态
 - 运维也可以手动隔离或解除隔离某个 worker，并通过 `GET /v1/governance-actions` 查看治理动作历史
+- 当节点启用了签名配置时，治理动作还会持久化带 `operator_id` 的 signed governance receipt
 
 跨节点消息投递现在也加入了显式 ACK：
 

@@ -236,6 +236,7 @@ There is now also a first governance and quarantine skeleton:
 - repeated violations automatically create a quarantine record and block future task claims for that worker id
 - operators can inspect state with `GET /v1/reputation`, `GET /v1/violations`, and `GET /v1/quarantines`
 - operators can also apply and release manual quarantines, and inspect those actions via `GET /v1/governance-actions`
+- when node signing is configured, governance actions also persist a signed governance receipt with `operator_id`
 
 Inter-node delivery now also uses explicit message acknowledgements:
 

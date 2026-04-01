@@ -217,6 +217,27 @@ class AgentCoinNode:
             raise ValueError("git integration is not configured")
         return self.git
 
+    def _governance_receipt(
+        self,
+        *,
+        action_type: str,
+        actor_id: str,
+        actor_type: str,
+        operator_id: str | None,
+        reason: str,
+        payload: dict | None = None,
+    ) -> dict:
+        document = {
+            "action_type": action_type,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "operator_id": operator_id,
+            "reason": reason,
+            "node_id": self.config.node_id,
+            "payload": payload or {},
+        }
+        return self._sign_document(document, hmac_scope="governance-receipt", identity_namespace="agentcoin-governance")
+
     def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
         if prefer_local and self._supports_capabilities(required_capabilities):
             return {"target_type": "local", "target_ref": self.config.node_id}
@@ -637,12 +658,26 @@ class AgentCoinNode:
                         actor_id = str(payload.get("actor_id") or "").strip()
                         if not actor_id:
                             raise ValueError("actor_id is required")
+                        actor_type = str(payload.get("actor_type") or "worker")
+                        scope = str(payload.get("scope") or "task-claim")
+                        reason = str(payload.get("reason") or "manual quarantine")
+                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        context = dict(payload.get("payload") or {})
                         result = node.store.set_actor_quarantine(
                             actor_id=actor_id,
-                            actor_type=str(payload.get("actor_type") or "worker"),
-                            scope=str(payload.get("scope") or "task-claim"),
-                            reason=str(payload.get("reason") or "manual quarantine"),
-                            payload=dict(payload.get("payload") or {}),
+                            actor_type=actor_type,
+                            scope=scope,
+                            reason=reason,
+                            payload=context,
+                            operator_id=operator_id,
+                            receipt=node._governance_receipt(
+                                action_type="quarantine-set",
+                                actor_id=actor_id,
+                                actor_type=actor_type,
+                                operator_id=operator_id,
+                                reason=reason,
+                                payload={"scope": scope, "context": context},
+                            ),
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return
@@ -653,11 +688,24 @@ class AgentCoinNode:
                         actor_id = str(payload.get("actor_id") or "").strip()
                         if not actor_id:
                             raise ValueError("actor_id is required")
+                        actor_type = str(payload.get("actor_type") or "worker")
+                        reason = str(payload.get("reason") or "manual release")
+                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        context = dict(payload.get("payload") or {})
                         result = node.store.release_actor_quarantine(
                             actor_id=actor_id,
-                            actor_type=str(payload.get("actor_type") or "worker"),
-                            reason=str(payload.get("reason") or "manual release"),
-                            payload=dict(payload.get("payload") or {}),
+                            actor_type=actor_type,
+                            reason=reason,
+                            payload=context,
+                            operator_id=operator_id,
+                            receipt=node._governance_receipt(
+                                action_type="quarantine-release",
+                                actor_id=actor_id,
+                                actor_type=actor_type,
+                                operator_id=operator_id,
+                                reason=reason,
+                                payload={"context": context},
+                            ),
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return

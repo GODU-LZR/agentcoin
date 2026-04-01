@@ -222,6 +222,7 @@ governance と quarantine の最初の骨格も追加しました。
 - 違反が繰り返されると quarantine record が自動作成され、その worker id は新しい task claim をブロックされます
 - operator は `GET /v1/reputation`、`GET /v1/violations`、`GET /v1/quarantines` で状態を確認できます
 - operator は manual quarantine と release も実行でき、`GET /v1/governance-actions` で履歴を確認できます
+- node signing が設定されている場合、governance action には `operator_id` 付きの signed governance receipt も保存されます
 
 inter-node message delivery には explicit ACK も追加しました。
 
