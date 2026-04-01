@@ -137,6 +137,7 @@ runtime には最小の semantic layer も追加しました。
 - `GET /v1/schema/context` で shared context document を取得できます
 - `GET /v1/schema/capabilities` で capability family、alias、implied role を取得できます
 - `GET /v1/tasks/dispatch/preview` で semantic dispatch candidate と score を確認できます
+- `POST /v1/tasks/dispatch/evaluate` で `_runtime` / `_bridge` 条件を含む full task dispatch 評価ができます
 - `GET /v1/schema/examples` で card / task semantic shape の例を取得できます
 - まだ軽量ですが、元の blueprint の ontology gap を埋め始めています
 
@@ -205,6 +206,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/tasks/dispatch/evaluate`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`

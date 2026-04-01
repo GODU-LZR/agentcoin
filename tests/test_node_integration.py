@@ -34,7 +34,8 @@ class NodeHarness:
                  signing_secret: str | None = None, require_signed_inbox: bool = False,
                  identity_principal: str | None = None, identity_private_key_path: str | None = None,
                  identity_public_key: str | None = None, onchain: OnchainBindings | None = None,
-                 network: OutboundNetworkConfig | None = None) -> None:
+                 network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
+                 bridges: list[str] | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -50,6 +51,8 @@ class NodeHarness:
             git_root=git_root,
             sync_interval_seconds=3600,
             capabilities=capabilities,
+            runtimes=runtimes or ["python"],
+            bridges=bridges or ["mcp", "a2a"],
             peers=peers or [],
             local_dispatch_fallback=local_dispatch_fallback,
             outbox_max_attempts=outbox_max_attempts,
@@ -484,6 +487,87 @@ class NodeIntegrationTests(unittest.TestCase):
             _, tasks = self._get(f"{node_a.base_url}/v1/tasks")
             local_task = [item for item in tasks["items"] if item["id"] == "semantic-local-1"][0]
             self.assertEqual(local_task["status"], "completed")
+        finally:
+            node_a.stop()
+            node_b.stop()
+            node_c.stop()
+
+    def test_dispatch_evaluate_prefers_peer_with_matching_runtime_support(self) -> None:
+        node_b = NodeHarness(
+            node_id="runtime-peer-b",
+            token="token-runtime-b",
+            db_path=str(Path(self.tempdir.name) / "runtime-peer-b.db"),
+            capabilities=["reviewer"],
+            runtimes=["openai-chat", "python"],
+        )
+        node_c = NodeHarness(
+            node_id="runtime-peer-c",
+            token="token-runtime-c",
+            db_path=str(Path(self.tempdir.name) / "runtime-peer-c.db"),
+            capabilities=["reviewer"],
+            runtimes=["python"],
+        )
+        node_a = NodeHarness(
+            node_id="runtime-peer-a",
+            token="token-runtime-a",
+            db_path=str(Path(self.tempdir.name) / "runtime-peer-a.db"),
+            capabilities=["planner"],
+            runtimes=["python"],
+            peers=[
+                PeerConfig(peer_id="runtime-peer-b", name="Runtime Peer B", url="", auth_token="token-runtime-b"),
+                PeerConfig(peer_id="runtime-peer-c", name="Runtime Peer C", url="", auth_token="token-runtime-c"),
+            ],
+        )
+        node_b.start()
+        node_c.start()
+        node_a.config.peers[0].url = node_b.base_url
+        node_a.config.peers[1].url = node_c.base_url
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-runtime-a", {})
+            self.assertEqual(sync_status, 200)
+
+            evaluate_status, evaluated = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-runtime-a",
+                {
+                    "id": "runtime-aware-task",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {
+                        "_runtime": {
+                            "runtime": "openai-chat",
+                            "endpoint": "http://127.0.0.1:9999/v1/chat/completions",
+                        }
+                    },
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(len(evaluated["candidates"]), 1)
+            self.assertEqual(evaluated["candidates"][0]["target_ref"], "runtime-peer-b")
+            self.assertEqual(evaluated["candidates"][0]["runtime_match"]["required"], "openai-chat")
+            self.assertTrue(evaluated["candidates"][0]["runtime_match"]["supported"])
+
+            dispatch_status, dispatched = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch",
+                "token-runtime-a",
+                {
+                    "id": "runtime-aware-task-2",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {
+                        "_runtime": {
+                            "runtime": "openai-chat",
+                            "endpoint": "http://127.0.0.1:9999/v1/chat/completions",
+                        }
+                    },
+                },
+            )
+            self.assertEqual(dispatch_status, 201)
+            self.assertEqual(dispatched["target"]["target_ref"], "runtime-peer-b")
+            self.assertEqual(dispatched["task"]["deliver_to"], "runtime-peer-b")
         finally:
             node_a.stop()
             node_b.stop()

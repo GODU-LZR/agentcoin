@@ -341,8 +341,115 @@ class AgentCoinNode:
             reverse=True,
         )
 
+    @staticmethod
+    def _runtime_requirement(task: TaskEnvelope) -> str | None:
+        runtime = str(task.payload.get("_runtime", {}).get("runtime") or "").strip()
+        return runtime or None
+
+    @staticmethod
+    def _bridge_requirement(task: TaskEnvelope) -> str | None:
+        protocol = str(task.payload.get("_bridge", {}).get("protocol") or "").strip().lower()
+        return protocol or None
+
+    @staticmethod
+    def _supports_runtime(runtime_name: str | None, available_runtimes: list[str]) -> bool:
+        if not runtime_name:
+            return True
+        return runtime_name in {str(item).strip() for item in available_runtimes if str(item).strip()}
+
+    @staticmethod
+    def _supports_bridge_protocol(protocol_name: str | None, available_protocols: list[str]) -> bool:
+        if not protocol_name:
+            return True
+        normalized = {str(item).strip().lower() for item in available_protocols if str(item).strip()}
+        return protocol_name in normalized or f"{protocol_name}-bridge/0.1" in normalized
+
+    def dispatch_candidates_for_task(self, task: TaskEnvelope, prefer_local: bool = False) -> list[dict[str, Any]]:
+        runtime_requirement = self._runtime_requirement(task)
+        bridge_requirement = self._bridge_requirement(task)
+        candidates: list[dict[str, Any]] = []
+
+        local_report = capability_match_report(task.required_capabilities, self.config.capabilities)
+        local_runtime_ok = self._supports_runtime(runtime_requirement, self.config.runtimes)
+        local_bridge_ok = self._supports_bridge_protocol(bridge_requirement, self.config.card.protocols)
+        if local_report["satisfied"] and local_runtime_ok and local_bridge_ok:
+            score_breakdown = {
+                "capability_exact": len(local_report["exact_matches"]) * 100,
+                "capability_semantic": len(local_report["expanded_matches"]) * 10,
+                "local_bias": 600 if prefer_local else 100,
+                "runtime_bonus": 150 if runtime_requirement else 0,
+                "bridge_bonus": 120 if bridge_requirement else 0,
+            }
+            candidates.append(
+                {
+                    "target_type": "local",
+                    "target_ref": self.config.node_id,
+                    "capabilities": list(self.config.capabilities),
+                    "runtimes": list(self.config.runtimes),
+                    "protocols": list(self.config.card.protocols),
+                    "match": local_report,
+                    "runtime_match": {"required": runtime_requirement, "supported": local_runtime_ok},
+                    "bridge_match": {"required": bridge_requirement, "supported": local_bridge_ok},
+                    "reputation": {"score": 100, "quarantined": False},
+                    "score_breakdown": score_breakdown,
+                    "score": sum(score_breakdown.values()),
+                }
+            )
+
+        for peer_card in self.store.list_peer_cards():
+            peer_id = peer_card["peer_id"]
+            card = peer_card["card"]
+            capabilities = list(card.get("capabilities", []))
+            protocols = list(card.get("protocols", []))
+            runtimes = list(card.get("runtimes", []))
+            report = capability_match_report(task.required_capabilities, capabilities)
+            runtime_ok = self._supports_runtime(runtime_requirement, runtimes)
+            bridge_ok = self._supports_bridge_protocol(bridge_requirement, protocols)
+            if not report["satisfied"] or not runtime_ok or not bridge_ok:
+                continue
+            reputation = self.store.get_actor_reputation(peer_id, actor_type="peer")
+            reputation_score = int(reputation.get("score", 100))
+            score_breakdown = {
+                "capability_exact": len(report["exact_matches"]) * 100,
+                "capability_semantic": len(report["expanded_matches"]) * 10,
+                "reputation": reputation_score,
+                "runtime_bonus": 150 if runtime_requirement else 0,
+                "bridge_bonus": 120 if bridge_requirement else 0,
+            }
+            candidates.append(
+                {
+                    "target_type": "peer",
+                    "target_ref": peer_id,
+                    "capabilities": capabilities,
+                    "runtimes": runtimes,
+                    "protocols": protocols,
+                    "match": report,
+                    "runtime_match": {"required": runtime_requirement, "supported": runtime_ok},
+                    "bridge_match": {"required": bridge_requirement, "supported": bridge_ok},
+                    "reputation": reputation,
+                    "score_breakdown": score_breakdown,
+                    "score": sum(score_breakdown.values()),
+                }
+            )
+
+        return sorted(
+            candidates,
+            key=lambda item: (
+                item["score"],
+                item["target_type"] == "local",
+                item["target_ref"],
+            ),
+            reverse=True,
+        )
+
     def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
         candidates = self.dispatch_candidates(required_capabilities, prefer_local=prefer_local)
+        if not candidates:
+            return None
+        return {"target_type": candidates[0]["target_type"], "target_ref": candidates[0]["target_ref"]}
+
+    def select_dispatch_target_for_task(self, task: TaskEnvelope, prefer_local: bool = False) -> dict[str, str] | None:
+        candidates = self.dispatch_candidates_for_task(task, prefer_local=prefer_local)
         if not candidates:
             return None
         return {"target_type": candidates[0]["target_type"], "target_ref": candidates[0]["target_ref"]}
@@ -499,6 +606,12 @@ class AgentCoinNode:
                             "prefer_local": prefer_local,
                             "candidates": node.dispatch_candidates(required_capabilities, prefer_local=prefer_local),
                         },
+                    )
+                    return
+                if path == "/v1/tasks/dispatch/evaluate":
+                    self._json_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED,
+                        {"error": "use POST /v1/tasks/dispatch/evaluate with a full task payload"},
                     )
                     return
                 if path == "/v1/violations":
@@ -919,7 +1032,7 @@ class AgentCoinNode:
                         if task.deliver_to:
                             target = {"target_type": "explicit", "target_ref": task.deliver_to}
                         else:
-                            target = node.select_dispatch_target(task.required_capabilities, prefer_local=prefer_local)
+                            target = node.select_dispatch_target_for_task(task, prefer_local=prefer_local)
                             if not target:
                                 self._json_response(
                                     HTTPStatus.CONFLICT,
@@ -949,7 +1062,7 @@ class AgentCoinNode:
                             if task.deliver_to:
                                 target = {"target_type": "explicit", "target_ref": task.deliver_to}
                             else:
-                                target = node.select_dispatch_target(task.required_capabilities, prefer_local=prefer_local)
+                                target = node.select_dispatch_target_for_task(task, prefer_local=prefer_local)
                                 if not target:
                                     self._json_response(
                                         HTTPStatus.CONFLICT,
@@ -963,6 +1076,23 @@ class AgentCoinNode:
                         self._json_response(
                             HTTPStatus.CREATED,
                             {"task": task.to_dict(), "target": target, "protocol": protocol, "dispatch": dispatch},
+                        )
+                        return
+                    if self.path == "/v1/tasks/dispatch/evaluate":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
+                        if task.sender == "local":
+                            task.sender = node.config.node_id
+                        prefer_local = bool(payload.get("prefer_local"))
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "task": task.to_dict(),
+                                "prefer_local": prefer_local,
+                                "candidates": node.dispatch_candidates_for_task(task, prefer_local=prefer_local),
+                            },
                         )
                         return
                     if self.path == "/v1/bridges/export":

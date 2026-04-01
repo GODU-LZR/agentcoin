@@ -100,6 +100,7 @@ class NodeConfig:
                 "schema_capabilities": f"{self.base_url}/v1/schema/capabilities",
                 "schema_examples": f"{self.base_url}/v1/schema/examples",
                 "dispatch_preview": f"{self.base_url}/v1/tasks/dispatch/preview",
+                "dispatch_evaluate": f"{self.base_url}/v1/tasks/dispatch/evaluate",
                 "poaw_events": f"{self.base_url}/v1/poaw/events",
                 "poaw_summary": f"{self.base_url}/v1/poaw/summary",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",

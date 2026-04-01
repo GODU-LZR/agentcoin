@@ -144,6 +144,7 @@ The runtime now also has a first semantic layer:
 - `GET /v1/schema/context` exposes the shared context document
 - `GET /v1/schema/capabilities` exposes capability families, aliases, and implied roles
 - `GET /v1/tasks/dispatch/preview` exposes semantic dispatch candidates and scores
+- `POST /v1/tasks/dispatch/evaluate` evaluates a full task, including `_runtime` and `_bridge` requirements
 - `GET /v1/schema/examples` exposes example semantic shapes for cards and tasks
 - this is intentionally lightweight, but it starts closing the ontology gap in the original blueprint
 
@@ -204,6 +205,7 @@ Key endpoints:
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
+- `POST /v1/tasks/dispatch/evaluate`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`
