@@ -192,6 +192,14 @@ worker execution も bridge-aware になりました。
 - `A2A bridge task` は normalized な message-result payload を返します
 - ただし、これはまだ full MCP / A2A runtime client ではなく adapter skeleton です
 
+execution layer には最初の security policy boundary も追加しました。
+
+- worker は `--allow-tool` で MCP tool allowlist を定義できます
+- worker は `--allow-intent` で A2A intent allowlist を定義できます
+- `local-command` はデフォルト無効で、`--allow-subprocess` が必要です
+- subprocess 実行には `--allow-command` による executable allowlist も必要です
+- `--workspace-root` で subprocess の cwd を制限し、bridge task の越境を防ぎます
+
 inter-node message delivery には explicit ACK も追加しました。
 
 - inbox は `message_id` で idempotent
@@ -240,6 +248,21 @@ agentcoin-worker \
   --token change-me \
   --worker-id worker-1 \
   --capability worker
+```
+
+restricted local command sandbox 付きの bridge-aware worker は次のように起動できます。
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id worker-bridge \
+  --capability worker \
+  --capability local-command \
+  --allow-tool local-command \
+  --allow-subprocess \
+  --allow-command python \
+  --workspace-root .
 ```
 
 task には Git-like な workflow traits も追加しました。

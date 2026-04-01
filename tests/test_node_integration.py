@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -10,6 +11,7 @@ import unittest
 from pathlib import Path
 from urllib import error, request
 
+from agentcoin.adapters import AdapterPolicy
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.security import sign_document_with_ssh
@@ -811,5 +813,104 @@ class NodeIntegrationTests(unittest.TestCase):
                 {"protocol": "a2a", "task_id": "bridge-exec-a2a"},
             )
             self.assertEqual(exported_a2a["message"]["task"]["result"]["adapter"]["protocol"], "a2a")
+        finally:
+            node.stop()
+
+    def test_adapter_policy_rejects_disallowed_tool(self) -> None:
+        node = NodeHarness(
+            node_id="policy-node",
+            token="token-policy",
+            db_path=str(Path(self.tempdir.name) / "policy.db"),
+            capabilities=["worker", "reviewer", "forbidden-tool"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-policy",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "mcp-policy-1",
+                        "method": "tools/call",
+                        "params": {"name": "forbidden-tool", "arguments": {"path": "README.md"}},
+                        "sender": "mcp-client",
+                    },
+                    "task_overrides": {"id": "policy-task-1", "role": "worker"},
+                },
+            )
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-policy",
+                worker_id="worker-policy-1",
+                capabilities=["worker", "reviewer", "forbidden-tool"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(allowed_mcp_tools=["reviewer"]),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "policy-task-1"][0]
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["result"]["adapter"]["status"], "rejected")
+            self.assertEqual(task["result"]["adapter"]["reason"], "tool is not allowlisted")
+        finally:
+            node.stop()
+
+    def test_adapter_policy_allows_sandboxed_local_command(self) -> None:
+        workspace = Path(self.tempdir.name) / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        node = NodeHarness(
+            node_id="sandbox-node",
+            token="token-sandbox",
+            db_path=str(Path(self.tempdir.name) / "sandbox.db"),
+            capabilities=["worker", "local-command"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-sandbox",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "mcp-sandbox-1",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "local-command",
+                            "arguments": {
+                                "command": [sys.executable, "-c", "print('agentcoin-sandbox-ok')"],
+                                "cwd": ".",
+                            },
+                        },
+                        "sender": "mcp-client",
+                    },
+                    "task_overrides": {"id": "sandbox-task-1", "role": "worker"},
+                },
+            )
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-sandbox",
+                worker_id="worker-sandbox-1",
+                capabilities=["worker", "local-command"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_mcp_tools=["local-command"],
+                    allow_subprocess=True,
+                    allowed_commands=[sys.executable, Path(sys.executable).name],
+                    subprocess_timeout_seconds=5,
+                    workspace_root=str(workspace),
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "sandbox-task-1"][0]
+            execution = task["result"]["bridge_execution"]["normalized_output"]["content"][0]["data"]["execution"]
+            self.assertEqual(task["result"]["adapter"]["status"], "completed")
+            self.assertEqual(execution["returncode"], 0)
+            self.assertIn("agentcoin-sandbox-ok", execution["stdout"])
         finally:
             node.stop()

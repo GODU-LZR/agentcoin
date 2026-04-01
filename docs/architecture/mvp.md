@@ -122,6 +122,14 @@ The worker loop now also has a first bridge-aware execution layer:
 - produce normalized A2A-style task result payloads
 - leave real external runtime invocation for later adapters
 
+The worker loop now also has a first policy and sandbox layer:
+
+- MCP tool allowlists
+- A2A intent allowlists
+- opt-in subprocess execution for `local-command`
+- executable allowlists for subprocess mode
+- workspace-root confinement for subprocess cwd
+
 ## Git-Like Task Model
 
 Tasks now carry workflow lineage fields inspired by Git:

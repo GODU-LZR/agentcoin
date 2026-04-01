@@ -206,6 +206,14 @@ worker 执行层现在也已经感知 bridge：
 - `A2A bridge task` 会产出规范化的 message-result 结果
 - 这仍然只是 adapter skeleton，不是完整的外部 `MCP/A2A runtime client`
 
+执行层现在也有了第一版安全策略边界：
+
+- worker 可以用 `--allow-tool` 定义 `MCP tool allowlist`
+- worker 可以用 `--allow-intent` 定义 `A2A intent allowlist`
+- `local-command` 默认禁用，只有加 `--allow-subprocess` 才能执行
+- 子进程执行还必须通过 `--allow-command` 显式允许具体可执行文件
+- `--workspace-root` 会限制子进程的工作目录，避免 bridge task 越界访问
+
 跨节点消息投递现在也加入了显式 ACK：
 
 - inbox 按 `message_id` 做幂等去重
@@ -254,6 +262,21 @@ agentcoin-worker \
   --token change-me \
   --worker-id worker-1 \
   --capability worker
+```
+
+如果要跑带受限本地命令沙箱的 bridge-aware worker，可以这样：
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id worker-bridge \
+  --capability worker \
+  --capability local-command \
+  --allow-tool local-command \
+  --allow-subprocess \
+  --allow-command python \
+  --workspace-root .
 ```
 
 任务现在也具备 Git-like 特性：

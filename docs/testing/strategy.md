@@ -17,6 +17,7 @@ The current test scope covers:
 - SSH identity signed delivery receipt verification
 - bridge registry plus MCP / A2A import-export flow
 - bridge-aware worker execution normalization
+- adapter policy rejection and sandboxed local-command execution
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior

@@ -206,6 +206,14 @@ Worker execution is now bridge-aware too:
 - A2A bridge tasks produce normalized message-result payloads
 - this is still a skeleton adapter layer, not a full external MCP or A2A runtime client
 
+The execution layer now also has a first security policy boundary:
+
+- workers can define MCP tool allowlists with `--allow-tool`
+- workers can define A2A intent allowlists with `--allow-intent`
+- `local-command` execution is disabled by default and only enabled with `--allow-subprocess`
+- subprocess execution also requires explicit executable allowlists via `--allow-command`
+- `--workspace-root` constrains subprocess cwd so bridge tasks cannot escape the intended workspace
+
 Inter-node delivery now also uses explicit message acknowledgements:
 
 - inbox writes are idempotent by `message_id`
@@ -254,6 +262,21 @@ agentcoin-worker \
   --token change-me \
   --worker-id worker-1 \
   --capability worker
+```
+
+For a bridge-aware worker with a restricted local command sandbox:
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id worker-bridge \
+  --capability worker \
+  --capability local-command \
+  --allow-tool local-command \
+  --allow-subprocess \
+  --allow-command python \
+  --workspace-root .
 ```
 
 Tasks now also carry Git-like workflow traits:

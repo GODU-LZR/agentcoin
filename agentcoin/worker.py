@@ -7,7 +7,7 @@ import time
 from typing import Any
 from urllib import error, request
 
-from agentcoin.adapters import ExecutionAdapterRegistry
+from agentcoin.adapters import AdapterPolicy, ExecutionAdapterRegistry
 from agentcoin.models import utc_now
 
 LOG = logging.getLogger("agentcoin.worker")
@@ -21,13 +21,14 @@ class WorkerLoop:
         worker_id: str,
         capabilities: list[str],
         lease_seconds: int = 60,
+        adapter_policy: AdapterPolicy | None = None,
     ) -> None:
         self.node_url = node_url.rstrip("/")
         self.token = token
         self.worker_id = worker_id
         self.capabilities = capabilities
         self.lease_seconds = lease_seconds
-        self.adapters = ExecutionAdapterRegistry()
+        self.adapters = ExecutionAdapterRegistry(adapter_policy)
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -106,6 +107,30 @@ def main() -> None:
     )
     parser.add_argument("--lease-seconds", type=int, default=60, help="Requested lease duration.")
     parser.add_argument("--poll-seconds", type=float, default=2.0, help="Sleep time between empty polls.")
+    parser.add_argument(
+        "--allow-tool",
+        dest="allowed_tools",
+        action="append",
+        default=[],
+        help="Repeatable MCP tool allowlist entry.",
+    )
+    parser.add_argument(
+        "--allow-intent",
+        dest="allowed_intents",
+        action="append",
+        default=[],
+        help="Repeatable A2A intent allowlist entry.",
+    )
+    parser.add_argument("--allow-subprocess", action="store_true", help="Enable sandboxed subprocess execution for local-command tool.")
+    parser.add_argument(
+        "--allow-command",
+        dest="allowed_commands",
+        action="append",
+        default=[],
+        help="Repeatable subprocess executable allowlist entry.",
+    )
+    parser.add_argument("--workspace-root", help="Restrict subprocess cwd to this root path.")
+    parser.add_argument("--subprocess-timeout-seconds", type=int, default=10, help="Timeout for allowlisted subprocess execution.")
     parser.add_argument("--once", action="store_true", help="Claim at most one task and exit.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     args = parser.parse_args()
@@ -121,6 +146,14 @@ def main() -> None:
         worker_id=args.worker_id,
         capabilities=args.capabilities,
         lease_seconds=args.lease_seconds,
+        adapter_policy=AdapterPolicy(
+            allowed_mcp_tools=args.allowed_tools,
+            allowed_a2a_intents=args.allowed_intents,
+            allow_subprocess=args.allow_subprocess,
+            allowed_commands=args.allowed_commands,
+            subprocess_timeout_seconds=args.subprocess_timeout_seconds,
+            workspace_root=args.workspace_root,
+        ),
     )
 
     while True:
