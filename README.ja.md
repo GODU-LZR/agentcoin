@@ -146,7 +146,7 @@ runtime には最小の semantic layer も追加しました。
 - `GET /v1/peer-health` で peer ごとの sync / delivery health snapshot を確認できます
 - `POST /v1/peer-health/cooldown`、`/blacklist`、`/clear` で local dispatch avoidance state を操作できます
 - peer selection は recent success rate、weak-network penalty、cooldown / blacklist state、outbox backlog も使います
-- `GET /v1/schema/examples` で card / task semantic shape の例を取得できます
+- `GET /v1/schema/examples` で card / task / receipt / challenge evidence の semantic shape 例を取得できます
 - まだ軽量ですが、元の blueprint の ontology gap を埋め始めています
 
 runtime には最小の local `PoAW` ledger も追加しました。
@@ -161,6 +161,14 @@ runtime には最小の local `PoAW` ledger も追加しました。
 - `GET /v1/poaw/events` で raw event ledger を取得できます
 - `GET /v1/poaw/summary` で actor / task 単位の points 集計を取得できます
 - これはまだ chain settlement engine ではなく、local useful-work accounting skeleton です
+
+runtime には最小の receipt schema layer も追加しました。
+
+- execution receipt は versioned schema を共有します
+- bridge / runtime execution は deterministic execution receipt を返します
+- review ACK は subjective review receipt を補います
+- dispute response と settlement preview は structured challenge evidence を返します
+- settlement relay response は dedicated relay receipt schema を使います
 
 runtime には最小の on-chain settlement preview も追加しました。
 

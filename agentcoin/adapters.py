@@ -11,6 +11,10 @@ from urllib.parse import urlparse
 
 from agentcoin.models import utc_now
 from agentcoin.net import OutboundTransport
+from agentcoin.receipts import (
+    build_deterministic_execution_receipt,
+    build_policy_receipt,
+)
 
 
 @dataclass(slots=True)
@@ -117,12 +121,19 @@ class ExecutionAdapterRegistry:
             "protocol": "agentcoin",
             "status": "completed",
         }
-        result["policy_receipt"] = {
-            "mode": "generic",
-            "protocol": "agentcoin",
-            "decision": "allowed",
-            "reason": "no bridge policy applied",
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="agentcoin",
+            decision="allowed",
+            reason="no bridge policy applied",
+            mode="generic",
+        )
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="agentcoin",
+            status="completed",
+            outcome="generic-execution",
+        )
         return result
 
     def _rejected_result(
@@ -141,15 +152,23 @@ class ExecutionAdapterRegistry:
             "status": "rejected",
             "reason": reason,
         }
-        result["policy_receipt"] = {
-            "mode": "policy",
-            "protocol": protocol,
-            "decision": "rejected",
-            "reason": reason,
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol=protocol,
+            decision="rejected",
+            reason=reason,
+            mode="policy",
+        )
         if extra:
             result["adapter"].update(extra)
             result["policy_receipt"].update(extra)
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol=protocol,
+            status="rejected",
+            outcome="policy-rejected",
+            artifacts=extra or {},
+        )
         return result
 
     def _execute_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
@@ -321,24 +340,28 @@ class ExecutionAdapterRegistry:
             "status": "completed",
             "endpoint": endpoint,
         }
-        result["policy_receipt"] = {
-            "mode": "runtime-adapter",
-            "protocol": "http-json",
-            "decision": "allowed",
-            "runtime": "http-json",
-            "endpoint": endpoint,
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="http-json",
+            decision="allowed",
+            reason="runtime endpoint allowlisted",
+            mode="runtime-adapter",
+            runtime="http-json",
+            endpoint=endpoint,
+        )
         result["runtime_execution"] = {
             "runtime": "http-json",
             "endpoint": endpoint,
             "method": method,
             "response": response,
         }
-        result["execution_receipt"] = {
-            "protocol": "http-json",
-            "endpoint": endpoint,
-            "status": "completed",
-        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="http-json",
+            status="completed",
+            outcome="runtime-call",
+            artifacts={"endpoint": endpoint, "method": method},
+        )
         return result
 
     @staticmethod
@@ -448,14 +471,15 @@ class ExecutionAdapterRegistry:
             "endpoint": endpoint,
             "model": model,
         }
-        result["policy_receipt"] = {
-            "mode": "runtime-adapter",
-            "protocol": "ollama-chat",
-            "decision": "allowed",
-            "runtime": "ollama-chat",
-            "endpoint": endpoint,
-            "model": model,
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="ollama-chat",
+            decision="allowed",
+            reason="runtime endpoint allowlisted",
+            mode="runtime-adapter",
+            runtime="ollama-chat",
+            endpoint=endpoint,
+            model=model,
+        )
         result["runtime_execution"] = {
             "runtime": "ollama-chat",
             "endpoint": endpoint,
@@ -463,12 +487,14 @@ class ExecutionAdapterRegistry:
             "response": response,
             "assistant_message": assistant_message,
         }
-        result["execution_receipt"] = {
-            "protocol": "ollama-chat",
-            "endpoint": endpoint,
-            "model": model,
-            "done": bool(response.get("done")),
-        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="ollama-chat",
+            status="completed",
+            outcome="runtime-chat",
+            artifacts={"endpoint": endpoint, "model": model, "done": bool(response.get("done"))},
+        )
         return result
 
     def _execute_openai_chat_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
@@ -537,14 +563,15 @@ class ExecutionAdapterRegistry:
             "endpoint": endpoint,
             "model": model,
         }
-        result["policy_receipt"] = {
-            "mode": "runtime-adapter",
-            "protocol": "openai-chat",
-            "decision": "allowed",
-            "runtime": "openai-chat",
-            "endpoint": endpoint,
-            "model": model,
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="openai-chat",
+            decision="allowed",
+            reason="runtime endpoint allowlisted",
+            mode="runtime-adapter",
+            runtime="openai-chat",
+            endpoint=endpoint,
+            model=model,
+        )
         result["runtime_execution"] = {
             "runtime": "openai-chat",
             "endpoint": endpoint,
@@ -553,12 +580,14 @@ class ExecutionAdapterRegistry:
             "assistant_message": assistant_message,
             "finish_reason": first_choice.get("finish_reason"),
         }
-        result["execution_receipt"] = {
-            "protocol": "openai-chat",
-            "endpoint": endpoint,
-            "model": model,
-            "response_id": response.get("id"),
-        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="openai-chat",
+            status="completed",
+            outcome="runtime-chat",
+            artifacts={"endpoint": endpoint, "model": model, "response_id": response.get("id")},
+        )
         return result
 
     def _execute_cli_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
@@ -579,13 +608,14 @@ class ExecutionAdapterRegistry:
             "status": "completed",
             "command": execution["command"],
         }
-        result["policy_receipt"] = {
-            "mode": "runtime-adapter",
-            "protocol": "cli-json",
-            "decision": "allowed",
-            "runtime": "cli-json",
-            "command": execution["command"],
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="cli-json",
+            decision="allowed",
+            reason="command allowlisted",
+            mode="runtime-adapter",
+            runtime="cli-json",
+            command=execution["command"],
+        )
         result["runtime_execution"] = {
             "runtime": "cli-json",
             "command": execution["command"],
@@ -594,11 +624,14 @@ class ExecutionAdapterRegistry:
             "stderr": execution["stderr"],
             "stdout_json": execution["stdout_json"],
         }
-        result["execution_receipt"] = {
-            "protocol": "cli-json",
-            "command": execution["command"],
-            "returncode": execution["returncode"],
-        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="cli-json",
+            status="completed",
+            outcome="subprocess-json",
+            artifacts={"command": execution["command"], "returncode": execution["returncode"]},
+        )
         return result
 
     def _execute_mcp(self, task: dict[str, Any], *, bridge: dict[str, Any], worker_id: str) -> dict[str, Any]:
@@ -620,13 +653,14 @@ class ExecutionAdapterRegistry:
             "protocol": "mcp",
             "status": "completed",
         }
-        result["policy_receipt"] = {
-            "mode": "bridge-skeleton",
-            "protocol": "mcp",
-            "decision": "allowed",
-            "tool_name": tool_name,
-            "allow_subprocess": self.policy.allow_subprocess,
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="mcp",
+            decision="allowed",
+            reason="tool is allowlisted",
+            mode="bridge-skeleton",
+            tool_name=tool_name,
+            allow_subprocess=self.policy.allow_subprocess,
+        )
         execution = None
         if tool_name == "local-command":
             try:
@@ -661,12 +695,15 @@ class ExecutionAdapterRegistry:
                 ]
             },
         }
-        result["execution_receipt"] = {
-            "protocol": "mcp",
-            "tool_name": tool_name,
-            "method": method,
-            "subprocess": execution,
-        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="mcp",
+            status="completed",
+            outcome="bridge-tool-call",
+            artifacts={"tool_name": tool_name, "method": method},
+            subprocess=execution,
+        )
         return result
 
     def _execute_a2a(self, task: dict[str, Any], *, bridge: dict[str, Any], worker_id: str) -> dict[str, Any]:
@@ -688,12 +725,13 @@ class ExecutionAdapterRegistry:
             "protocol": "a2a",
             "status": "completed",
         }
-        result["policy_receipt"] = {
-            "mode": "bridge-skeleton",
-            "protocol": "a2a",
-            "decision": "allowed",
-            "intent": intent,
-        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="a2a",
+            decision="allowed",
+            reason="intent is allowlisted",
+            mode="bridge-skeleton",
+            intent=intent,
+        )
         result["bridge_execution"] = {
             "protocol": "a2a",
             "message_id": bridge.get("message_id") or task["id"],
@@ -710,9 +748,12 @@ class ExecutionAdapterRegistry:
                 },
             },
         }
-        result["execution_receipt"] = {
-            "protocol": "a2a",
-            "intent": intent,
-            "message_id": bridge.get("message_id") or task["id"],
-        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="a2a",
+            status="completed",
+            outcome="bridge-message",
+            artifacts={"intent": intent, "message_id": bridge.get("message_id") or task["id"]},
+        )
         return result

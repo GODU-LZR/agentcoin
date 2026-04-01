@@ -17,6 +17,11 @@ from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
+from agentcoin.receipts import (
+    build_deterministic_execution_receipt,
+    build_settlement_relay_receipt,
+    build_subjective_review_receipt,
+)
 from agentcoin.runtimes import RuntimeRegistry
 from agentcoin.semantics import (
     capabilities_satisfy,
@@ -301,6 +306,44 @@ class AgentCoinNode:
         action = "completeJob" if result.get("adapter", {}).get("status") != "rejected" else "rejectJob"
         receipt = self.onchain.result_receipt(task, result=result, action=action)
         return self._sign_document(receipt, hmac_scope="onchain-receipt", identity_namespace="agentcoin-onchain")
+
+    def _attach_result_receipts(self, task: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(result or {})
+        worker_id = str(enriched.get("worker_id") or task.get("locked_by") or "").strip()
+        if worker_id and not enriched.get("execution_receipt"):
+            protocol = str(enriched.get("adapter", {}).get("protocol") or "agentcoin").strip() or "agentcoin"
+            status = str(enriched.get("adapter", {}).get("status") or "completed").strip() or "completed"
+            enriched["execution_receipt"] = build_deterministic_execution_receipt(
+                task,
+                worker_id=worker_id,
+                protocol=protocol,
+                status=status,
+                outcome="ack-result",
+            )
+
+        is_review = (
+            str(task.get("role") or "").strip().lower() == "reviewer"
+            or str(task.get("kind") or "").strip().lower() == "review"
+        )
+        if is_review and worker_id and not enriched.get("review_receipt"):
+            review_meta = dict(task.get("payload", {}).get("_review") or {})
+            reviewer_type = str(review_meta.get("reviewer_type") or "human").strip().lower() or "human"
+            score = enriched.get("score")
+            if score is not None:
+                try:
+                    score = int(score)
+                except (TypeError, ValueError):
+                    score = None
+            enriched["review_receipt"] = build_subjective_review_receipt(
+                task,
+                worker_id=worker_id,
+                reviewer_type=reviewer_type,
+                approved=bool(enriched.get("approved")),
+                score=score,
+                notes=str(enriched.get("notes")) if enriched.get("notes") is not None else None,
+                target_task_id=str(review_meta.get("target_task_id") or "").strip() or None,
+            )
+        return enriched
 
     def _task_settlement_preview(self, task: dict[str, Any]) -> dict[str, Any] | None:
         if not self.onchain.enabled:
@@ -1441,6 +1484,7 @@ class AgentCoinNode:
                             continue_on_error=bool(payload.get("continue_on_error")),
                             resume_from_index=int(payload.get("resume_from_index") or 0),
                         )
+                        relay = build_settlement_relay_receipt(relay, node_id=node.config.node_id)
                         signed_relay = node._sign_document(
                             relay,
                             hmac_scope="onchain-settlement-relay",
@@ -1477,6 +1521,7 @@ class AgentCoinNode:
                             retry_count=int(relay_record.get("retry_count") or 0) + 1,
                             resumed_from_relay_id=str(relay_record.get("id") or ""),
                         )
+                        relay = build_settlement_relay_receipt(relay, node_id=node.config.node_id)
                         signed_relay = node._sign_document(
                             relay,
                             hmac_scope="onchain-settlement-relay",
@@ -1732,6 +1777,7 @@ class AgentCoinNode:
                         task = node.store.get_task(task_id)
                         result_payload = dict(payload.get("result") or {})
                         if task:
+                            result_payload = node._attach_result_receipts(task, result_payload)
                             onchain_receipt = node._task_onchain_receipt(task, result=result_payload)
                             if onchain_receipt:
                                 result_payload["_onchain_receipt"] = onchain_receipt

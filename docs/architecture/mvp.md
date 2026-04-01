@@ -193,6 +193,15 @@ The runtime now also persists a first local PoAW ledger:
 - score events can be queried or summarized by actor / task
 - this is local accounting only, not final settlement
 
+The runtime now also exposes a first receipt schema layer:
+
+- execution receipts now have a shared `schema_version`
+- deterministic execution receipts are used for runtime and bridge execution
+- review acknowledgements now emit subjective review receipts
+- dispute paths now expose structured challenge evidence
+- settlement relay responses now use a dedicated relay receipt schema
+- schema examples expose these receipt shapes through `GET /v1/schema/examples`
+
 The runtime now also exposes a first settlement-preview layer:
 
 - a completed task can be mapped into a signed `submitWork` + resolution sequence

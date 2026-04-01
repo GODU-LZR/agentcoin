@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from agentcoin.models import utc_now
+from agentcoin.receipts import build_challenge_evidence, build_onchain_result_receipt
 
 
 def _canonical_json(document: dict[str, Any]) -> str:
@@ -386,17 +387,16 @@ class OnchainRuntime:
             }
         )
         receipt_uri = self._receipt_uri(task.get("id"), submission_hash)
-        return {
-            "chain_id": self.bindings.chain_id,
-            "job_id": onchain.get("job_id"),
-            "job_ref": onchain.get("job_ref"),
-            "worker_did": onchain.get("local_did") or self.bindings.local_did,
-            "submission_hash": submission_hash,
-            "result_hash": result_hash,
-            "receipt_uri": receipt_uri,
-            "intended_contract_action": action,
-            "generated_at": utc_now(),
-        }
+        return build_onchain_result_receipt(
+            chain_id=self.bindings.chain_id,
+            job_id=onchain.get("job_id"),
+            job_ref=onchain.get("job_ref"),
+            worker_did=onchain.get("local_did") or self.bindings.local_did,
+            submission_hash=submission_hash,
+            result_hash=result_hash,
+            receipt_uri=receipt_uri,
+            intended_contract_action=action,
+        )
 
     def _receipt_uri(self, task_id: str | None, submission_hash: str) -> str:
         if self.bindings.receipt_base_uri:
@@ -458,9 +458,19 @@ class OnchainRuntime:
             self.bindings.settlement_challenge_on_escalated_dispute and escalated_disputes
         ):
             first = open_disputes[0] if open_disputes else escalated_disputes[0]
+            evidence = build_challenge_evidence(
+                task_id=str(task.get("id") or ""),
+                evidence_hash=str(first.get("evidence_hash") or ""),
+                source="dispute-lane",
+                reason=str(first.get("reason") or "open dispute"),
+                severity=str(first.get("severity") or ""),
+                dispute_id=str(first.get("id") or "") or None,
+                payload={"status": str(first.get("status") or "")},
+            )
             recommended_resolution = "challengeJob"
             resolution_params = {
                 "evidence_hash": str(first.get("evidence_hash") or ""),
+                "challenge_evidence": evidence,
             }
         elif upheld_disputes:
             first = upheld_disputes[0]
@@ -483,21 +493,38 @@ class OnchainRuntime:
             or effective_review_score < int(self.bindings.settlement_min_review_score)
             or network_trust_score < int(self.bindings.settlement_network_trust_threshold)
         ):
+            evidence_hash = as_bytes32_hex(
+                sha256_hex(
+                    {
+                        "task_id": task.get("id"),
+                        "score": score,
+                        "local_score": local_score,
+                        "review_score": review_score,
+                        "effective_review_score": effective_review_score,
+                        "network_trust_score": network_trust_score,
+                        "negative_points": negative_points,
+                        "policy_version": self.bindings.settlement_policy_version,
+                    }
+                )
+            )
             recommended_resolution = "challengeJob"
             resolution_params = {
-                "evidence_hash": as_bytes32_hex(
-                    sha256_hex(
-                        {
-                            "task_id": task.get("id"),
-                            "score": score,
-                            "local_score": local_score,
-                            "review_score": review_score,
-                            "effective_review_score": effective_review_score,
-                            "network_trust_score": network_trust_score,
-                            "negative_points": negative_points,
-                            "policy_version": self.bindings.settlement_policy_version,
-                        }
-                    )
+                "evidence_hash": evidence_hash,
+                "challenge_evidence": build_challenge_evidence(
+                    task_id=str(task.get("id") or ""),
+                    evidence_hash=evidence_hash,
+                    source="poaw-settlement-policy",
+                    reason="settlement thresholds require review",
+                    severity="medium",
+                    payload={
+                        "score": score,
+                        "local_score": local_score,
+                        "review_score": review_score,
+                        "effective_review_score": effective_review_score,
+                        "network_trust_score": network_trust_score,
+                        "negative_points": negative_points,
+                        "policy_version": self.bindings.settlement_policy_version,
+                    },
                 ),
             }
 

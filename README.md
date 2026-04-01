@@ -153,7 +153,7 @@ The runtime now also has a first semantic layer:
 - `GET /v1/peer-health` exposes per-peer sync and delivery health snapshots
 - `POST /v1/peer-health/cooldown`, `/blacklist`, and `/clear` let operators steer local dispatch avoidance
 - peer selection now also uses recent success rate, weak-network penalties, cooldown / blacklist state, and outbox backlog
-- `GET /v1/schema/examples` exposes example semantic shapes for cards and tasks
+- `GET /v1/schema/examples` now exposes example semantic shapes for cards, tasks, receipts, and challenge evidence
 - this is intentionally lightweight, but it starts closing the ontology gap in the original blueprint
 
 The runtime now also has a first local `PoAW` ledger:
@@ -168,6 +168,14 @@ The runtime now also has a first local `PoAW` ledger:
 - `GET /v1/poaw/events` exposes the raw event ledger
 - `GET /v1/poaw/summary` exposes aggregated points by actor or task
 - this is a local scoring skeleton for useful-work accounting, not a chain settlement engine yet
+
+The runtime now also has a first receipt schema layer:
+
+- execution receipts now share a versioned schema
+- deterministic execution receipts are emitted for bridge and runtime execution
+- review acknowledgements now emit subjective review receipts
+- dispute responses and settlement previews now expose structured challenge evidence
+- settlement relay responses now use a dedicated relay receipt schema
 
 The runtime now also has a first on-chain settlement preview:
 

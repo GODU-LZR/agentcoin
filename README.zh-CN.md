@@ -153,7 +153,7 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `GET /v1/peer-health` 可返回每个 peer 的 sync / delivery 健康快照
 - `POST /v1/peer-health/cooldown`、`/blacklist`、`/clear` 可人工调整本地调度避让状态
 - peer 选点现在也会考虑近期成功率、弱网惩罚、cooldown / blacklist 状态和 outbox backlog
-- `GET /v1/schema/examples` 可返回 card 和 task 的语义示例
+- `GET /v1/schema/examples` 现在也会返回 card、task、receipt、challenge evidence 的语义示例
 - 这仍然是轻量实现，但已经开始补齐最初蓝图里的 ontology gap
 
 运行时现在也补了第一版本地 `PoAW` 账本：
@@ -168,6 +168,14 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `GET /v1/poaw/events` 可查看原始事件账本
 - `GET /v1/poaw/summary` 可按 actor 或 task 汇总积分
 - 这仍然只是本地 useful-work 记账骨架，还不是链上结算引擎
+
+运行时现在也补了一层 receipt schema：
+
+- execution receipt 现在统一带版本号
+- bridge / runtime 执行会产出 deterministic execution receipt
+- review ACK 现在会自动补 subjective review receipt
+- dispute 返回和 settlement preview 现在会暴露结构化 challenge evidence
+- settlement relay 返回现在会使用专门的 relay receipt schema
 
 运行时现在也补了第一版链上结算预览：
 

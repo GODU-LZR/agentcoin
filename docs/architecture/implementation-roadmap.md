@@ -78,12 +78,12 @@ Status legend:
 
 ## Phase 7
 
-- `[ ]` execution receipt schema version
-- `[ ]` deterministic receipt schema
-- `[ ]` subjective review receipt schema
-- `[ ]` challenge evidence schema
-- `[ ]` settlement relay receipt schema
-- `[ ]` all receipts exposed through `schema/examples`
+- `[x]` execution receipt schema version
+- `[x]` deterministic receipt schema
+- `[x]` subjective review receipt schema
+- `[x]` challenge evidence schema
+- `[x]` settlement relay receipt schema
+- `[x]` all receipts exposed through `schema/examples`
 
 ## Phase 8
 

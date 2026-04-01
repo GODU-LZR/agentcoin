@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agentcoin.receipts import receipt_examples
 
 AGENTCOIN_CONTEXT_URL = "https://agentcoin.ai/ns/context/v0.1"
 
@@ -47,6 +48,12 @@ def context_document() -> dict[str, Any]:
             "endpoints": "agentcoin:endpoint",
             "identity": "agentcoin:identity",
             "network": "agentcoin:network",
+            "schema_version": "agentcoin:schemaVersion",
+            "receipt": "agentcoin:receipt",
+            "reviewer_type": "agentcoin:reviewerType",
+            "approved": "agentcoin:approved",
+            "decision": "agentcoin:decision",
+            "evidence_hash": "agentcoin:evidenceHash",
         }
     }
 
@@ -106,6 +113,7 @@ def semantic_examples() -> dict[str, Any]:
             "required_capabilities": ["worker"],
             "status": "queued",
         },
+        "receipts": receipt_examples(),
     }
 
 

@@ -398,6 +398,9 @@ class NodeIntegrationTests(unittest.TestCase):
 
             _, examples = self._get(f"{node.base_url}/v1/schema/examples")
             self.assertEqual(examples["task_envelope"]["@type"], "agentcoin:TaskEnvelope")
+            self.assertEqual(examples["receipts"]["deterministic_execution_receipt"]["@type"], "agentcoin:DeterministicExecutionReceipt")
+            self.assertEqual(examples["receipts"]["subjective_review_receipt"]["schema_version"], "0.1")
+            self.assertEqual(examples["receipts"]["settlement_relay_receipt"]["@type"], "agentcoin:SettlementRelayReceipt")
 
             self._post(
                 f"{node.base_url}/v1/tasks",
@@ -581,6 +584,57 @@ class NodeIntegrationTests(unittest.TestCase):
             node_a.stop()
             node_b.stop()
             node_c.stop()
+
+    def test_review_ack_adds_subjective_review_receipt(self) -> None:
+        node = NodeHarness(
+            node_id="review-receipt-node",
+            token="token-review-receipt",
+            db_path=str(Path(self.tempdir.name) / "review-receipt.db"),
+            capabilities=["reviewer"],
+        )
+        node.start()
+        try:
+            created_status, _ = self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-review-receipt",
+                {
+                    "id": "review-receipt-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "payload": {"_review": {"target_task_id": "git-task-1", "reviewer_type": "ai"}},
+                },
+            )
+            self.assertEqual(created_status, 201)
+
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-review-receipt",
+                {"worker_id": "reviewer-1", "worker_capabilities": ["reviewer"], "lease_seconds": 30},
+            )
+            ack_status, ack = self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-review-receipt",
+                {
+                    "task_id": "review-receipt-task-1",
+                    "worker_id": "reviewer-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"approved": True, "notes": "looks good", "worker_id": "reviewer-1"},
+                },
+            )
+            self.assertEqual(ack_status, 200)
+            self.assertTrue(ack["ok"])
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "review-receipt-task-1"][0]
+            review_receipt = task["result"]["review_receipt"]
+            self.assertEqual(review_receipt["@type"], "agentcoin:SubjectiveReviewReceipt")
+            self.assertEqual(review_receipt["schema_version"], "0.1")
+            self.assertEqual(review_receipt["reviewer_type"], "ai")
+            self.assertEqual(review_receipt["target_task_id"], "git-task-1")
+            self.assertTrue(review_receipt["approved"])
+        finally:
+            node.stop()
 
     def test_dispatch_evaluate_prefers_peer_with_matching_bridge_support(self) -> None:
         node_b = NodeHarness(
@@ -1781,7 +1835,11 @@ class NodeIntegrationTests(unittest.TestCase):
 
             _, tasks = self._get(f"{node.base_url}/v1/tasks")
             stored = [item for item in tasks["items"] if item["id"] == "onchain-task-1"][0]
+            self.assertEqual(stored["result"]["execution_receipt"]["@type"], "agentcoin:DeterministicExecutionReceipt")
+            self.assertEqual(stored["result"]["execution_receipt"]["schema_version"], "0.1")
             receipt = stored["result"]["_onchain_receipt"]
+            self.assertEqual(receipt["@type"], "agentcoin:OnchainResultReceipt")
+            self.assertEqual(receipt["schema_version"], "0.1")
             self.assertEqual(receipt["job_id"], 42)
             self.assertEqual(receipt["intended_contract_action"], "completeJob")
             self.assertIn("submission_hash", receipt)
@@ -2129,11 +2187,14 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(dispute_payload["dispute"]["status"], "open")
             self.assertEqual(dispute_payload["dispute"]["bond_amount_wei"], "7000000000000000")
             self.assertEqual(dispute_payload["dispute"]["bond_status"], "locked")
+            self.assertEqual(dispute_payload["dispute"]["challenge_evidence"]["@type"], "agentcoin:ChallengeEvidence")
+            self.assertEqual(dispute_payload["dispute"]["challenge_evidence"]["evidence_hash"], "evidence-hash-1")
 
             _, disputes = self._get(f"{node.base_url}/v1/disputes?task_id=challenge-task-1&status=open")
             self.assertEqual(len(disputes["items"]), 1)
             self.assertEqual(disputes["items"][0]["challenger_id"], "reviewer-challenge-1")
             self.assertEqual(disputes["items"][0]["bond_amount_wei"], "7000000000000000")
+            self.assertEqual(disputes["items"][0]["challenge_evidence"]["@type"], "agentcoin:ChallengeEvidence")
 
             _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             settlement = preview["settlement"]
@@ -2143,6 +2204,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(settlement["intents"][1]["function"], "challengeJob")
             self.assertTrue(settlement["intents"][1]["args"]["evidenceHash"].startswith("0x"))
             self.assertEqual(len(settlement["intents"][1]["args"]["evidenceHash"]), 66)
+            self.assertEqual(settlement["resolution_params"]["challenge_evidence"]["@type"], "agentcoin:ChallengeEvidence")
 
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=challenge-task-1")
             self.assertEqual(len(replay["disputes"]), 1)
@@ -2641,6 +2703,8 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             relay = relay_payload["relay"]
             self.assertEqual(relay["kind"], "evm-settlement-relay")
+            self.assertEqual(relay["@type"], "agentcoin:SettlementRelayReceipt")
+            self.assertEqual(relay["schema_version"], "0.1")
             self.assertEqual(relay["recommended_resolution"], "completeJob")
             self.assertEqual(relay["completed_steps"], 2)
             self.assertFalse(relay["stopped_on_error"])

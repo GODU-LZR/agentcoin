@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
+from agentcoin.receipts import build_challenge_evidence
 from agentcoin.semantics import capabilities_satisfy
 
 DEFAULT_POAW_POLICY_VERSION = "0.2"
@@ -1027,6 +1028,17 @@ class NodeStore:
     @staticmethod
     def _dispute_from_row(row: sqlite3.Row) -> dict[str, Any]:
         committee_votes = json.loads(row["committee_votes_json"] or "[]")
+        challenge_evidence = None
+        if row["evidence_hash"]:
+            challenge_evidence = build_challenge_evidence(
+                task_id=row["task_id"],
+                evidence_hash=row["evidence_hash"],
+                source="dispute-lane",
+                reason=row["reason"],
+                severity=row["severity"],
+                dispute_id=row["id"],
+                payload=json.loads(row["payload_json"] or "{}"),
+            )
         return {
             "id": row["id"],
             "task_id": row["task_id"],
@@ -1035,6 +1047,7 @@ class NodeStore:
             "actor_type": row["actor_type"],
             "reason": row["reason"],
             "evidence_hash": row["evidence_hash"],
+            "challenge_evidence": challenge_evidence,
             "severity": row["severity"],
             "bond_amount_wei": str(row["bond_amount_wei"] or "0"),
             "bond_status": row["bond_status"],
@@ -1226,6 +1239,19 @@ class NodeStore:
             )
             conn.commit()
             return {
+                "challenge_evidence": (
+                    build_challenge_evidence(
+                        task_id=task_id,
+                        evidence_hash=evidence_hash,
+                        source="dispute-lane",
+                        reason=reason,
+                        severity=str(severity or "medium").strip().lower() or "medium",
+                        dispute_id=dispute_id,
+                        payload=payload or {},
+                    )
+                    if evidence_hash
+                    else None
+                ),
                 "ok": True,
                 "dispute": {
                     "id": dispute_id,
@@ -1235,6 +1261,19 @@ class NodeStore:
                     "actor_type": actor_type,
                     "reason": reason,
                     "evidence_hash": evidence_hash,
+                    "challenge_evidence": (
+                        build_challenge_evidence(
+                            task_id=task_id,
+                            evidence_hash=evidence_hash,
+                            source="dispute-lane",
+                            reason=reason,
+                            severity=str(severity or "medium").strip().lower() or "medium",
+                            dispute_id=dispute_id,
+                            payload=payload or {},
+                        )
+                        if evidence_hash
+                        else None
+                    ),
                     "severity": str(severity or "medium").strip().lower() or "medium",
                     "bond_amount_wei": normalized_bond_amount,
                     "bond_status": bond_status,
