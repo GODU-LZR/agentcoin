@@ -97,6 +97,15 @@ class NodeStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS execution_audits (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    worker_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -411,6 +420,7 @@ class NodeStore:
             delivery_receipts = conn.execute("SELECT COUNT(*) FROM delivery_receipts").fetchone()[0]
             peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
             workflow_states = conn.execute("SELECT COUNT(*) FROM workflow_states").fetchone()[0]
+            execution_audits = conn.execute("SELECT COUNT(*) FROM execution_audits").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -426,7 +436,104 @@ class NodeStore:
                 "delivery_receipts": delivery_receipts,
                 "peer_cards": peer_cards,
                 "workflow_states": workflow_states,
+                "execution_audits": execution_audits,
             }
+        finally:
+            conn.close()
+
+    def save_execution_audit(
+        self,
+        *,
+        task_id: str,
+        worker_id: str,
+        event_type: str,
+        status: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        audit_id = str(uuid4())
+        created_at = utc_now()
+        conn = self._connect()
+        try:
+            self._insert_execution_audit(
+                conn,
+                audit_id=audit_id,
+                task_id=task_id,
+                worker_id=worker_id,
+                event_type=event_type,
+                status=status,
+                payload=payload,
+                created_at=created_at,
+            )
+            conn.commit()
+            return {
+                "id": audit_id,
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "event_type": event_type,
+                "status": status,
+                "payload": payload,
+                "created_at": created_at,
+            }
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _insert_execution_audit(
+        conn: sqlite3.Connection,
+        *,
+        audit_id: str,
+        task_id: str,
+        worker_id: str,
+        event_type: str,
+        status: str,
+        payload: dict[str, Any],
+        created_at: str,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO execution_audits
+            (id, task_id, worker_id, event_type, status, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (audit_id, task_id, worker_id, event_type, status, json.dumps(payload, ensure_ascii=False), created_at),
+        )
+
+    def list_execution_audits(self, task_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if task_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, task_id, worker_id, event_type, status, payload_json, created_at
+                    FROM execution_audits
+                    WHERE task_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (task_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, task_id, worker_id, event_type, status, payload_json, created_at
+                    FROM execution_audits
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "task_id": row["task_id"],
+                    "worker_id": row["worker_id"],
+                    "event_type": row["event_type"],
+                    "status": row["status"],
+                    "payload": json.loads(row["payload_json"]),
+                    "created_at": row["created_at"],
+                }
+                for row in rows
+            ]
         finally:
             conn.close()
 
@@ -1108,6 +1215,17 @@ class NodeStore:
                     """,
                     (json.dumps(result or {}, ensure_ascii=False), now, now, task_id, worker_id, lease_token),
                 ).rowcount
+                if updated:
+                    self._insert_execution_audit(
+                        conn,
+                        audit_id=str(uuid4()),
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        event_type="ack",
+                        status="completed",
+                        payload={"success": True, "result": result or {}},
+                        created_at=now,
+                    )
             elif requeue:
                 payload_update = {"error": error_message} if error_message else {}
                 status = "dead-letter" if int(row["attempts"]) >= int(row["max_attempts"]) else "queued"
@@ -1138,6 +1256,22 @@ class NodeStore:
                         lease_token,
                     ),
                 ).rowcount
+                if updated:
+                    self._insert_execution_audit(
+                        conn,
+                        audit_id=str(uuid4()),
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        event_type="ack",
+                        status=status,
+                        payload={
+                            "success": False,
+                            "requeue": True,
+                            "error_message": error_message,
+                            "result": payload_update,
+                        },
+                        created_at=now,
+                    )
             else:
                 failure = {"error": error_message} if error_message else {"error": "task failed"}
                 updated = conn.execute(
@@ -1155,6 +1289,22 @@ class NodeStore:
                     """,
                     (json.dumps(failure, ensure_ascii=False), error_message, now, now, task_id, worker_id, lease_token),
                 ).rowcount
+                if updated:
+                    self._insert_execution_audit(
+                        conn,
+                        audit_id=str(uuid4()),
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        event_type="ack",
+                        status="failed",
+                        payload={
+                            "success": False,
+                            "requeue": False,
+                            "error_message": error_message,
+                            "result": failure,
+                        },
+                        created_at=now,
+                    )
             conn.commit()
             return updated > 0
         finally:

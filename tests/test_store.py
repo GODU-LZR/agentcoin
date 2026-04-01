@@ -274,3 +274,22 @@ class NodeStoreTests(unittest.TestCase):
 
         summary_done = self.store.summarize_workflow("root-hybrid")
         self.assertTrue(summary_done["merge_gate_status"]["merge-hybrid"]["satisfied"])
+
+    def test_ack_persists_execution_audit(self) -> None:
+        self.store.add_task(TaskEnvelope(id="audit-task", kind="exec", payload={}, role="worker"))
+        claimed = self.store.claim_task(worker_id="worker-audit", worker_capabilities=["worker"], lease_seconds=30)
+        assert claimed is not None
+        self.assertTrue(
+            self.store.ack_task(
+                task_id="audit-task",
+                worker_id="worker-audit",
+                lease_token=claimed["lease_token"],
+                success=True,
+                result={"policy_receipt": {"decision": "allowed"}, "execution_receipt": {"status": "completed"}},
+            )
+        )
+
+        audits = self.store.list_execution_audits(task_id="audit-task")
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0]["status"], "completed")
+        self.assertEqual(audits[0]["payload"]["result"]["policy_receipt"]["decision"], "allowed")

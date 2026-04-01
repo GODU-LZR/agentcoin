@@ -912,5 +912,18 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(task["result"]["adapter"]["status"], "completed")
             self.assertEqual(execution["returncode"], 0)
             self.assertIn("agentcoin-sandbox-ok", execution["stdout"])
+
+            _, audits = self._get(f"{node.base_url}/v1/audits?task_id=sandbox-task-1")
+            self.assertEqual(len(audits["items"]), 1)
+            self.assertEqual(audits["items"][0]["status"], "completed")
+            self.assertEqual(
+                audits["items"][0]["payload"]["result"]["execution_receipt"]["subprocess"]["returncode"],
+                0,
+            )
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=sandbox-task-1")
+            self.assertEqual(replay["task"]["id"], "sandbox-task-1")
+            self.assertEqual(len(replay["audits"]), 1)
+            self.assertEqual(replay["bridge_export_preview"]["protocol"], "mcp")
         finally:
             node.stop()

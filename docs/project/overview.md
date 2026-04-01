@@ -43,6 +43,7 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - local task ingestion
 - peer routing
 - protocol bridge import and export
+- execution audit and replay inspection
 - inbox and outbox delivery
 - lease-based claiming
 - workflow fanout, merge, summary, and finalize
@@ -58,6 +59,7 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - delivery receipts
 - peer cards
 - workflow terminal states
+- execution audits
 
 This is the durability backbone for offline-first behavior.
 
@@ -224,12 +226,14 @@ Still missing for later milestones:
 - `GET /v1/card`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/audits`
 - `GET /v1/bridges`
 
 ### Task operations
 
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
+- `GET /v1/tasks/replay-inspect?task_id=...`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/bridges/import`

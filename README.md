@@ -124,12 +124,14 @@ Key endpoints:
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
+- `GET /v1/tasks/replay-inspect?task_id=...`
 - `GET /v1/git/status`
 - `GET /v1/git/diff`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/audits`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -213,6 +215,13 @@ The execution layer now also has a first security policy boundary:
 - `local-command` execution is disabled by default and only enabled with `--allow-subprocess`
 - subprocess execution also requires explicit executable allowlists via `--allow-command`
 - `--workspace-root` constrains subprocess cwd so bridge tasks cannot escape the intended workspace
+
+There is now also a first execution audit and replay layer:
+
+- every task ACK persists an execution audit event
+- `GET /v1/audits` lists audit events globally or by `task_id`
+- `GET /v1/tasks/replay-inspect?task_id=...` returns the task, its audits, and a bridge export preview
+- policy receipts and execution receipts are now carried in task results for later review and replay
 
 Inter-node delivery now also uses explicit message acknowledgements:
 

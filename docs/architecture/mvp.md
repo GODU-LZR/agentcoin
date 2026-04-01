@@ -51,12 +51,14 @@ The reference node now also models degraded network conditions explicitly:
 - `GET /v1/card`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
+- `GET /v1/tasks/replay-inspect?task_id=...`
 - `GET /v1/git/status`
 - `GET /v1/git/diff`
 - `GET /v1/workflows?workflow_id=...`
 - `GET /v1/workflows/summary?workflow_id=...`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
+- `GET /v1/audits`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -129,6 +131,12 @@ The worker loop now also has a first policy and sandbox layer:
 - opt-in subprocess execution for `local-command`
 - executable allowlists for subprocess mode
 - workspace-root confinement for subprocess cwd
+
+The runtime now also persists execution audit trails:
+
+- each ACK writes an execution audit event
+- audit events can be queried by task
+- replay inspection can assemble the task, audit history, and bridge export preview in one response
 
 ## Git-Like Task Model
 

@@ -68,6 +68,12 @@ class ExecutionAdapterRegistry:
             "protocol": "agentcoin",
             "status": "completed",
         }
+        result["policy_receipt"] = {
+            "mode": "generic",
+            "protocol": "agentcoin",
+            "decision": "allowed",
+            "reason": "no bridge policy applied",
+        }
         return result
 
     def _rejected_result(
@@ -86,8 +92,15 @@ class ExecutionAdapterRegistry:
             "status": "rejected",
             "reason": reason,
         }
+        result["policy_receipt"] = {
+            "mode": "policy",
+            "protocol": protocol,
+            "decision": "rejected",
+            "reason": reason,
+        }
         if extra:
             result["adapter"].update(extra)
+            result["policy_receipt"].update(extra)
         return result
 
     def _resolve_cwd(self, requested_cwd: str | None) -> str | None:
@@ -154,6 +167,13 @@ class ExecutionAdapterRegistry:
             "protocol": "mcp",
             "status": "completed",
         }
+        result["policy_receipt"] = {
+            "mode": "bridge-skeleton",
+            "protocol": "mcp",
+            "decision": "allowed",
+            "tool_name": tool_name,
+            "allow_subprocess": self.policy.allow_subprocess,
+        }
         execution = None
         if tool_name == "local-command":
             try:
@@ -188,6 +208,12 @@ class ExecutionAdapterRegistry:
                 ]
             },
         }
+        result["execution_receipt"] = {
+            "protocol": "mcp",
+            "tool_name": tool_name,
+            "method": method,
+            "subprocess": execution,
+        }
         return result
 
     def _execute_a2a(self, task: dict[str, Any], *, bridge: dict[str, Any], worker_id: str) -> dict[str, Any]:
@@ -209,6 +235,12 @@ class ExecutionAdapterRegistry:
             "protocol": "a2a",
             "status": "completed",
         }
+        result["policy_receipt"] = {
+            "mode": "bridge-skeleton",
+            "protocol": "a2a",
+            "decision": "allowed",
+            "intent": intent,
+        }
         result["bridge_execution"] = {
             "protocol": "a2a",
             "message_id": bridge.get("message_id") or task["id"],
@@ -224,5 +256,10 @@ class ExecutionAdapterRegistry:
                     "metadata": metadata,
                 },
             },
+        }
+        result["execution_receipt"] = {
+            "protocol": "a2a",
+            "intent": intent,
+            "message_id": bridge.get("message_id") or task["id"],
         }
         return result

@@ -57,6 +57,7 @@ The blueprint calls for gateway-mediated, controlled execution. The repository i
 - HMAC-signed capability cards and task envelopes
 - SSH-key based node identity for cards, task envelopes, and delivery receipts
 - worker-side allowlists and restricted subprocess execution skeleton
+- execution audit trail and replay inspection
 - durable audit-friendly queue state
 - transport and execution failure separation
 

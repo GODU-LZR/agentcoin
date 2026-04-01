@@ -320,6 +320,11 @@ class AgentCoinNode:
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
                     return
+                if path == "/v1/audits":
+                    task_id = (query.get("task_id") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_execution_audits(task_id=task_id, limit=limit)})
+                    return
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return
@@ -348,6 +353,28 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.BAD_REQUEST, {"error": "workflow_id is required"})
                         return
                     self._json_response(HTTPStatus.OK, node.store.summarize_workflow(workflow_id))
+                    return
+                if path == "/v1/tasks/replay-inspect":
+                    task_id = (query.get("task_id") or [""])[0]
+                    if not task_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
+                        return
+                    task = node.store.get_task(task_id)
+                    if not task:
+                        self._json_response(HTTPStatus.NOT_FOUND, {"error": "task not found"})
+                        return
+                    bridge_protocol = str(task.get("payload", {}).get("_bridge", {}).get("protocol") or "").strip()
+                    export_preview = None
+                    if bridge_protocol:
+                        export_preview = node.bridges.export_message(bridge_protocol, task)
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "task": task,
+                            "audits": node.store.list_execution_audits(task_id=task_id, limit=200),
+                            "bridge_export_preview": export_preview,
+                        },
+                    )
                     return
                 if path == "/v1/peers":
                     self._json_response(
