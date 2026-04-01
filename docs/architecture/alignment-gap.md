@@ -67,7 +67,7 @@ The blueprint wants code generation, review, and delivery to happen across colla
 
 ## Where The Current Repository Still Deviates Or Lags
 
-### 1. Ontology and semantic-web layer is not implemented yet
+### 1. Ontology and semantic-web layer is only partially implemented
 
 The blueprint strongly emphasizes:
 
@@ -75,7 +75,12 @@ The blueprint strongly emphasizes:
 - JSON-LD / RDF semantics
 - machine-readable role and capability meaning
 
-The current repository only has practical JSON task envelopes and cards. It does not yet implement a shared ontology, JSON-LD contexts, or semantic negotiation.
+The current repository now has lightweight JSON-LD style `semantics` on cards and task envelopes, plus a shared context endpoint, but it still does not implement:
+
+- a full ontology
+- RDF graph reasoning
+- semantic negotiation between peers
+- formal role and capability vocabularies beyond the current minimal schema
 
 ### 2. PoAW and economic settlement are still mostly conceptual
 

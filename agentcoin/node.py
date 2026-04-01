@@ -17,6 +17,7 @@ from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.runtimes import RuntimeRegistry
+from agentcoin.semantics import context_document, semantic_examples, task_semantics
 from agentcoin.security import (
     SignatureError,
     sign_document,
@@ -265,6 +266,12 @@ class AgentCoinNode:
         receipt = self.onchain.result_receipt(task, result=result, action=action)
         return self._sign_document(receipt, hmac_scope="onchain-receipt", identity_namespace="agentcoin-onchain")
 
+    @staticmethod
+    def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(task)
+        payload["semantics"] = task_semantics(payload)
+        return payload
+
     def _chain_rpc_call(self, rpc_url: str, request_payload: dict[str, Any], *, timeout: float = 10) -> dict[str, Any]:
         return self.transport.request_json(
             rpc_url,
@@ -374,13 +381,19 @@ class AgentCoinNode:
                         node._sign_document(node.config.card.to_dict(), hmac_scope="agent-card", identity_namespace="agentcoin-card"),
                     )
                     return
+                if path == "/v1/schema/context":
+                    self._json_response(HTTPStatus.OK, context_document())
+                    return
+                if path == "/v1/schema/examples":
+                    self._json_response(HTTPStatus.OK, semantic_examples())
+                    return
                 if path == "/v1/onchain/status":
                     status_payload = node.onchain.status()
                     status_payload["transport"] = node.config.network.transport_profile()
                     self._json_response(HTTPStatus.OK, status_payload)
                     return
                 if path == "/v1/tasks":
-                    self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
+                    self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_tasks()]})
                     return
                 if path == "/v1/audits":
                     task_id = (query.get("task_id") or [None])[0]
@@ -434,14 +447,14 @@ class AgentCoinNode:
                     self._json_response(HTTPStatus.OK, node._require_git().diff(base_ref=base_ref, target_ref=target_ref, name_only=name_only))
                     return
                 if path == "/v1/tasks/dead-letter":
-                    self._json_response(HTTPStatus.OK, {"items": node.store.list_dead_letter_tasks()})
+                    self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_dead_letter_tasks()]})
                     return
                 if path == "/v1/workflows":
                     workflow_id = (query.get("workflow_id") or [""])[0]
                     if not workflow_id:
                         self._json_response(HTTPStatus.BAD_REQUEST, {"error": "workflow_id is required"})
                         return
-                    self._json_response(HTTPStatus.OK, {"items": node.store.list_workflow_tasks(workflow_id)})
+                    self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_workflow_tasks(workflow_id)]})
                     return
                 if path == "/v1/workflows/summary":
                     workflow_id = (query.get("workflow_id") or [""])[0]
@@ -479,7 +492,7 @@ class AgentCoinNode:
                     self._json_response(
                         HTTPStatus.OK,
                         {
-                            "task": task,
+                            "task": node._decorate_task(task),
                             "audits": node.store.list_execution_audits(task_id=task_id, limit=200),
                             "bridge_export_preview": export_preview,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
@@ -560,6 +573,49 @@ class AgentCoinNode:
                         self._json_response(
                             HTTPStatus.OK,
                             {"ok": updated, "task_id": task_id, "runtime": merged_payload.get("_runtime")},
+                        )
+                        return
+                    if self.path == "/v1/integrations/openclaw/bind":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        endpoint = str(payload.get("endpoint") or "").strip()
+                        model = str(payload.get("model") or "").strip()
+                        if not endpoint:
+                            raise ValueError("endpoint is required")
+                        if not model:
+                            raise ValueError("model is required")
+                        runtime_options = {
+                            "endpoint": endpoint,
+                            "model": model,
+                            "auth_token": str(payload.get("auth_token") or "").strip() or None,
+                            "prompt": payload.get("prompt"),
+                            "messages": payload.get("messages"),
+                            "temperature": payload.get("temperature"),
+                            "max_tokens": payload.get("max_tokens"),
+                            "timeout_seconds": int(payload.get("timeout_seconds") or 60),
+                            "provider": "openclaw-gateway",
+                        }
+                        merged_payload = dict(task["payload"])
+                        merged_payload["_runtime"] = node.runtimes.normalize_binding(
+                            "openai-chat",
+                            {key: value for key, value in runtime_options.items() if value is not None},
+                        )
+                        updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": updated,
+                                "task_id": task_id,
+                                "runtime": merged_payload.get("_runtime"),
+                                "provider": "openclaw-gateway",
+                            },
                         )
                         return
                     if self.path == "/v1/onchain/intents/build":

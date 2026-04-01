@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from agentcoin.semantics import agent_card_semantics, task_semantics
+
 
 def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -30,7 +32,9 @@ class AgentCard:
     identity: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["semantics"] = agent_card_semantics(payload)
+        return payload
 
 
 @dataclass(slots=True)
@@ -86,4 +90,6 @@ class TaskEnvelope:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["semantics"] = task_semantics(payload)
+        return payload

@@ -363,6 +363,46 @@ class NodeIntegrationTests(unittest.TestCase):
             node_a.stop()
             node_b.stop()
 
+    def test_card_and_task_expose_semantic_shapes(self) -> None:
+        node = NodeHarness(
+            node_id="semantic-node",
+            token="token-semantic",
+            db_path=str(Path(self.tempdir.name) / "semantic.db"),
+            capabilities=["worker", "reviewer"],
+        )
+        node.start()
+        try:
+            _, card = self._get(f"{node.base_url}/v1/card")
+            self.assertEqual(card["semantics"]["@type"], "agentcoin:AgentCard")
+            self.assertEqual(card["semantics"]["@context"], "https://agentcoin.ai/ns/context/v0.1")
+            self.assertIn("worker", card["semantics"]["capabilities"])
+
+            _, context_payload = self._get(f"{node.base_url}/v1/schema/context")
+            self.assertIn("@context", context_payload)
+            self.assertIn("agentcoin", context_payload["@context"])
+
+            _, examples = self._get(f"{node.base_url}/v1/schema/examples")
+            self.assertEqual(examples["task_envelope"]["@type"], "agentcoin:TaskEnvelope")
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-semantic",
+                {
+                    "id": "semantic-task-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "required_capabilities": ["worker"],
+                    "payload": {"input": "semantic"},
+                },
+            )
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "semantic-task-1"][0]
+            self.assertEqual(task["semantics"]["@type"], "agentcoin:TaskEnvelope")
+            self.assertEqual(task["semantics"]["role"], "worker")
+            self.assertEqual(task["semantics"]["required_capabilities"], ["worker"])
+        finally:
+            node.stop()
+
     def test_signed_peer_sync_and_signed_inbox_verification(self) -> None:
         shared_a = "node-a-shared-secret"
         shared_b = "node-b-shared-secret"
@@ -1771,6 +1811,51 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
             gateway.stop()
+
+    def test_openclaw_bind_helper_uses_openai_chat_runtime(self) -> None:
+        node = NodeHarness(
+            node_id="openclaw-bind-node",
+            token="token-openclaw-bind",
+            db_path=str(Path(self.tempdir.name) / "openclaw-bind.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-openclaw-bind",
+                {
+                    "id": "openclaw-bind-task-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": "review"},
+                },
+            )
+            status, payload = self._post(
+                f"{node.base_url}/v1/integrations/openclaw/bind",
+                "token-openclaw-bind",
+                {
+                    "task_id": "openclaw-bind-task-1",
+                    "endpoint": "http://127.0.0.1:3000/v1/chat/completions",
+                    "model": "openclaw/gateway",
+                    "auth_token": "abc",
+                    "prompt": "review this",
+                    "temperature": 0,
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["provider"], "openclaw-gateway")
+            self.assertEqual(payload["runtime"]["runtime"], "openai-chat")
+            self.assertEqual(payload["runtime"]["endpoint"], "http://127.0.0.1:3000/v1/chat/completions")
+            self.assertEqual(payload["runtime"]["model"], "openclaw/gateway")
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "openclaw-bind-task-1"][0]
+            self.assertEqual(task["payload"]["_runtime"]["runtime"], "openai-chat")
+            self.assertEqual(task["payload"]["_runtime"]["provider"], "openclaw-gateway")
+        finally:
+            node.stop()
 
     def test_adapter_policy_allows_sandboxed_local_command(self) -> None:
         workspace = Path(self.tempdir.name) / "workspace"

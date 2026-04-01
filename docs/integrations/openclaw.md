@@ -14,6 +14,22 @@ The current recommended path is:
 
 Use the `openai-chat` runtime adapter against an OpenClaw Gateway endpoint.
 
+If you want a one-step bind from the node API, use:
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/integrations/openclaw/bind \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task_id": "task-1",
+    "endpoint": "http://127.0.0.1:3000/v1/chat/completions",
+    "model": "openclaw/gateway",
+    "auth_token": "replace-me",
+    "prompt": "Review this task",
+    "temperature": 0
+  }'
+```
+
 Example task binding:
 
 ```json

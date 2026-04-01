@@ -19,6 +19,7 @@ The current repository contains:
 - a node-side on-chain integration skeleton for task binding, signed submission receipts, and JSON-RPC payload building
 - live JSON-RPC planning and raw transaction relay for external signers and wallets
 - a first runtime-adapter layer for HTTP and CLI agent execution
+- a lightweight semantic layer for cards and task envelopes
 
 ## Design Goals
 
@@ -150,6 +151,16 @@ Current runtime adapter capabilities:
 - runtime policy can restrict allowed runtime kinds and allowed HTTP hosts
 
 This lets AgentCoin adapt different agent implementations without pretending every agent speaks the same native protocol.
+
+### Semantic Layer
+
+The repository now also has a lightweight semantic layer:
+
+- `AgentCard` and `TaskEnvelope` expose a JSON-LD style `semantics` object
+- the node serves a shared context document and example payloads
+- this is still a minimal ontology step, not a full RDF / JSON-LD reasoning layer
+
+This keeps the current implementation aligned with the blueprint without introducing heavy semantic-web dependencies too early.
 
 ### Git Adapter Model
 

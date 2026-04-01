@@ -138,6 +138,13 @@ The worker runtime now also has a first agent-adapter layer:
 - `cli-json` can invoke a local agent wrapper over stdin/stdout JSON
 - bridge adapters and runtime adapters are intentionally separate, so protocol import/export does not have to dictate execution mode
 
+The runtime now also has a first semantic layer:
+
+- `AgentCard` and `TaskEnvelope` now carry a lightweight JSON-LD style `semantics` object
+- `GET /v1/schema/context` exposes the shared context document
+- `GET /v1/schema/examples` exposes example semantic shapes for cards and tasks
+- this is intentionally lightweight, but it starts closing the ontology gap in the original blueprint
+
 ### Quick Start
 
 ```bash
@@ -160,6 +167,8 @@ Key endpoints:
 
 - `GET /healthz`
 - `GET /v1/card`
+- `GET /v1/schema/context`
+- `GET /v1/schema/examples`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
@@ -184,6 +193,7 @@ Key endpoints:
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`
+- `POST /v1/integrations/openclaw/bind`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`

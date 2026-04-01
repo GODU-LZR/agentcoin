@@ -34,6 +34,14 @@ The MVP now also supports pragmatic signed identity checks:
 
 The node does not assume a specific agent runtime. It accepts generic task envelopes and capability cards so different agent systems can be adapted behind the same interface.
 
+### Minimal semantic layer
+
+The MVP now also adds a lightweight semantic layer:
+
+- `AgentCard` and `TaskEnvelope` carry a JSON-LD style `semantics` object
+- the node serves a shared context and example documents
+- this is intentionally smaller than a full ontology stack, but keeps the data model aligned with the blueprint
+
 ### Offline and weak-network behavior
 
 If a task includes `deliver_to`, the node stores an outbox record and retries delivery later. This allows workflows to continue collecting work locally even when peer nodes are unreachable.
@@ -55,6 +63,8 @@ The outbound transport path is now centralized as well:
 
 - `GET /healthz`
 - `GET /v1/card`
+- `GET /v1/schema/context`
+- `GET /v1/schema/examples`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
@@ -75,6 +85,7 @@ The outbound transport path is now centralized as well:
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`
+- `POST /v1/integrations/openclaw/bind`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`

@@ -131,6 +131,13 @@ worker runtime には最初の agent-adapter layer も追加しました。
 - `cli-json` は stdin/stdout JSON で local CLI agent wrapper を実行できます
 - bridge adapter と runtime adapter を分けることで、protocol compatibility と execution mode を分離しています
 
+runtime には最小の semantic layer も追加しました。
+
+- `AgentCard` と `TaskEnvelope` は軽量な JSON-LD 風 `semantics` を持ちます
+- `GET /v1/schema/context` で shared context document を取得できます
+- `GET /v1/schema/examples` で card / task semantic shape の例を取得できます
+- まだ軽量ですが、元の blueprint の ontology gap を埋め始めています
+
 ### Quick Start
 
 ```bash
@@ -161,6 +168,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 
 - `GET /healthz`
 - `GET /v1/card`
+- `GET /v1/schema/context`
+- `GET /v1/schema/examples`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
@@ -185,6 +194,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`
+- `POST /v1/integrations/openclaw/bind`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
