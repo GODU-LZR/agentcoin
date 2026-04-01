@@ -608,6 +608,12 @@ class AgentCoinNode:
                         {"error": "use POST /v1/onchain/settlement-raw-bundle with task_id and raw_transactions"},
                     )
                     return
+                if path == "/v1/onchain/settlement-relay":
+                    self._json_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED,
+                        {"error": "use POST /v1/onchain/settlement-relay with task_id and raw_transactions"},
+                    )
+                    return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_tasks()]})
                     return
@@ -1104,6 +1110,75 @@ class AgentCoinNode:
                             identity_namespace="agentcoin-onchain-settlement-raw-bundle",
                         )
                         self._json_response(HTTPStatus.OK, {"bundle": signed_bundle})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        settlement = node._task_settlement_preview(task)
+                        if not settlement:
+                            raise ValueError("task is not bound to onchain settlement")
+                        rpc_options = dict(payload.get("rpc") or {})
+                        plan = node.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options)
+                        bundle = node.onchain.settlement_raw_bundle(
+                            plan,
+                            raw_transactions=list(payload.get("raw_transactions") or []),
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                        )
+                        timeout = float(payload.get("timeout_seconds") or 10)
+                        continue_on_error = bool(payload.get("continue_on_error"))
+                        relayed_steps: list[dict[str, Any]] = []
+                        failures: list[dict[str, Any]] = []
+                        for step in bundle["steps"]:
+                            raw_payload = dict(step.get("raw_relay_payload") or {})
+                            rpc_url = str(raw_payload.get("rpc_url") or "").strip()
+                            if not rpc_url:
+                                raise ValueError("rpc_url is required for settlement relay")
+                            try:
+                                response = node._chain_rpc_call(rpc_url, raw_payload["request"], timeout=timeout)
+                                relayed_steps.append(
+                                    {
+                                        "index": step.get("index"),
+                                        "action": step.get("action"),
+                                        "response": response,
+                                        "tx_hash": response.get("result"),
+                                        "raw_relay_payload": raw_payload,
+                                    }
+                                )
+                            except Exception as exc:
+                                failure = {
+                                    "index": step.get("index"),
+                                    "action": step.get("action"),
+                                    "error": str(exc),
+                                    "raw_relay_payload": raw_payload,
+                                }
+                                failures.append(failure)
+                                if not continue_on_error:
+                                    break
+                        relay = {
+                            "kind": "evm-settlement-relay",
+                            "task_id": task_id,
+                            "recommended_resolution": bundle.get("recommended_resolution"),
+                            "step_count": bundle.get("step_count"),
+                            "submitted_steps": relayed_steps,
+                            "failures": failures,
+                            "completed_steps": len(relayed_steps),
+                            "stopped_on_error": bool(failures) and not continue_on_error,
+                            "transport": node.config.network.transport_profile(),
+                            "generated_at": utc_now(),
+                        }
+                        signed_relay = node._sign_document(
+                            relay,
+                            hmac_scope="onchain-settlement-relay",
+                            identity_namespace="agentcoin-onchain-settlement-relay",
+                        )
+                        self._json_response(HTTPStatus.OK, {"relay": signed_relay})
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():

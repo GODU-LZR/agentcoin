@@ -2252,6 +2252,99 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_onchain_settlement_relay_submits_bundle_sequence(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0xsettlement{call_count['raw']}"
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-relay-node",
+            token="token-settlement-relay",
+            db_path=str(Path(self.tempdir.name) / "settlement-relay.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-relay-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-relay",
+                {
+                    "id": "settlement-relay-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 94,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-settlement-relay",
+                {"worker_id": "worker-relay-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-settlement-relay",
+                {
+                    "task_id": "settlement-relay-task-1",
+                    "worker_id": "worker-relay-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-relay-1"},
+                },
+            )
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-relay",
+                {
+                    "task_id": "settlement-relay-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaabbbb"},
+                        {"action": "completeJob", "raw_transaction": "0xccccdddd"},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+            self.assertEqual(relay["kind"], "evm-settlement-relay")
+            self.assertEqual(relay["recommended_resolution"], "completeJob")
+            self.assertEqual(relay["completed_steps"], 2)
+            self.assertFalse(relay["stopped_on_error"])
+            self.assertEqual(relay["submitted_steps"][0]["tx_hash"], "0xsettlement1")
+            self.assertEqual(relay["submitted_steps"][1]["tx_hash"], "0xsettlement2")
+            verification = verify_document(
+                relay,
+                secret="settlement-relay-secret",
+                expected_scope="onchain-settlement-relay",
+                expected_key_id="settlement-relay-node",
+            )
+            self.assertTrue(verification["verified"])
+            self.assertEqual([call["method"] for call in rpc.calls], ["eth_sendRawTransaction", "eth_sendRawTransaction"])
+        finally:
+            node.stop()
+            rpc.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",
