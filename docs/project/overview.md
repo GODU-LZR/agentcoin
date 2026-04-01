@@ -65,6 +65,7 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - actor reputation state
 - policy violations
 - quarantine records
+- governance action history
 
 This is the durability backbone for offline-first behavior.
 
@@ -169,6 +170,7 @@ Execution governance now also has a first local enforcement layer:
 - workers accumulate a local reputation score
 - repeated violations automatically quarantine the worker id for future task claims
 - operators can inspect reputation, violation history, and active quarantines over HTTP
+- operators can also set and release manual quarantines with a durable governance action log
 
 ## Delivery and Failure States
 

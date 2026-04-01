@@ -144,6 +144,7 @@ The runtime now also has a first local governance loop:
 - workers accumulate a local reputation score
 - repeated violations create quarantine records
 - quarantined worker ids are blocked from future task claims on that node
+- operators can manually quarantine or release actors with durable governance action history
 
 ## Git-Like Task Model
 

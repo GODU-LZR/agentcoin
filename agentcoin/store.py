@@ -142,6 +142,15 @@ class NodeStore:
                     updated_at TEXT NOT NULL,
                     expires_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS governance_actions (
+                    id TEXT PRIMARY KEY,
+                    actor_id TEXT NOT NULL,
+                    actor_type TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -460,6 +469,7 @@ class NodeStore:
             reputations = conn.execute("SELECT COUNT(*) FROM actor_reputation").fetchone()[0]
             policy_violations = conn.execute("SELECT COUNT(*) FROM policy_violations").fetchone()[0]
             active_quarantines = conn.execute("SELECT COUNT(*) FROM quarantines WHERE active = 1").fetchone()[0]
+            governance_actions = conn.execute("SELECT COUNT(*) FROM governance_actions").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -479,6 +489,7 @@ class NodeStore:
                 "reputations": reputations,
                 "policy_violations": policy_violations,
                 "quarantines_active": active_quarantines,
+                "governance_actions": governance_actions,
             }
         finally:
             conn.close()
@@ -929,6 +940,248 @@ class NodeStore:
                 }
                 for row in rows
             ]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _governance_action_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "actor_id": row["actor_id"],
+            "actor_type": row["actor_type"],
+            "action_type": row["action_type"],
+            "reason": row["reason"],
+            "payload": json.loads(row["payload_json"] or "{}"),
+            "created_at": row["created_at"],
+        }
+
+    def _insert_governance_action(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        actor_id: str,
+        actor_type: str,
+        action_type: str,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        action_id = str(uuid4())
+        timestamp = created_at or utc_now()
+        conn.execute(
+            """
+            INSERT INTO governance_actions
+            (id, actor_id, actor_type, action_type, reason, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                action_id,
+                actor_id,
+                actor_type,
+                action_type,
+                reason,
+                json.dumps(payload or {}, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        return {
+            "id": action_id,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "action_type": action_type,
+            "reason": reason,
+            "payload": payload or {},
+            "created_at": timestamp,
+        }
+
+    def list_governance_actions(self, actor_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            if actor_id:
+                rows = conn.execute(
+                    """
+                    SELECT id, actor_id, actor_type, action_type, reason, payload_json, created_at
+                    FROM governance_actions
+                    WHERE actor_id = ?
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (actor_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT id, actor_id, actor_type, action_type, reason, payload_json, created_at
+                    FROM governance_actions
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [self._governance_action_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def set_actor_quarantine(
+        self,
+        *,
+        actor_id: str,
+        reason: str,
+        actor_type: str = "worker",
+        scope: str = "task-claim",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """
+                SELECT actor_id, actor_type, score, penalty_points, violations, quarantined,
+                       quarantine_reason, last_violation_at, metadata_json, created_at, updated_at
+                FROM actor_reputation
+                WHERE actor_id = ?
+                """,
+                (actor_id,),
+            ).fetchone()
+            metadata = json.loads(existing["metadata_json"] or "{}") if existing else {}
+            metadata["manual_quarantine"] = True
+            metadata["manual_quarantine_reason"] = reason
+            score = int(existing["score"]) if existing else 100
+            penalty_points = int(existing["penalty_points"]) if existing else 0
+            violations = int(existing["violations"]) if existing else 0
+            created = existing["created_at"] if existing else now
+
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO actor_reputation
+                (actor_id, actor_type, score, penalty_points, violations, quarantined,
+                 quarantine_reason, last_violation_at, metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                """,
+                (
+                    actor_id,
+                    actor_type,
+                    score,
+                    penalty_points,
+                    violations,
+                    reason,
+                    existing["last_violation_at"] if existing else None,
+                    json.dumps(metadata, ensure_ascii=False),
+                    created,
+                    now,
+                ),
+            )
+
+            active = conn.execute(
+                """
+                SELECT id, violation_count FROM quarantines
+                WHERE actor_id = ? AND active = 1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (actor_id,),
+            ).fetchone()
+            if active:
+                conn.execute(
+                    """
+                    UPDATE quarantines
+                    SET reason = ?, scope = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (reason, scope, now, active["id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO quarantines
+                    (id, actor_id, actor_type, scope, reason, active, violation_count, created_at, updated_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, NULL)
+                    """,
+                    (str(uuid4()), actor_id, actor_type, scope, reason, violations, now, now),
+                )
+            action = self._insert_governance_action(
+                conn,
+                actor_id=actor_id,
+                actor_type=actor_type,
+                action_type="quarantine-set",
+                reason=reason,
+                payload=payload or {"scope": scope},
+                created_at=now,
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "actor_id": actor_id,
+                "quarantined": True,
+                "reputation": self.get_actor_reputation(actor_id, actor_type=actor_type),
+                "quarantines": self.list_quarantines(actor_id=actor_id, active_only=True, limit=20),
+                "action": action,
+            }
+        finally:
+            conn.close()
+
+    def release_actor_quarantine(
+        self,
+        *,
+        actor_id: str,
+        reason: str,
+        actor_type: str = "worker",
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT actor_id, actor_type, score, penalty_points, violations, quarantined,
+                       quarantine_reason, last_violation_at, metadata_json, created_at, updated_at
+                FROM actor_reputation
+                WHERE actor_id = ?
+                """,
+                (actor_id,),
+            ).fetchone()
+            if row:
+                metadata = json.loads(row["metadata_json"] or "{}")
+                metadata["manual_release_reason"] = reason
+                conn.execute(
+                    """
+                    UPDATE actor_reputation
+                    SET quarantined = 0,
+                        quarantine_reason = NULL,
+                        metadata_json = ?,
+                        updated_at = ?
+                    WHERE actor_id = ?
+                    """,
+                    (json.dumps(metadata, ensure_ascii=False), now, actor_id),
+                )
+            conn.execute(
+                """
+                UPDATE quarantines
+                SET active = 0, updated_at = ?
+                WHERE actor_id = ? AND active = 1
+                """,
+                (now, actor_id),
+            )
+            action = self._insert_governance_action(
+                conn,
+                actor_id=actor_id,
+                actor_type=actor_type,
+                action_type="quarantine-release",
+                reason=reason,
+                payload=payload or {},
+                created_at=now,
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "actor_id": actor_id,
+                "quarantined": False,
+                "reputation": self.get_actor_reputation(actor_id, actor_type=actor_type),
+                "quarantines": self.list_quarantines(actor_id=actor_id, active_only=False, limit=20),
+                "action": action,
+            }
         finally:
             conn.close()
 

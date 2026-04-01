@@ -927,6 +927,72 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_operator_can_quarantine_and_release_worker(self) -> None:
+        node = NodeHarness(
+            node_id="operator-governance-node",
+            token="token-operator",
+            db_path=str(Path(self.tempdir.name) / "operator-governance.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-operator",
+                {"id": "operator-task-1", "kind": "generic", "role": "worker", "payload": {}},
+            )
+
+            status, applied = self._post(
+                f"{node.base_url}/v1/quarantines",
+                "token-operator",
+                {
+                    "actor_id": "worker-operator-1",
+                    "actor_type": "worker",
+                    "scope": "task-claim",
+                    "reason": "operator investigation hold",
+                    "payload": {"operator": "admin"},
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(applied["quarantined"])
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-operator",
+                worker_id="worker-operator-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+            )
+            self.assertFalse(worker.run_once())
+
+            _, reputation = self._get(f"{node.base_url}/v1/reputation?actor_id=worker-operator-1")
+            self.assertTrue(reputation["quarantined"])
+
+            _, actions_before = self._get(f"{node.base_url}/v1/governance-actions?actor_id=worker-operator-1")
+            self.assertEqual(len(actions_before["items"]), 1)
+            self.assertEqual(actions_before["items"][0]["action_type"], "quarantine-set")
+
+            status, released = self._post(
+                f"{node.base_url}/v1/quarantines/release",
+                "token-operator",
+                {
+                    "actor_id": "worker-operator-1",
+                    "actor_type": "worker",
+                    "reason": "operator cleared worker",
+                    "payload": {"operator": "admin"},
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertFalse(released["quarantined"])
+
+            self.assertTrue(worker.run_once())
+
+            _, actions_after = self._get(f"{node.base_url}/v1/governance-actions?actor_id=worker-operator-1")
+            self.assertEqual(len(actions_after["items"]), 2)
+            self.assertEqual(actions_after["items"][0]["action_type"], "quarantine-release")
+        finally:
+            node.stop()
+
     def test_adapter_policy_allows_sandboxed_local_command(self) -> None:
         workspace = Path(self.tempdir.name) / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)

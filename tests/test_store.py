@@ -323,3 +323,31 @@ class NodeStoreTests(unittest.TestCase):
         self.assertTrue(quarantines[0]["active"])
 
         self.assertIsNone(self.store.claim_task(worker_id="worker-risky", worker_capabilities=["worker"], lease_seconds=30))
+
+    def test_manual_quarantine_release_restores_claims(self) -> None:
+        self.store.add_task(TaskEnvelope(id="queued-manual", kind="exec", payload={}, role="worker"))
+
+        applied = self.store.set_actor_quarantine(
+            actor_id="worker-manual",
+            reason="operator quarantine for investigation",
+            payload={"operator": "admin"},
+        )
+        self.assertTrue(applied["quarantined"])
+        self.assertTrue(applied["reputation"]["quarantined"])
+        self.assertIsNone(self.store.claim_task(worker_id="worker-manual", worker_capabilities=["worker"], lease_seconds=30))
+
+        released = self.store.release_actor_quarantine(
+            actor_id="worker-manual",
+            reason="operator release after review",
+            payload={"operator": "admin"},
+        )
+        self.assertFalse(released["quarantined"])
+        self.assertFalse(released["reputation"]["quarantined"])
+
+        actions = self.store.list_governance_actions(actor_id="worker-manual")
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0]["action_type"], "quarantine-release")
+
+        claim = self.store.claim_task(worker_id="worker-manual", worker_capabilities=["worker"], lease_seconds=30)
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["id"], "queued-manual")

@@ -20,6 +20,7 @@ The current test scope covers:
 - adapter policy rejection and sandboxed local-command execution
 - execution audit trail and replay inspector endpoints
 - policy violation tracking, local reputation scoring, and quarantine blocking
+- operator-driven quarantine and release flows
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior
@@ -175,6 +176,15 @@ Target:
 4. verify repeated violations create an active quarantine
 5. verify the quarantined worker cannot claim a fresh task
 
+### Operator override
+
+1. create a queued worker task
+2. apply manual quarantine through the API
+3. verify the worker cannot claim the task
+4. release the quarantine through the API
+5. verify the worker can claim again
+6. verify both actions are visible in governance history
+
 ## Manual Test Commands
 
 ### Syntax check
@@ -219,3 +229,4 @@ The MVP should not be considered stable until:
 4. Add cross-platform verification notes
 5. Add performance and weak-network stress tests
 6. Add operator override and quarantine release coverage
+7. Add signed governance receipt coverage

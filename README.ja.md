@@ -136,6 +136,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/reputation`
 - `GET /v1/violations`
 - `GET /v1/quarantines`
+- `GET /v1/governance-actions`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -154,6 +155,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/outbox/flush`
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
+- `POST /v1/quarantines`
+- `POST /v1/quarantines/release`
 - `POST /v1/git/branch`
 - `POST /v1/git/task-context`
 - `POST /v1/peers/sync`
@@ -218,6 +221,7 @@ governance と quarantine の最初の骨格も追加しました。
 - worker は `100` 点から始まるローカル reputation score を持ちます
 - 違反が繰り返されると quarantine record が自動作成され、その worker id は新しい task claim をブロックされます
 - operator は `GET /v1/reputation`、`GET /v1/violations`、`GET /v1/quarantines` で状態を確認できます
+- operator は manual quarantine と release も実行でき、`GET /v1/governance-actions` で履歴を確認できます
 
 inter-node message delivery には explicit ACK も追加しました。
 

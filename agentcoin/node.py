@@ -351,6 +351,11 @@ class AgentCoinNode:
                         {"items": node.store.list_quarantines(actor_id=actor_id, active_only=active_only, limit=limit)},
                     )
                     return
+                if path == "/v1/governance-actions":
+                    actor_id = (query.get("actor_id") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_governance_actions(actor_id=actor_id, limit=limit)})
+                    return
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return
@@ -624,6 +629,37 @@ class AgentCoinNode:
                             delay_seconds=int(payload.get("delay_seconds") or 0),
                         )
                         self._json_response(HTTPStatus.OK, {"ok": ok})
+                        return
+                    if self.path == "/v1/quarantines":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        actor_id = str(payload.get("actor_id") or "").strip()
+                        if not actor_id:
+                            raise ValueError("actor_id is required")
+                        result = node.store.set_actor_quarantine(
+                            actor_id=actor_id,
+                            actor_type=str(payload.get("actor_type") or "worker"),
+                            scope=str(payload.get("scope") or "task-claim"),
+                            reason=str(payload.get("reason") or "manual quarantine"),
+                            payload=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, result)
+                        return
+                    if self.path == "/v1/quarantines/release":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        actor_id = str(payload.get("actor_id") or "").strip()
+                        if not actor_id:
+                            raise ValueError("actor_id is required")
+                        result = node.store.release_actor_quarantine(
+                            actor_id=actor_id,
+                            actor_type=str(payload.get("actor_type") or "worker"),
+                            reason=str(payload.get("reason") or "manual release"),
+                            payload=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, result)
                         return
                     if self.path == "/v1/git/branch":
                         if not self._require_auth():

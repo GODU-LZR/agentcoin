@@ -135,6 +135,7 @@ Key endpoints:
 - `GET /v1/reputation`
 - `GET /v1/violations`
 - `GET /v1/quarantines`
+- `GET /v1/governance-actions`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -153,6 +154,8 @@ Key endpoints:
 - `POST /v1/outbox/flush`
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
+- `POST /v1/quarantines`
+- `POST /v1/quarantines/release`
 - `POST /v1/git/branch`
 - `POST /v1/git/task-context`
 - `POST /v1/peers/sync`
@@ -232,6 +235,7 @@ There is now also a first governance and quarantine skeleton:
 - workers accumulate a local reputation score starting from `100`
 - repeated violations automatically create a quarantine record and block future task claims for that worker id
 - operators can inspect state with `GET /v1/reputation`, `GET /v1/violations`, and `GET /v1/quarantines`
+- operators can also apply and release manual quarantines, and inspect those actions via `GET /v1/governance-actions`
 
 Inter-node delivery now also uses explicit message acknowledgements:
 
