@@ -855,6 +855,75 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(task["status"], "completed")
             self.assertEqual(task["result"]["adapter"]["status"], "rejected")
             self.assertEqual(task["result"]["adapter"]["reason"], "tool is not allowlisted")
+
+            _, reputation = self._get(f"{node.base_url}/v1/reputation?actor_id=worker-policy-1")
+            self.assertEqual(reputation["violations"], 1)
+            self.assertEqual(reputation["score"], 85)
+            self.assertFalse(reputation["quarantined"])
+
+            _, violations = self._get(f"{node.base_url}/v1/violations?actor_id=worker-policy-1")
+            self.assertEqual(len(violations["items"]), 1)
+            self.assertEqual(violations["items"][0]["severity"], "medium")
+        finally:
+            node.stop()
+
+    def test_repeated_policy_violations_trigger_quarantine(self) -> None:
+        node = NodeHarness(
+            node_id="policy-quarantine-node",
+            token="token-policy-quarantine",
+            db_path=str(Path(self.tempdir.name) / "policy-quarantine.db"),
+            capabilities=["worker", "forbidden-tool"],
+        )
+        node.start()
+        try:
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-policy-quarantine",
+                worker_id="worker-policy-2",
+                capabilities=["worker", "forbidden-tool"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(allowed_mcp_tools=["safe-tool"]),
+            )
+
+            for index in range(3):
+                self._post(
+                    f"{node.base_url}/v1/bridges/import",
+                    "token-policy-quarantine",
+                    {
+                        "protocol": "mcp",
+                        "message": {
+                            "id": f"mcp-policy-{index + 1}",
+                            "method": "tools/call",
+                            "params": {"name": "forbidden-tool", "arguments": {"index": index}},
+                            "sender": "mcp-client",
+                        },
+                        "task_overrides": {"id": f"policy-q-task-{index + 1}", "role": "worker"},
+                    },
+                )
+                self.assertTrue(worker.run_once())
+
+            _, reputation = self._get(f"{node.base_url}/v1/reputation?actor_id=worker-policy-2")
+            self.assertEqual(reputation["violations"], 3)
+            self.assertEqual(reputation["score"], 55)
+            self.assertTrue(reputation["quarantined"])
+
+            _, quarantines = self._get(f"{node.base_url}/v1/quarantines?actor_id=worker-policy-2")
+            self.assertEqual(len(quarantines["items"]), 1)
+            self.assertTrue(quarantines["items"][0]["active"])
+
+            _, violations = self._get(f"{node.base_url}/v1/violations?actor_id=worker-policy-2")
+            self.assertEqual(len(violations["items"]), 3)
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-policy-quarantine",
+                {"id": "post-quarantine-task", "kind": "generic", "role": "worker", "payload": {}},
+            )
+            self.assertFalse(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            post_quarantine = [item for item in tasks["items"] if item["id"] == "post-quarantine-task"][0]
+            self.assertEqual(post_quarantine["status"], "queued")
         finally:
             node.stop()
 

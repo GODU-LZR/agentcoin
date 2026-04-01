@@ -91,7 +91,7 @@ The repository currently has no real settlement engine, no token logic, no PoAW 
 
 ### 3. Decentralization is still MVP-grade, not full network-grade
 
-The current runtime is still a practical local-first coordinator model. It does not yet implement:
+The current runtime is still a practical local-first coordinator model. It now has a local reputation / policy-violation / quarantine skeleton, but it does not yet implement:
 
 - decentralized leader election
 - hierarchical swarm topology

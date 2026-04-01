@@ -19,6 +19,7 @@ The current test scope covers:
 - bridge-aware worker execution normalization
 - adapter policy rejection and sandboxed local-command execution
 - execution audit trail and replay inspector endpoints
+- policy violation tracking, local reputation scoring, and quarantine blocking
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior
@@ -82,6 +83,7 @@ The following behaviors are now covered either by automated tests or previously 
 - remote dispatch dead-letter when no valid local fallback exists
 - delayed retry and task dead-letter after retry exhaustion
 - worker loop tolerance of temporary node connectivity failure
+- repeated policy rejection lowers reputation and eventually quarantines a worker id
 
 ## Recommended Automated Test Layers
 
@@ -165,6 +167,14 @@ Target:
 6. verify merge task becomes claimable
 7. finalize workflow and verify persisted summary
 
+### Governance quarantine
+
+1. submit multiple policy-rejected bridge tasks for the same worker id
+2. verify each rejection persists a policy violation
+3. verify reputation decreases from `100`
+4. verify repeated violations create an active quarantine
+5. verify the quarantined worker cannot claim a fresh task
+
 ## Manual Test Commands
 
 ### Syntax check
@@ -208,3 +218,4 @@ The MVP should not be considered stable until:
 3. Add GitHub Actions artifact capture for failing integration runs
 4. Add cross-platform verification notes
 5. Add performance and weak-network stress tests
+6. Add operator override and quarantine release coverage

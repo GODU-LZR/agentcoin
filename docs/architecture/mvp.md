@@ -138,6 +138,13 @@ The runtime now also persists execution audit trails:
 - audit events can be queried by task
 - replay inspection can assemble the task, audit history, and bridge export preview in one response
 
+The runtime now also has a first local governance loop:
+
+- policy-rejected executions are persisted as `policy_violations`
+- workers accumulate a local reputation score
+- repeated violations create quarantine records
+- quarantined worker ids are blocked from future task claims on that node
+
 ## Git-Like Task Model
 
 Tasks now carry workflow lineage fields inspired by Git:

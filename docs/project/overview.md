@@ -13,6 +13,7 @@ The current repository contains:
 - Git-like workflow lineage, merge, and finalize semantics
 - weak-network retry, dead-letter, and local fallback behavior
 - Git-native repository inspection and task context attachment
+- local governance primitives for policy violations, reputation, and quarantine
 
 ## Design Goals
 
@@ -44,6 +45,7 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - peer routing
 - protocol bridge import and export
 - execution audit and replay inspection
+- reputation, policy-violation, and quarantine inspection
 - inbox and outbox delivery
 - lease-based claiming
 - workflow fanout, merge, summary, and finalize
@@ -60,6 +62,9 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - peer cards
 - workflow terminal states
 - execution audits
+- actor reputation state
+- policy violations
+- quarantine records
 
 This is the durability backbone for offline-first behavior.
 
@@ -157,6 +162,13 @@ Workflow governance now has a first executable layer:
 - workflow summaries expose review and merge-gate state for planners and operators
 - approval policy can distinguish human and AI reviewers
 - review tasks can inherit Git context from the target task they inspect
+
+Execution governance now also has a first local enforcement layer:
+
+- policy-rejected executions are recorded as violations
+- workers accumulate a local reputation score
+- repeated violations automatically quarantine the worker id for future task claims
+- operators can inspect reputation, violation history, and active quarantines over HTTP
 
 ## Delivery and Failure States
 

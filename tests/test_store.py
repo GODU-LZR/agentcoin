@@ -293,3 +293,33 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(len(audits), 1)
         self.assertEqual(audits[0]["status"], "completed")
         self.assertEqual(audits[0]["payload"]["result"]["policy_receipt"]["decision"], "allowed")
+
+    def test_policy_violations_update_reputation_and_block_claim(self) -> None:
+        self.store.add_task(TaskEnvelope(id="queued-task", kind="exec", payload={}, role="worker"))
+
+        for _ in range(3):
+            violation = self.store.record_policy_violation(
+                actor_id="worker-risky",
+                actor_type="worker",
+                task_id="queued-task",
+                source="mcp",
+                reason="tool is not allowlisted",
+                severity="medium",
+                payload={"tool_name": "forbidden-tool"},
+            )
+            self.assertEqual(violation["source"], "mcp")
+
+        reputation = self.store.get_actor_reputation("worker-risky")
+        self.assertEqual(reputation["violations"], 3)
+        self.assertEqual(reputation["score"], 55)
+        self.assertTrue(reputation["quarantined"])
+
+        violations = self.store.list_policy_violations(actor_id="worker-risky")
+        self.assertEqual(len(violations), 3)
+        self.assertEqual(violations[0]["reason"], "tool is not allowlisted")
+
+        quarantines = self.store.list_quarantines(actor_id="worker-risky")
+        self.assertEqual(len(quarantines), 1)
+        self.assertTrue(quarantines[0]["active"])
+
+        self.assertIsNone(self.store.claim_task(worker_id="worker-risky", worker_capabilities=["worker"], lease_seconds=30))

@@ -133,6 +133,9 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`
+- `GET /v1/reputation`
+- `GET /v1/violations`
+- `GET /v1/quarantines`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -208,6 +211,13 @@ execution audit と replay inspect の最初の層も追加しました。
 - `GET /v1/audits` で全体または `task_id` 単位の audit を参照できます
 - `GET /v1/tasks/replay-inspect?task_id=...` で task, audit trail, bridge export preview を確認できます
 - `policy receipt` と `execution receipt` は task result に保存され、後から再確認できます
+
+governance と quarantine の最初の骨格も追加しました。
+
+- policy に拒否された実行は `policy_violations` として記録されます
+- worker は `100` 点から始まるローカル reputation score を持ちます
+- 違反が繰り返されると quarantine record が自動作成され、その worker id は新しい task claim をブロックされます
+- operator は `GET /v1/reputation`、`GET /v1/violations`、`GET /v1/quarantines` で状態を確認できます
 
 inter-node message delivery には explicit ACK も追加しました。
 

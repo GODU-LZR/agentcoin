@@ -325,6 +325,32 @@ class AgentCoinNode:
                     limit = int((query.get("limit") or ["200"])[0])
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_execution_audits(task_id=task_id, limit=limit)})
                     return
+                if path == "/v1/reputation":
+                    actor_id = (query.get("actor_id") or [None])[0]
+                    actor_type = (query.get("actor_type") or ["worker"])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    if actor_id:
+                        self._json_response(HTTPStatus.OK, node.store.get_actor_reputation(actor_id, actor_type=actor_type))
+                    else:
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {"items": node.store.list_actor_reputations(actor_type=actor_type if actor_type else None, limit=limit)},
+                        )
+                    return
+                if path == "/v1/violations":
+                    actor_id = (query.get("actor_id") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(HTTPStatus.OK, {"items": node.store.list_policy_violations(actor_id=actor_id, limit=limit)})
+                    return
+                if path == "/v1/quarantines":
+                    actor_id = (query.get("actor_id") or [None])[0]
+                    active_only = (query.get("active_only") or ["1"])[0] in {"1", "true", "yes"}
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": node.store.list_quarantines(actor_id=actor_id, active_only=active_only, limit=limit)},
+                    )
+                    return
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return

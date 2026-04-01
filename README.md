@@ -132,6 +132,9 @@ Key endpoints:
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`
+- `GET /v1/reputation`
+- `GET /v1/violations`
+- `GET /v1/quarantines`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -222,6 +225,13 @@ There is now also a first execution audit and replay layer:
 - `GET /v1/audits` lists audit events globally or by `task_id`
 - `GET /v1/tasks/replay-inspect?task_id=...` returns the task, its audits, and a bridge export preview
 - policy receipts and execution receipts are now carried in task results for later review and replay
+
+There is now also a first governance and quarantine skeleton:
+
+- policy-rejected executions are persisted as `policy_violations`
+- workers accumulate a local reputation score starting from `100`
+- repeated violations automatically create a quarantine record and block future task claims for that worker id
+- operators can inspect state with `GET /v1/reputation`, `GET /v1/violations`, and `GET /v1/quarantines`
 
 Inter-node delivery now also uses explicit message acknowledgements:
 
