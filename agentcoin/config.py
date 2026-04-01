@@ -69,6 +69,11 @@ class NodeConfig:
     challenge_bond_required_wei: int = 0
     poaw_policy_version: str = "0.2"
     poaw_score_weights: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_POAW_SCORE_WEIGHTS))
+    dispatch_peer_cooldown_seconds: int = 60
+    dispatch_peer_blacklist_after_failures: int = 4
+    dispatch_peer_blacklist_seconds: int = 300
+    dispatch_weak_network_penalty_cap: int = 120
+    dispatch_backlog_penalty_cap: int = 120
     bridges: list[str] = field(default_factory=lambda: ["mcp", "a2a"])
     network: OutboundNetworkConfig = field(default_factory=OutboundNetworkConfig)
     onchain: OnchainBindings = field(default_factory=OnchainBindings)
@@ -121,6 +126,10 @@ class NodeConfig:
                 "dispatch_evaluate": f"{self.base_url}/v1/tasks/dispatch/evaluate",
                 "poaw_events": f"{self.base_url}/v1/poaw/events",
                 "poaw_summary": f"{self.base_url}/v1/poaw/summary",
+                "peer_health": f"{self.base_url}/v1/peer-health",
+                "peer_health_cooldown": f"{self.base_url}/v1/peer-health/cooldown",
+                "peer_health_blacklist": f"{self.base_url}/v1/peer-health/blacklist",
+                "peer_health_clear": f"{self.base_url}/v1/peer-health/clear",
                 "disputes": f"{self.base_url}/v1/disputes",
                 "disputes_vote": f"{self.base_url}/v1/disputes/vote",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",

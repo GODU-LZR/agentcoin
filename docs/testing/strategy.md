@@ -21,6 +21,7 @@ The current test scope covers:
 - runtime adapter execution for HTTP JSON and CLI JSON agents
 - runtime adapter execution for Ollama chat and OpenAI-compatible gateways
 - semantic card and task shape exposure
+- peer health cache, cooldown / blacklist controls, and dispatch backlog penalties
 - adapter policy rejection and sandboxed local-command execution
 - execution audit trail and replay inspector endpoints
 - policy violation tracking, local reputation scoring, and quarantine blocking

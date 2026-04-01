@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -61,6 +62,10 @@ class AgentCoinNode:
 
         peer = self.config.resolve_peer(target)
         return f"{peer.url.rstrip('/')}/v1/inbox", peer.auth_token, peer.peer_id
+
+    @staticmethod
+    def _peer_target_url(peer: PeerConfig) -> str:
+        return f"{peer.url.rstrip('/')}/v1/inbox"
 
     @staticmethod
     def _sanitize_peer(peer: PeerConfig) -> dict:
@@ -188,6 +193,7 @@ class AgentCoinNode:
             if not peer.enabled:
                 continue
             source_url = f"{peer.url.rstrip('/')}/v1/card"
+            started_at = time.monotonic()
             try:
                 card = self.transport.request_json(
                     source_url,
@@ -195,8 +201,15 @@ class AgentCoinNode:
                     headers={"Accept": "application/json"},
                     timeout=5,
                 )
+                latency_ms = int((time.monotonic() - started_at) * 1000)
                 verification = self._verify_peer_card(peer, card)
                 self.store.save_peer_card(peer.peer_id, source_url, card)
+                peer_health = self.store.record_peer_health(
+                    peer.peer_id,
+                    source="sync",
+                    success=True,
+                    metadata={"latency_ms": latency_ms, "source_url": source_url},
+                )
                 synced.append(
                     {
                         "peer_id": peer.peer_id,
@@ -204,10 +217,22 @@ class AgentCoinNode:
                         "signed": bool(verification),
                         "hmac_signed": isinstance(verification, dict) and ("scope" in verification or "hmac" in verification),
                         "identity_signed": isinstance(verification, dict) and ("namespace" in verification or "identity" in verification),
+                        "peer_health": peer_health,
                     }
                 )
             except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError, SignatureError) as exc:
-                synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc)})
+                latency_ms = int((time.monotonic() - started_at) * 1000)
+                peer_health = self.store.record_peer_health(
+                    peer.peer_id,
+                    source="sync",
+                    success=False,
+                    error_message=str(exc),
+                    cooldown_seconds=self.config.dispatch_peer_cooldown_seconds,
+                    blacklist_after_failures=self.config.dispatch_peer_blacklist_after_failures,
+                    blacklist_seconds=self.config.dispatch_peer_blacklist_seconds,
+                    metadata={"latency_ms": latency_ms, "source_url": source_url},
+                )
+                synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc), "peer_health": peer_health})
         return synced
 
     def _supports_capabilities(self, capabilities: list[str]) -> bool:
@@ -487,7 +512,47 @@ class AgentCoinNode:
         relay["relay_record_id"] = persisted["id"]
         return relay
 
-    def dispatch_candidates(self, required_capabilities: list[str], prefer_local: bool = False) -> list[dict[str, Any]]:
+    def _peer_dispatch_snapshot(self, peer_id: str) -> dict[str, Any]:
+        peer = self.config.resolve_peer(peer_id)
+        target_url = self._peer_target_url(peer)
+        health = self.store.get_peer_health(peer_id)
+        backlog = self.store.outbox_backlog(target_url)
+        success_rate = float(health.get("success_rate") or 1.0)
+        consecutive_failures = int(health.get("consecutive_failures") or 0)
+        weak_network_penalty = min(
+            int(self.config.dispatch_weak_network_penalty_cap),
+            int(round((1.0 - success_rate) * 80)) + (consecutive_failures * 15),
+        )
+        relay_backlog_penalty = min(
+            int(self.config.dispatch_backlog_penalty_cap),
+            (int(backlog.get("pending") or 0) * 15)
+            + (int(backlog.get("retrying") or 0) * 20)
+            + (int(backlog.get("dead_letter") or 0) * 30),
+        )
+        blocked = dict(health.get("dispatch_blocked") or {})
+        score_breakdown = {
+            "recent_success_rate": int(round(success_rate * 100)),
+            "weak_network_penalty": -weak_network_penalty,
+            "relay_backlog_penalty": -relay_backlog_penalty,
+            "cooldown_penalty": -200 if blocked.get("cooldown") else 0,
+            "blacklist_penalty": -1000 if blocked.get("blacklisted") else 0,
+        }
+        return {
+            "peer": peer,
+            "target_url": target_url,
+            "health": health,
+            "backlog": backlog,
+            "dispatchable": not any(bool(value) for value in blocked.values()),
+            "score_breakdown": score_breakdown,
+        }
+
+    def dispatch_candidates(
+        self,
+        required_capabilities: list[str],
+        prefer_local: bool = False,
+        *,
+        include_blocked: bool = False,
+    ) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         if self._supports_capabilities(required_capabilities):
             local_report = capability_match_report(required_capabilities, self.config.capabilities)
@@ -501,6 +566,18 @@ class AgentCoinNode:
                     "capabilities": list(self.config.capabilities),
                     "match": local_report,
                     "reputation": {"score": 100, "quarantined": False},
+                    "dispatchable": True,
+                    "health": {
+                        "peer_id": self.config.node_id,
+                        "success_rate": 1.0,
+                        "dispatch_blocked": {"cooldown": False, "blacklisted": False},
+                    },
+                    "backlog": {"pending": 0, "retrying": 0, "dead_letter": 0, "delivered": 0, "total": 0},
+                    "score_breakdown": {
+                        "capability_exact": len(local_report["exact_matches"]) * 100,
+                        "capability_semantic": len(local_report["expanded_matches"]) * 10,
+                        "local_bias": 500 if prefer_local else 100,
+                    },
                     "score": local_score,
                 }
             )
@@ -514,11 +591,16 @@ class AgentCoinNode:
                 continue
             reputation = self.store.get_actor_reputation(peer_id, actor_type="peer")
             reputation_score = int(reputation.get("score", 100))
-            candidate_score = (
-                (len(report["exact_matches"]) * 100)
-                + (len(report["expanded_matches"]) * 10)
-                + reputation_score
-            )
+            snapshot = self._peer_dispatch_snapshot(peer_id)
+            if not snapshot["dispatchable"] and not include_blocked:
+                continue
+            score_breakdown = {
+                "capability_exact": len(report["exact_matches"]) * 100,
+                "capability_semantic": len(report["expanded_matches"]) * 10,
+                "reputation": reputation_score,
+                **snapshot["score_breakdown"],
+            }
+            candidate_score = sum(int(value) for value in score_breakdown.values())
             candidates.append(
                 {
                     "target_type": "peer",
@@ -526,6 +608,10 @@ class AgentCoinNode:
                     "capabilities": capabilities,
                     "match": report,
                     "reputation": reputation,
+                    "dispatchable": snapshot["dispatchable"],
+                    "health": snapshot["health"],
+                    "backlog": snapshot["backlog"],
+                    "score_breakdown": score_breakdown,
                     "score": candidate_score,
                 }
             )
@@ -533,6 +619,7 @@ class AgentCoinNode:
         return sorted(
             candidates,
             key=lambda item: (
+                bool(item.get("dispatchable", True)),
                 item["score"],
                 item["target_type"] == "local",
                 item["target_ref"],
@@ -570,7 +657,13 @@ class AgentCoinNode:
         normalized = {str(item).strip().lower() for item in available_protocols if str(item).strip()}
         return protocol_name in normalized or f"{protocol_name}-bridge/0.1" in normalized
 
-    def dispatch_candidates_for_task(self, task: TaskEnvelope, prefer_local: bool = False) -> list[dict[str, Any]]:
+    def dispatch_candidates_for_task(
+        self,
+        task: TaskEnvelope,
+        prefer_local: bool = False,
+        *,
+        include_blocked: bool = False,
+    ) -> list[dict[str, Any]]:
         runtime_requirement = self._runtime_requirement(task)
         bridge_requirement = self._bridge_requirement(task)
         candidates: list[dict[str, Any]] = []
@@ -597,6 +690,13 @@ class AgentCoinNode:
                     "runtime_match": {"required": runtime_requirement, "supported": local_runtime_ok},
                     "bridge_match": {"required": bridge_requirement, "supported": local_bridge_ok},
                     "reputation": {"score": 100, "quarantined": False},
+                    "dispatchable": True,
+                    "health": {
+                        "peer_id": self.config.node_id,
+                        "success_rate": 1.0,
+                        "dispatch_blocked": {"cooldown": False, "blacklisted": False},
+                    },
+                    "backlog": {"pending": 0, "retrying": 0, "dead_letter": 0, "delivered": 0, "total": 0},
                     "score_breakdown": score_breakdown,
                     "score": sum(score_breakdown.values()),
                 }
@@ -615,12 +715,16 @@ class AgentCoinNode:
                 continue
             reputation = self.store.get_actor_reputation(peer_id, actor_type="peer")
             reputation_score = int(reputation.get("score", 100))
+            snapshot = self._peer_dispatch_snapshot(peer_id)
+            if not snapshot["dispatchable"] and not include_blocked:
+                continue
             score_breakdown = {
                 "capability_exact": len(report["exact_matches"]) * 100,
                 "capability_semantic": len(report["expanded_matches"]) * 10,
                 "reputation": reputation_score,
-                "runtime_bonus": 150 if runtime_requirement else 0,
-                "bridge_bonus": 120 if bridge_requirement else 0,
+                "runtime_priority": 150 if runtime_requirement else 0,
+                "bridge_priority": 120 if bridge_requirement else 0,
+                **snapshot["score_breakdown"],
             }
             candidates.append(
                 {
@@ -633,6 +737,9 @@ class AgentCoinNode:
                     "runtime_match": {"required": runtime_requirement, "supported": runtime_ok},
                     "bridge_match": {"required": bridge_requirement, "supported": bridge_ok},
                     "reputation": reputation,
+                    "dispatchable": snapshot["dispatchable"],
+                    "health": snapshot["health"],
+                    "backlog": snapshot["backlog"],
                     "score_breakdown": score_breakdown,
                     "score": sum(score_breakdown.values()),
                 }
@@ -641,6 +748,7 @@ class AgentCoinNode:
         return sorted(
             candidates,
             key=lambda item: (
+                bool(item.get("dispatchable", True)),
                 item["score"],
                 item["target_type"] == "local",
                 item["target_ref"],
@@ -649,13 +757,13 @@ class AgentCoinNode:
         )
 
     def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
-        candidates = self.dispatch_candidates(required_capabilities, prefer_local=prefer_local)
+        candidates = self.dispatch_candidates(required_capabilities, prefer_local=prefer_local, include_blocked=False)
         if not candidates:
             return None
         return {"target_type": candidates[0]["target_type"], "target_ref": candidates[0]["target_ref"]}
 
     def select_dispatch_target_for_task(self, task: TaskEnvelope, prefer_local: bool = False) -> dict[str, str] | None:
-        candidates = self.dispatch_candidates_for_task(task, prefer_local=prefer_local)
+        candidates = self.dispatch_candidates_for_task(task, prefer_local=prefer_local, include_blocked=False)
         if not candidates:
             return None
         return {"target_type": candidates[0]["target_type"], "target_ref": candidates[0]["target_ref"]}
@@ -833,17 +941,31 @@ class AgentCoinNode:
                         node.store.summarize_score_events(actor_id=actor_id, actor_type=actor_type, task_id=task_id),
                     )
                     return
+                if path == "/v1/peer-health":
+                    peer_id = (query.get("peer_id") or [None])[0]
+                    if peer_id:
+                        self._json_response(HTTPStatus.OK, node.store.get_peer_health(peer_id))
+                    else:
+                        limit = int((query.get("limit") or ["200"])[0])
+                        self._json_response(HTTPStatus.OK, {"items": node.store.list_peer_health(limit=limit)})
+                    return
                 if path == "/v1/tasks/dispatch/preview":
                     required_capabilities = [
                         str(item) for item in (query.get("required_capabilities") or []) if str(item).strip()
                     ]
                     prefer_local = (query.get("prefer_local") or ["0"])[0] in {"1", "true", "yes"}
+                    include_blocked = (query.get("include_blocked") or ["0"])[0] in {"1", "true", "yes"}
                     self._json_response(
                         HTTPStatus.OK,
                         {
                             "required_capabilities": required_capabilities,
                             "prefer_local": prefer_local,
-                            "candidates": node.dispatch_candidates(required_capabilities, prefer_local=prefer_local),
+                            "include_blocked": include_blocked,
+                            "candidates": node.dispatch_candidates(
+                                required_capabilities,
+                                prefer_local=prefer_local,
+                                include_blocked=include_blocked,
+                            ),
                         },
                     )
                     return
@@ -1505,9 +1627,60 @@ class AgentCoinNode:
                                 "task": task.to_dict(),
                                 "prefer_local": prefer_local,
                                 "requirements": node._task_dispatch_requirements(task),
-                                "candidates": node.dispatch_candidates_for_task(task, prefer_local=prefer_local),
+                                "candidates": node.dispatch_candidates_for_task(
+                                    task,
+                                    prefer_local=prefer_local,
+                                    include_blocked=True,
+                                ),
                             },
                         )
+                        return
+                    if self.path == "/v1/peer-health/cooldown":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        peer_id = str(payload.get("peer_id") or "").strip()
+                        if not peer_id:
+                            raise ValueError("peer_id is required")
+                        seconds = int(payload.get("cooldown_seconds") or node.config.dispatch_peer_cooldown_seconds)
+                        state = node.store.set_peer_dispatch_state(
+                            peer_id,
+                            cooldown_seconds=seconds,
+                            reason=str(payload.get("reason") or "manual cooldown"),
+                            metadata=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, state)
+                        return
+                    if self.path == "/v1/peer-health/blacklist":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        peer_id = str(payload.get("peer_id") or "").strip()
+                        if not peer_id:
+                            raise ValueError("peer_id is required")
+                        seconds = int(payload.get("blacklist_seconds") or node.config.dispatch_peer_blacklist_seconds)
+                        state = node.store.set_peer_dispatch_state(
+                            peer_id,
+                            blacklist_seconds=seconds,
+                            reason=str(payload.get("reason") or "manual blacklist"),
+                            metadata=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, state)
+                        return
+                    if self.path == "/v1/peer-health/clear":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        peer_id = str(payload.get("peer_id") or "").strip()
+                        if not peer_id:
+                            raise ValueError("peer_id is required")
+                        state = node.store.set_peer_dispatch_state(
+                            peer_id,
+                            clear=True,
+                            reason=str(payload.get("reason") or "manual clear"),
+                            metadata=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, state)
                         return
                     if self.path == "/v1/bridges/export":
                         if not self._require_auth():
@@ -1813,6 +1986,7 @@ class AgentCoinNode:
     def flush_outbox(self) -> int:
         delivered = 0
         for item in self.store.get_pending_outbox():
+            started_at = time.monotonic()
             try:
                 parsed = urlparse(item["target_url"])
                 if parsed.scheme not in {"http", "https"}:
@@ -1832,8 +2006,33 @@ class AgentCoinNode:
                 receipt_peer = self._resolve_outbox_peer(item)
                 self._verify_receipt_payload(receipt_peer, response_payload)
                 self.store.mark_outbox_delivered(item["id"])
+                if receipt_peer:
+                    self.store.record_peer_health(
+                        receipt_peer.peer_id,
+                        source="delivery",
+                        success=True,
+                        metadata={
+                            "latency_ms": int((time.monotonic() - started_at) * 1000),
+                            "target_url": item["target_url"],
+                        },
+                    )
                 delivered += 1
             except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+                receipt_peer = self._resolve_outbox_peer(item)
+                if receipt_peer:
+                    self.store.record_peer_health(
+                        receipt_peer.peer_id,
+                        source="delivery",
+                        success=False,
+                        error_message=str(exc),
+                        cooldown_seconds=self.config.dispatch_peer_cooldown_seconds,
+                        blacklist_after_failures=self.config.dispatch_peer_blacklist_after_failures,
+                        blacklist_seconds=self.config.dispatch_peer_blacklist_seconds,
+                        metadata={
+                            "latency_ms": int((time.monotonic() - started_at) * 1000),
+                            "target_url": item["target_url"],
+                        },
+                    )
                 permanent = self.store.mark_outbox_failed(
                     item["id"],
                     int(item["attempts"]) + 1,

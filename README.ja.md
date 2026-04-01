@@ -21,6 +21,10 @@
   ·
   <a href="docs/project/overview.md">Project Docs</a>
   ·
+  <a href="docs/architecture/poaw-settlement-policy.md">PoAW Policy</a>
+  ·
+  <a href="docs/architecture/dispatch-scoring.md">Dispatch Scoring</a>
+  ·
   <a href="docs/testing/strategy.md">Testing Docs</a>
   ·
   <a href="docs/legal/gpl-notice.md">GPL Notice</a>
@@ -139,6 +143,9 @@ runtime には最小の semantic layer も追加しました。
 - `GET /v1/schema/capabilities` で capability family、alias、implied role を取得できます
 - `GET /v1/tasks/dispatch/preview` で semantic dispatch candidate と score を確認できます
 - `POST /v1/tasks/dispatch/evaluate` で `_runtime` / `_bridge` 条件を含む full task dispatch 評価ができます
+- `GET /v1/peer-health` で peer ごとの sync / delivery health snapshot を確認できます
+- `POST /v1/peer-health/cooldown`、`/blacklist`、`/clear` で local dispatch avoidance state を操作できます
+- peer selection は recent success rate、weak-network penalty、cooldown / blacklist state、outbox backlog も使います
 - `GET /v1/schema/examples` で card / task semantic shape の例を取得できます
 - まだ軽量ですが、元の blueprint の ontology gap を埋め始めています
 
@@ -150,6 +157,7 @@ runtime には最小の local `PoAW` ledger も追加しました。
 - dispute flow は `challenge-open`、`challenge-upheld`、`challenge-dismissed` を記録します
 - summary は `poaw_policy_version` と現在の score weight table を返します
 - node config から `poaw_policy_version` と `poaw_score_weights` を上書きできるようになりました
+- settlement decision layer は `docs/architecture/poaw-settlement-policy.md` に整理しています
 - `GET /v1/poaw/events` で raw event ledger を取得できます
 - `GET /v1/poaw/summary` で actor / task 単位の points 集計を取得できます
 - これはまだ chain settlement engine ではなく、local useful-work accounting skeleton です
@@ -224,6 +232,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/onchain/status`
 - `GET /v1/reputation`
 - `GET /v1/violations`
+- `GET /v1/peer-health`
 - `GET /v1/quarantines`
 - `GET /v1/governance-actions`
 - `GET /v1/bridges`
@@ -233,6 +242,9 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/dispatch/evaluate`
+- `POST /v1/peer-health/cooldown`
+- `POST /v1/peer-health/blacklist`
+- `POST /v1/peer-health/clear`
 - `POST /v1/disputes`
 - `POST /v1/disputes/vote`
 - `POST /v1/disputes/resolve`

@@ -132,6 +132,7 @@ The planner layer now has a first executable skeleton:
 - planners can submit `required_capabilities`
 - the node selects a peer from cached capability cards
 - task-aware dispatch can also factor runtime and bridge compatibility before selecting a target
+- dispatch scoring now also uses peer health, cooldown / blacklist state, recent transport success rate, and outbox backlog
 - dispatch falls back to local execution if local capabilities satisfy the task
 - workers can run a simple pull loop and complete claimed tasks
 

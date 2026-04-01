@@ -130,6 +130,22 @@ class NodeStore:
                     fetched_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS peer_health (
+                    peer_id TEXT PRIMARY KEY,
+                    sync_successes INTEGER NOT NULL DEFAULT 0,
+                    sync_failures INTEGER NOT NULL DEFAULT 0,
+                    delivery_successes INTEGER NOT NULL DEFAULT 0,
+                    delivery_failures INTEGER NOT NULL DEFAULT 0,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    cooldown_until TEXT,
+                    blacklisted_until TEXT,
+                    last_success_at TEXT,
+                    last_failure_at TEXT,
+                    last_error TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS workflow_states (
                     workflow_id TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
@@ -275,6 +291,17 @@ class NodeStore:
             self._ensure_column(conn, "settlement_relays", "retry_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "settlement_relays", "failure_category", "TEXT")
             self._ensure_column(conn, "settlement_relays", "resumed_from_relay_id", "TEXT")
+            self._ensure_column(conn, "peer_health", "sync_successes", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "peer_health", "sync_failures", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "peer_health", "delivery_successes", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "peer_health", "delivery_failures", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "peer_health", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "peer_health", "cooldown_until", "TEXT")
+            self._ensure_column(conn, "peer_health", "blacklisted_until", "TEXT")
+            self._ensure_column(conn, "peer_health", "last_success_at", "TEXT")
+            self._ensure_column(conn, "peer_health", "last_failure_at", "TEXT")
+            self._ensure_column(conn, "peer_health", "last_error", "TEXT")
+            self._ensure_column(conn, "peer_health", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
             conn.commit()
         finally:
             conn.close()
@@ -563,6 +590,7 @@ class NodeStore:
             outbox_dead_letter = conn.execute("SELECT COUNT(*) FROM outbox WHERE status = 'dead-letter'").fetchone()[0]
             delivery_receipts = conn.execute("SELECT COUNT(*) FROM delivery_receipts").fetchone()[0]
             peer_cards = conn.execute("SELECT COUNT(*) FROM peer_cards").fetchone()[0]
+            peer_health = conn.execute("SELECT COUNT(*) FROM peer_health").fetchone()[0]
             workflow_states = conn.execute("SELECT COUNT(*) FROM workflow_states").fetchone()[0]
             execution_audits = conn.execute("SELECT COUNT(*) FROM execution_audits").fetchone()[0]
             reputations = conn.execute("SELECT COUNT(*) FROM actor_reputation").fetchone()[0]
@@ -586,6 +614,7 @@ class NodeStore:
                 "outbox_dead_letter": outbox_dead_letter,
                 "delivery_receipts": delivery_receipts,
                 "peer_cards": peer_cards,
+                "peer_health": peer_health,
                 "workflow_states": workflow_states,
                 "execution_audits": execution_audits,
                 "reputations": reputations,
@@ -595,6 +624,283 @@ class NodeStore:
                 "disputes_open": disputes_open,
                 "score_events": score_events,
                 "settlement_relays": settlement_relays,
+            }
+        finally:
+            conn.close()
+
+    def _default_peer_health(self, peer_id: str) -> dict[str, Any]:
+        now = utc_now()
+        return {
+            "peer_id": peer_id,
+            "sync_successes": 0,
+            "sync_failures": 0,
+            "delivery_successes": 0,
+            "delivery_failures": 0,
+            "successes": 0,
+            "failures": 0,
+            "success_rate": 1.0,
+            "consecutive_failures": 0,
+            "cooldown_until": None,
+            "blacklisted_until": None,
+            "dispatch_blocked": {"cooldown": False, "blacklisted": False},
+            "last_success_at": None,
+            "last_failure_at": None,
+            "last_error": None,
+            "metadata": {},
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    def _peer_health_from_row(self, row: sqlite3.Row | None) -> dict[str, Any]:
+        if not row:
+            return self._default_peer_health("")
+        now = utc_now()
+        sync_successes = int(row["sync_successes"] or 0)
+        sync_failures = int(row["sync_failures"] or 0)
+        delivery_successes = int(row["delivery_successes"] or 0)
+        delivery_failures = int(row["delivery_failures"] or 0)
+        successes = sync_successes + delivery_successes
+        failures = sync_failures + delivery_failures
+        attempts = successes + failures
+        cooldown_until = row["cooldown_until"]
+        blacklisted_until = row["blacklisted_until"]
+        return {
+            "peer_id": row["peer_id"],
+            "sync_successes": sync_successes,
+            "sync_failures": sync_failures,
+            "delivery_successes": delivery_successes,
+            "delivery_failures": delivery_failures,
+            "successes": successes,
+            "failures": failures,
+            "success_rate": round(successes / attempts, 4) if attempts else 1.0,
+            "consecutive_failures": int(row["consecutive_failures"] or 0),
+            "cooldown_until": cooldown_until,
+            "blacklisted_until": blacklisted_until,
+            "dispatch_blocked": {
+                "cooldown": bool(cooldown_until and cooldown_until > now),
+                "blacklisted": bool(blacklisted_until and blacklisted_until > now),
+            },
+            "last_success_at": row["last_success_at"],
+            "last_failure_at": row["last_failure_at"],
+            "last_error": row["last_error"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def get_peer_health(self, peer_id: str) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT peer_id, sync_successes, sync_failures, delivery_successes, delivery_failures,
+                       consecutive_failures, cooldown_until, blacklisted_until,
+                       last_success_at, last_failure_at, last_error, metadata_json, created_at, updated_at
+                FROM peer_health
+                WHERE peer_id = ?
+                """,
+                (peer_id,),
+            ).fetchone()
+            if not row:
+                health = self._default_peer_health(peer_id)
+                return health
+            return self._peer_health_from_row(row)
+        finally:
+            conn.close()
+
+    def list_peer_health(self, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT peer_id, sync_successes, sync_failures, delivery_successes, delivery_failures,
+                       consecutive_failures, cooldown_until, blacklisted_until,
+                       last_success_at, last_failure_at, last_error, metadata_json, created_at, updated_at
+                FROM peer_health
+                ORDER BY updated_at DESC, peer_id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [self._peer_health_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def record_peer_health(
+        self,
+        peer_id: str,
+        *,
+        source: str,
+        success: bool,
+        error_message: str | None = None,
+        cooldown_seconds: int = 0,
+        blacklist_after_failures: int = 0,
+        blacklist_seconds: int = 0,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if source not in {"sync", "delivery"}:
+            raise ValueError("source must be sync or delivery")
+        now = utc_now()
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT peer_id, sync_successes, sync_failures, delivery_successes, delivery_failures,
+                       consecutive_failures, cooldown_until, blacklisted_until,
+                       last_success_at, last_failure_at, last_error, metadata_json, created_at, updated_at
+                FROM peer_health
+                WHERE peer_id = ?
+                """,
+                (peer_id,),
+            ).fetchone()
+            current = self._peer_health_from_row(row)
+            sync_successes = int(current["sync_successes"])
+            sync_failures = int(current["sync_failures"])
+            delivery_successes = int(current["delivery_successes"])
+            delivery_failures = int(current["delivery_failures"])
+            consecutive_failures = int(current["consecutive_failures"])
+            cooldown_until = current["cooldown_until"]
+            blacklisted_until = current["blacklisted_until"]
+            last_success_at = current["last_success_at"]
+            last_failure_at = current["last_failure_at"]
+            last_error = current["last_error"]
+            merged_metadata = dict(current.get("metadata") or {})
+            merged_metadata.update(dict(metadata or {}))
+            merged_metadata["last_source"] = source
+            merged_metadata["last_status"] = "ok" if success else "error"
+
+            if success:
+                if source == "sync":
+                    sync_successes += 1
+                else:
+                    delivery_successes += 1
+                consecutive_failures = 0
+                cooldown_until = None
+                last_success_at = now
+                last_error = None
+            else:
+                if source == "sync":
+                    sync_failures += 1
+                else:
+                    delivery_failures += 1
+                consecutive_failures += 1
+                last_failure_at = now
+                last_error = str(error_message or "")[:500] or None
+                if cooldown_seconds > 0:
+                    cooldown_until = utc_after(cooldown_seconds)
+                if blacklist_after_failures > 0 and blacklist_seconds > 0 and consecutive_failures >= blacklist_after_failures:
+                    blacklisted_until = utc_after(blacklist_seconds)
+
+            created_at = current["created_at"] if row else now
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO peer_health
+                (peer_id, sync_successes, sync_failures, delivery_successes, delivery_failures,
+                 consecutive_failures, cooldown_until, blacklisted_until,
+                 last_success_at, last_failure_at, last_error, metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    peer_id,
+                    sync_successes,
+                    sync_failures,
+                    delivery_successes,
+                    delivery_failures,
+                    consecutive_failures,
+                    cooldown_until,
+                    blacklisted_until,
+                    last_success_at,
+                    last_failure_at,
+                    last_error,
+                    json.dumps(merged_metadata, ensure_ascii=False),
+                    created_at,
+                    now,
+                ),
+            )
+            conn.commit()
+            return self.get_peer_health(peer_id)
+        finally:
+            conn.close()
+
+    def set_peer_dispatch_state(
+        self,
+        peer_id: str,
+        *,
+        cooldown_seconds: int = 0,
+        blacklist_seconds: int = 0,
+        clear: bool = False,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            current = self.get_peer_health(peer_id)
+            merged_metadata = dict(current.get("metadata") or {})
+            merged_metadata.update(dict(metadata or {}))
+            if reason:
+                merged_metadata["dispatch_state_reason"] = reason
+            cooldown_until = None if clear else current.get("cooldown_until")
+            blacklisted_until = None if clear else current.get("blacklisted_until")
+            if cooldown_seconds > 0:
+                cooldown_until = utc_after(cooldown_seconds)
+            if blacklist_seconds > 0:
+                blacklisted_until = utc_after(blacklist_seconds)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO peer_health
+                (peer_id, sync_successes, sync_failures, delivery_successes, delivery_failures,
+                 consecutive_failures, cooldown_until, blacklisted_until,
+                 last_success_at, last_failure_at, last_error, metadata_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    peer_id,
+                    int(current["sync_successes"]),
+                    int(current["sync_failures"]),
+                    int(current["delivery_successes"]),
+                    int(current["delivery_failures"]),
+                    int(current["consecutive_failures"]),
+                    cooldown_until,
+                    blacklisted_until,
+                    current["last_success_at"],
+                    current["last_failure_at"],
+                    current["last_error"],
+                    json.dumps(merged_metadata, ensure_ascii=False),
+                    current["created_at"] if current.get("created_at") else now,
+                    now,
+                ),
+            )
+            conn.commit()
+            return self.get_peer_health(peer_id)
+        finally:
+            conn.close()
+
+    def outbox_backlog(self, target_url: str) -> dict[str, int]:
+        conn = self._connect()
+        try:
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM outbox WHERE target_url = ? AND status = 'pending'",
+                (target_url,),
+            ).fetchone()[0]
+            retrying = conn.execute(
+                "SELECT COUNT(*) FROM outbox WHERE target_url = ? AND status = 'retrying'",
+                (target_url,),
+            ).fetchone()[0]
+            dead_letter = conn.execute(
+                "SELECT COUNT(*) FROM outbox WHERE target_url = ? AND status = 'dead-letter'",
+                (target_url,),
+            ).fetchone()[0]
+            delivered = conn.execute(
+                "SELECT COUNT(*) FROM outbox WHERE target_url = ? AND status = 'delivered'",
+                (target_url,),
+            ).fetchone()[0]
+            return {
+                "pending": int(pending),
+                "retrying": int(retrying),
+                "dead_letter": int(dead_letter),
+                "delivered": int(delivered),
+                "total": int(pending) + int(retrying) + int(dead_letter) + int(delivered),
             }
         finally:
             conn.close()

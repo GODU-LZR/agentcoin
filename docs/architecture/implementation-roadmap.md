@@ -56,7 +56,7 @@ Status legend:
 
 ## Phase 5
 
-- `[ ]` `PoAW settlement policy` config document
+- `[x]` `PoAW settlement policy` config document
 - `[x]` separate local score
 - `[x]` separate review score
 - `[x]` separate network trust score
@@ -67,14 +67,14 @@ Status legend:
 
 ## Phase 6
 
-- `[ ]` bridge-aware dispatch scoring doc
-- `[ ]` bridge priority
-- `[ ]` runtime priority
-- `[ ]` recent success rate
-- `[ ]` weak-network penalty
-- `[ ]` relay backlog penalty
-- `[ ]` peer health cache
-- `[ ]` dispatch blacklist / cooldown
+- `[x]` bridge-aware dispatch scoring doc
+- `[x]` bridge priority
+- `[x]` runtime priority
+- `[x]` recent success rate
+- `[x]` weak-network penalty
+- `[x]` relay backlog penalty
+- `[x]` peer health cache
+- `[x]` dispatch blacklist / cooldown
 
 ## Phase 7
 

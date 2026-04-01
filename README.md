@@ -21,6 +21,10 @@
   ·
   <a href="docs/project/overview.md">Project Docs</a>
   ·
+  <a href="docs/architecture/poaw-settlement-policy.md">PoAW Policy</a>
+  ·
+  <a href="docs/architecture/dispatch-scoring.md">Dispatch Scoring</a>
+  ·
   <a href="docs/testing/strategy.md">Testing Docs</a>
   ·
   <a href="docs/legal/gpl-notice.md">GPL Notice</a>
@@ -146,6 +150,9 @@ The runtime now also has a first semantic layer:
 - `GET /v1/schema/capabilities` exposes capability families, aliases, and implied roles
 - `GET /v1/tasks/dispatch/preview` exposes semantic dispatch candidates and scores
 - `POST /v1/tasks/dispatch/evaluate` evaluates a full task, including `_runtime` and `_bridge` requirements
+- `GET /v1/peer-health` exposes per-peer sync and delivery health snapshots
+- `POST /v1/peer-health/cooldown`, `/blacklist`, and `/clear` let operators steer local dispatch avoidance
+- peer selection now also uses recent success rate, weak-network penalties, cooldown / blacklist state, and outbox backlog
 - `GET /v1/schema/examples` exposes example semantic shapes for cards and tasks
 - this is intentionally lightweight, but it starts closing the ontology gap in the original blueprint
 
@@ -157,6 +164,7 @@ The runtime now also has a first local `PoAW` ledger:
 - dispute flows now emit `challenge-open`, `challenge-upheld`, and `challenge-dismissed`
 - summaries now expose `poaw_policy_version` and the active score weight table
 - nodes can now override `poaw_policy_version` and `poaw_score_weights` through config
+- the settlement decision layer is documented in `docs/architecture/poaw-settlement-policy.md`
 - `GET /v1/poaw/events` exposes the raw event ledger
 - `GET /v1/poaw/summary` exposes aggregated points by actor or task
 - this is a local scoring skeleton for useful-work accounting, not a chain settlement engine yet
@@ -239,6 +247,7 @@ Key endpoints:
 - `GET /v1/onchain/status`
 - `GET /v1/reputation`
 - `GET /v1/violations`
+- `GET /v1/peer-health`
 - `GET /v1/quarantines`
 - `GET /v1/governance-actions`
 - `GET /v1/bridges`
@@ -248,6 +257,9 @@ Key endpoints:
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/dispatch/evaluate`
+- `POST /v1/peer-health/cooldown`
+- `POST /v1/peer-health/blacklist`
+- `POST /v1/peer-health/clear`
 - `POST /v1/disputes`
 - `POST /v1/disputes/vote`
 - `POST /v1/disputes/resolve`

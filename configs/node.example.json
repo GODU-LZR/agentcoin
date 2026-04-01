@@ -46,6 +46,11 @@
   "task_retry_limit": 3,
   "task_retry_backoff_seconds": 5,
   "local_dispatch_fallback": true,
+  "dispatch_peer_cooldown_seconds": 60,
+  "dispatch_peer_blacklist_after_failures": 4,
+  "dispatch_peer_blacklist_seconds": 300,
+  "dispatch_weak_network_penalty_cap": 120,
+  "dispatch_backlog_penalty_cap": 120,
   "overlay_network": "tailnet",
   "overlay_endpoint": "agentcoin-a.tailnet.internal:8080",
   "overlay_addresses": [

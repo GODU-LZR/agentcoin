@@ -160,6 +160,7 @@ The repository now also has a lightweight semantic layer:
 
 - `AgentCard` and `TaskEnvelope` expose a JSON-LD style `semantics` object
 - the node serves a shared context document, capability schema, and example payloads
+- dispatch scoring now also considers peer health, cooldown / blacklist state, and outbox backlog
 - this is still a minimal ontology step, not a full RDF / JSON-LD reasoning layer
 
 This keeps the current implementation aligned with the blueprint without introducing heavy semantic-web dependencies too early.

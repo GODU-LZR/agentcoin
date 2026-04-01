@@ -644,6 +644,181 @@ class NodeIntegrationTests(unittest.TestCase):
             node_b.stop()
             node_c.stop()
 
+    def test_peer_health_tracks_failed_sync_and_sets_cooldown(self) -> None:
+        node_a = NodeHarness(
+            node_id="health-peer-a",
+            token="token-health-a",
+            db_path=str(Path(self.tempdir.name) / "health-peer-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="offline-peer",
+                    name="Offline Peer",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-offline",
+                )
+            ],
+        )
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-health-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["peer_id"], "offline-peer")
+            self.assertEqual(sync_payload["items"][0]["status"], "error")
+
+            health_status, health = self._get(f"{node_a.base_url}/v1/peer-health?peer_id=offline-peer")
+            self.assertEqual(health_status, 200)
+            self.assertEqual(health["sync_failures"], 1)
+            self.assertEqual(health["delivery_failures"], 0)
+            self.assertTrue(health["dispatch_blocked"]["cooldown"])
+            self.assertFalse(health["dispatch_blocked"]["blacklisted"])
+        finally:
+            node_a.stop()
+
+    def test_dispatch_evaluate_surfaces_blacklisted_candidate_and_prefers_healthy_peer(self) -> None:
+        node_b = NodeHarness(
+            node_id="health-peer-b",
+            token="token-health-b",
+            db_path=str(Path(self.tempdir.name) / "health-peer-b.db"),
+            capabilities=["reviewer"],
+        )
+        node_c = NodeHarness(
+            node_id="health-peer-c",
+            token="token-health-c",
+            db_path=str(Path(self.tempdir.name) / "health-peer-c.db"),
+            capabilities=["reviewer"],
+        )
+        node_a = NodeHarness(
+            node_id="health-peer-root",
+            token="token-health-root",
+            db_path=str(Path(self.tempdir.name) / "health-peer-root.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(peer_id="health-peer-b", name="Health Peer B", url="", auth_token="token-health-b"),
+                PeerConfig(peer_id="health-peer-c", name="Health Peer C", url="", auth_token="token-health-c"),
+            ],
+        )
+        node_b.start()
+        node_c.start()
+        node_a.config.peers[0].url = node_b.base_url
+        node_a.config.peers[1].url = node_c.base_url
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-health-root", {})
+            self.assertEqual(sync_status, 200)
+
+            blacklist_status, blacklisted = self._post(
+                f"{node_a.base_url}/v1/peer-health/blacklist",
+                "token-health-root",
+                {"peer_id": "health-peer-b", "blacklist_seconds": 120, "reason": "manual isolation"},
+            )
+            self.assertEqual(blacklist_status, 200)
+            self.assertTrue(blacklisted["dispatch_blocked"]["blacklisted"])
+
+            evaluate_status, evaluated = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-health-root",
+                {
+                    "id": "health-aware-task",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": "select healthy reviewer"},
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(len(evaluated["candidates"]), 2)
+            self.assertEqual(evaluated["candidates"][0]["target_ref"], "health-peer-c")
+            blocked = [item for item in evaluated["candidates"] if item["target_ref"] == "health-peer-b"][0]
+            self.assertFalse(blocked["dispatchable"])
+            self.assertTrue(blocked["health"]["dispatch_blocked"]["blacklisted"])
+            self.assertLess(blocked["score"], evaluated["candidates"][0]["score"])
+
+            dispatch_status, dispatched = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch",
+                "token-health-root",
+                {
+                    "id": "health-aware-task-2",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": "actual dispatch"},
+                },
+            )
+            self.assertEqual(dispatch_status, 201)
+            self.assertEqual(dispatched["target"]["target_ref"], "health-peer-c")
+        finally:
+            node_a.stop()
+            node_b.stop()
+            node_c.stop()
+
+    def test_dispatch_evaluate_penalizes_peer_backlog(self) -> None:
+        node_b = NodeHarness(
+            node_id="backlog-peer-b",
+            token="token-backlog-b",
+            db_path=str(Path(self.tempdir.name) / "backlog-peer-b.db"),
+            capabilities=["reviewer"],
+        )
+        node_c = NodeHarness(
+            node_id="backlog-peer-c",
+            token="token-backlog-c",
+            db_path=str(Path(self.tempdir.name) / "backlog-peer-c.db"),
+            capabilities=["reviewer"],
+        )
+        node_a = NodeHarness(
+            node_id="backlog-peer-a",
+            token="token-backlog-a",
+            db_path=str(Path(self.tempdir.name) / "backlog-peer-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(peer_id="backlog-peer-b", name="Backlog Peer B", url="", auth_token="token-backlog-b"),
+                PeerConfig(peer_id="backlog-peer-c", name="Backlog Peer C", url="", auth_token="token-backlog-c"),
+            ],
+        )
+        node_b.start()
+        node_c.start()
+        node_a.config.peers[0].url = node_b.base_url
+        node_a.config.peers[1].url = node_c.base_url
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-backlog-a", {})
+            self.assertEqual(sync_status, 200)
+
+            node_a.node.store.queue_outbox(
+                "queued-message-1",
+                f"{node_c.base_url}/v1/inbox",
+                "token-backlog-c",
+                {"id": "queued-message-1", "sender": "backlog-peer-a"},
+            )
+            node_a.node.store.queue_outbox(
+                "queued-message-2",
+                f"{node_c.base_url}/v1/inbox",
+                "token-backlog-c",
+                {"id": "queued-message-2", "sender": "backlog-peer-a"},
+            )
+
+            evaluate_status, evaluated = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-backlog-a",
+                {
+                    "id": "backlog-aware-task",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": "prefer less loaded peer"},
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(evaluated["candidates"][0]["target_ref"], "backlog-peer-b")
+            peer_c = [item for item in evaluated["candidates"] if item["target_ref"] == "backlog-peer-c"][0]
+            self.assertEqual(peer_c["backlog"]["pending"], 2)
+            self.assertLess(peer_c["score"], evaluated["candidates"][0]["score"])
+            self.assertLess(peer_c["score_breakdown"]["relay_backlog_penalty"], 0)
+        finally:
+            node_a.stop()
+            node_b.stop()
+            node_c.stop()
+
     def test_signed_peer_sync_and_signed_inbox_verification(self) -> None:
         shared_a = "node-a-shared-secret"
         shared_b = "node-b-shared-secret"
