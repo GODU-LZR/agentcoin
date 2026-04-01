@@ -381,6 +381,11 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertIn("@context", context_payload)
             self.assertIn("agentcoin", context_payload["@context"])
 
+            _, capability_schema = self._get(f"{node.base_url}/v1/schema/capabilities")
+            capability_ids = {item["id"] for item in capability_schema["capabilities"]}
+            self.assertIn("reviewer", capability_ids)
+            self.assertIn("ai-reviewer", capability_ids)
+
             _, examples = self._get(f"{node.base_url}/v1/schema/examples")
             self.assertEqual(examples["task_envelope"]["@type"], "agentcoin:TaskEnvelope")
 
@@ -402,6 +407,70 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(task["semantics"]["required_capabilities"], ["worker"])
         finally:
             node.stop()
+
+    def test_semantic_capability_negotiation_selects_peer_and_local_worker(self) -> None:
+        node_b = NodeHarness(
+            node_id="semantic-peer-b",
+            token="token-sem-b",
+            db_path=str(Path(self.tempdir.name) / "semantic-peer-b.db"),
+            capabilities=["ai-reviewer"],
+        )
+        node_a = NodeHarness(
+            node_id="semantic-peer-a",
+            token="token-sem-a",
+            db_path=str(Path(self.tempdir.name) / "semantic-peer-a.db"),
+            capabilities=["human-reviewer"],
+            peers=[PeerConfig(peer_id="semantic-peer-b", name="Semantic Peer B", url="", auth_token="token-sem-b")],
+        )
+        node_b.start()
+        node_a.config.peers[0].url = node_b.base_url
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-sem-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["status"], "ok")
+
+            status, dispatch = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch",
+                "token-sem-a",
+                {
+                    "id": "semantic-dispatch-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": "review"},
+                },
+            )
+            self.assertEqual(status, 201)
+            self.assertEqual(dispatch["target"]["target_type"], "peer")
+            self.assertEqual(dispatch["target"]["target_ref"], "semantic-peer-b")
+
+            self._post(
+                f"{node_a.base_url}/v1/tasks",
+                "token-sem-a",
+                {
+                    "id": "semantic-local-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": "local review"},
+                },
+            )
+            worker = WorkerLoop(
+                node_url=node_a.base_url,
+                token="token-sem-a",
+                worker_id="worker-human-review",
+                capabilities=["human-reviewer", "reviewer"],
+                lease_seconds=30,
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node_a.base_url}/v1/tasks")
+            local_task = [item for item in tasks["items"] if item["id"] == "semantic-local-1"][0]
+            self.assertEqual(local_task["status"], "completed")
+        finally:
+            node_a.stop()
+            node_b.stop()
 
     def test_signed_peer_sync_and_signed_inbox_verification(self) -> None:
         shared_a = "node-a-shared-secret"

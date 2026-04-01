@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
+from agentcoin.semantics import capabilities_satisfy
 
 
 class NodeStore:
@@ -1736,7 +1737,7 @@ class NodeStore:
                 role = row["role"] or "worker"
                 if worker_capabilities and role not in {"any", ""} and role not in set(worker_capabilities):
                     continue
-                if required and not set(required).issubset(set(worker_capabilities)):
+                if required and not capabilities_satisfy(required, worker_capabilities):
                     continue
                 if depends_on:
                     dependency_count = conn.execute(

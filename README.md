@@ -142,6 +142,7 @@ The runtime now also has a first semantic layer:
 
 - `AgentCard` and `TaskEnvelope` now carry a lightweight JSON-LD style `semantics` object
 - `GET /v1/schema/context` exposes the shared context document
+- `GET /v1/schema/capabilities` exposes capability families, aliases, and implied roles
 - `GET /v1/schema/examples` exposes example semantic shapes for cards and tasks
 - this is intentionally lightweight, but it starts closing the ontology gap in the original blueprint
 
@@ -168,6 +169,7 @@ Key endpoints:
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/schema/context`
+- `GET /v1/schema/capabilities`
 - `GET /v1/schema/examples`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`

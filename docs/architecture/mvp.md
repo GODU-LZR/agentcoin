@@ -39,7 +39,7 @@ The node does not assume a specific agent runtime. It accepts generic task envel
 The MVP now also adds a lightweight semantic layer:
 
 - `AgentCard` and `TaskEnvelope` carry a JSON-LD style `semantics` object
-- the node serves a shared context and example documents
+- the node serves a shared context, capability schema, and example documents
 - this is intentionally smaller than a full ontology stack, but keeps the data model aligned with the blueprint
 
 ### Offline and weak-network behavior
@@ -64,6 +64,7 @@ The outbound transport path is now centralized as well:
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/schema/context`
+- `GET /v1/schema/capabilities`
 - `GET /v1/schema/examples`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`

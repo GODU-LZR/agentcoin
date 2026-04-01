@@ -82,6 +82,8 @@ The current repository now has lightweight JSON-LD style `semantics` on cards an
 - semantic negotiation between peers
 - formal role and capability vocabularies beyond the current minimal schema
 
+It now also has a first capability schema and alias/implied-role matching layer, so the gap is narrower than before, but still clearly not complete semantic interoperability.
+
 ### 2. PoAW and economic settlement are still mostly conceptual
 
 The blueprint expects:

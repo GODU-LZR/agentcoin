@@ -5,6 +5,20 @@ from typing import Any
 
 AGENTCOIN_CONTEXT_URL = "https://agentcoin.ai/ns/context/v0.1"
 
+CAPABILITY_PROFILES: dict[str, dict[str, list[str] | str]] = {
+    "worker": {"title": "Worker", "aliases": ["executor", "implementer"], "implies": []},
+    "codegen": {"title": "Code Generation Worker", "aliases": ["coder", "coding", "developer"], "implies": ["worker"]},
+    "reviewer": {"title": "Reviewer", "aliases": ["review"], "implies": []},
+    "ai-reviewer": {"title": "AI Reviewer", "aliases": ["ai-review", "llm-reviewer"], "implies": ["reviewer"]},
+    "human-reviewer": {"title": "Human Reviewer", "aliases": ["human-review"], "implies": ["reviewer"]},
+    "planner": {"title": "Planner", "aliases": ["coordinator", "orchestrator"], "implies": []},
+    "task-routing": {"title": "Task Router", "aliases": ["dispatcher", "router"], "implies": ["planner"]},
+    "local-command": {"title": "Local Command Executor", "aliases": ["shell", "cli-tool"], "implies": ["worker"]},
+    "http-json": {"title": "HTTP JSON Runtime", "aliases": ["http-agent"], "implies": ["worker"]},
+    "openai-chat": {"title": "OpenAI-Compatible Chat Runtime", "aliases": ["openai-compatible", "openclaw-gateway"], "implies": ["worker"]},
+    "ollama-chat": {"title": "Ollama Chat Runtime", "aliases": ["ollama", "local-llm"], "implies": ["worker"]},
+}
+
 
 def context_document() -> dict[str, Any]:
     return {
@@ -92,3 +106,48 @@ def semantic_examples() -> dict[str, Any]:
             "status": "queued",
         },
     }
+
+
+def capability_schema() -> dict[str, Any]:
+    return {
+        "@context": AGENTCOIN_CONTEXT_URL,
+        "@type": "agentcoin:CapabilitySchema",
+        "capabilities": [
+            {
+                "id": capability,
+                "title": profile.get("title"),
+                "aliases": list(profile.get("aliases") or []),
+                "implies": list(profile.get("implies") or []),
+            }
+            for capability, profile in sorted(CAPABILITY_PROFILES.items())
+        ],
+    }
+
+
+def expand_capabilities(capabilities: list[str] | None) -> set[str]:
+    raw_values = [str(item or "").strip().lower() for item in list(capabilities or []) if str(item or "").strip()]
+    expanded = set(raw_values)
+    alias_map: dict[str, str] = {}
+    for capability, profile in CAPABILITY_PROFILES.items():
+        alias_map[capability] = capability
+        for alias in list(profile.get("aliases") or []):
+            alias_map[str(alias).strip().lower()] = capability
+    queue = [alias_map.get(item, item) for item in raw_values]
+    while queue:
+        current = queue.pop(0)
+        if current in expanded:
+            pass
+        expanded.add(current)
+        profile = CAPABILITY_PROFILES.get(current) or {}
+        for implied in list(profile.get("implies") or []):
+            implied_key = str(implied).strip().lower()
+            if implied_key and implied_key not in expanded:
+                queue.append(implied_key)
+    normalized = set(alias_map.get(item, item) for item in expanded)
+    return normalized | expanded
+
+
+def capabilities_satisfy(required_capabilities: list[str] | None, available_capabilities: list[str] | None) -> bool:
+    required = expand_capabilities(required_capabilities)
+    available = expand_capabilities(available_capabilities)
+    return required.issubset(available)

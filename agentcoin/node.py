@@ -17,7 +17,7 @@ from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.runtimes import RuntimeRegistry
-from agentcoin.semantics import context_document, semantic_examples, task_semantics
+from agentcoin.semantics import capabilities_satisfy, capability_schema, context_document, semantic_examples, task_semantics
 from agentcoin.security import (
     SignatureError,
     sign_document,
@@ -202,7 +202,7 @@ class AgentCoinNode:
     def _supports_capabilities(self, capabilities: list[str]) -> bool:
         if not capabilities:
             return True
-        return set(capabilities).issubset(set(self.config.capabilities))
+        return capabilities_satisfy(capabilities, self.config.capabilities)
 
     def _persist_task_delivery(self, task: TaskEnvelope, dispatch_mode: str | None = None) -> None:
         self.store.add_task(task)
@@ -290,8 +290,8 @@ class AgentCoinNode:
         for peer_card in peer_cards:
             peer_id = peer_card["peer_id"]
             card = peer_card["card"]
-            capabilities = set(card.get("capabilities", []))
-            if set(required_capabilities).issubset(capabilities):
+            capabilities = list(card.get("capabilities", []))
+            if capabilities_satisfy(required_capabilities, capabilities):
                 candidates.append((len(capabilities), peer_id))
 
         if candidates:
@@ -386,6 +386,9 @@ class AgentCoinNode:
                     return
                 if path == "/v1/schema/examples":
                     self._json_response(HTTPStatus.OK, semantic_examples())
+                    return
+                if path == "/v1/schema/capabilities":
+                    self._json_response(HTTPStatus.OK, capability_schema())
                     return
                 if path == "/v1/onchain/status":
                     status_payload = node.onchain.status()
@@ -837,6 +840,7 @@ class AgentCoinNode:
                                 return
                             if target["target_type"] == "peer":
                                 task.deliver_to = target["target_ref"]
+                                task.delivery_status = "remote-pending"
                         node._persist_task_delivery(task, dispatch_mode="planner" if task.deliver_to else None)
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
                         return
@@ -866,6 +870,7 @@ class AgentCoinNode:
                                     return
                                 if target["target_type"] == "peer":
                                     task.deliver_to = target["target_ref"]
+                                    task.delivery_status = "remote-pending"
                         node._persist_task_delivery(task, dispatch_mode="bridge" if task.deliver_to else None)
                         self._json_response(
                             HTTPStatus.CREATED,

@@ -63,6 +63,26 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(task["status"], "dead-letter")
         self.assertEqual(task["last_error"], "retry budget exhausted")
 
+    def test_semantic_capability_aliases_match_worker_claims(self) -> None:
+        self.store.add_task(
+            TaskEnvelope(
+                id="semantic-cap-task",
+                kind="exec",
+                payload={},
+                role="worker",
+                required_capabilities=["reviewer"],
+            )
+        )
+
+        claimed = self.store.claim_task(
+            worker_id="worker-ai-review",
+            worker_capabilities=["ai-reviewer", "worker"],
+            lease_seconds=30,
+        )
+        self.assertIsNotNone(claimed)
+        assert claimed is not None
+        self.assertEqual(claimed["id"], "semantic-cap-task")
+
     def test_workflow_summary_reports_merge_and_finalization(self) -> None:
         self.store.add_task(TaskEnvelope(id="root", kind="plan", payload={}, role="planner"))
         self.store.create_subtasks(
