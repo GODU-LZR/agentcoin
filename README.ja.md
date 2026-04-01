@@ -72,6 +72,7 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Agent adapter strategy: [docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
 - On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
@@ -119,6 +120,14 @@ node には VPN / proxy 環境に合わせた統一 outbound transport も追加
 - loopback traffic は常に direct のままなので、local node と local worker を proxy hairpin しません
 - これは VPN / enterprise proxy 互換性の改善であり、network filtering の回避保証ではありません
 
+worker runtime には最初の agent-adapter layer も追加しました。
+
+- `GET /v1/runtimes` で built-in runtime adapter を列挙できます
+- `POST /v1/runtimes/bind` で既存 task に runtime adapter を束ねられます
+- `http-json` は同じ outbound transport policy を使って HTTP agent runtime を呼び出せます
+- `cli-json` は stdin/stdout JSON で local CLI agent wrapper を実行できます
+- bridge adapter と runtime adapter を分けることで、protocol compatibility と execution mode を分離しています
+
 ### Quick Start
 
 ```bash
@@ -165,12 +174,14 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/quarantines`
 - `GET /v1/governance-actions`
 - `GET /v1/bridges`
+- `GET /v1/runtimes`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
+- `POST /v1/runtimes/bind`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`

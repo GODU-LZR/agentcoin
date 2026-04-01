@@ -93,6 +93,8 @@ class NodeConfig:
                 "bridges": f"{self.base_url}/v1/bridges",
                 "bridge_import": f"{self.base_url}/v1/bridges/import",
                 "bridge_export": f"{self.base_url}/v1/bridges/export",
+                "runtimes": f"{self.base_url}/v1/runtimes",
+                "runtime_bind": f"{self.base_url}/v1/runtimes/bind",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",
                 "git_diff": f"{self.base_url}/v1/git/diff" if self.git_root else "",
                 "onchain_status": f"{self.base_url}/v1/onchain/status" if self.onchain.enabled else "",

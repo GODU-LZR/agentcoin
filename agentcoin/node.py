@@ -16,6 +16,7 @@ from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
+from agentcoin.runtimes import RuntimeRegistry
 from agentcoin.security import (
     SignatureError,
     sign_document,
@@ -36,6 +37,7 @@ class AgentCoinNode:
         self.transport = OutboundTransport(config.network)
         self.onchain = OnchainRuntime(config.onchain)
         self.bridges = BridgeRegistry(config.bridges)
+        self.runtimes = RuntimeRegistry()
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
@@ -419,6 +421,9 @@ class AgentCoinNode:
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return
+                if path == "/v1/runtimes":
+                    self._json_response(HTTPStatus.OK, {"items": node.runtimes.list_runtimes()})
+                    return
                 if path == "/v1/git/status":
                     self._json_response(HTTPStatus.OK, node._require_git().status())
                     return
@@ -534,6 +539,27 @@ class AgentCoinNode:
                         self._json_response(
                             HTTPStatus.OK,
                             {"ok": updated, "task_id": task_id, "onchain": merged_payload.get("_onchain")},
+                        )
+                        return
+                    if self.path == "/v1/runtimes/bind":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        runtime_name = str(payload.get("runtime") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        if not runtime_name:
+                            raise ValueError("runtime is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        merged_payload = dict(task["payload"])
+                        merged_payload["_runtime"] = node.runtimes.normalize_binding(runtime_name, dict(payload.get("options") or {}))
+                        updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {"ok": updated, "task_id": task_id, "runtime": merged_payload.get("_runtime")},
                         )
                         return
                     if self.path == "/v1/onchain/intents/build":

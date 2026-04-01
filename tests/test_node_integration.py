@@ -125,6 +125,54 @@ class RpcHarness:
         self.thread.join(timeout=2)
 
 
+class HttpAgentHarness:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.port = _free_port()
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), self._build_handler())
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/invoke"
+
+    def _build_handler(self) -> type[BaseHTTPRequestHandler]:
+        harness = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                payload = json.loads(raw.decode("utf-8"))
+                harness.calls.append(payload)
+                response = {
+                    "runtime": "http-json",
+                    "accepted": True,
+                    "task_id": payload.get("task", {}).get("id"),
+                    "worker_id": payload.get("worker_id"),
+                    "echo": payload.get("task", {}).get("payload", {}).get("input"),
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    def start(self) -> None:
+        self.thread.start()
+        time.sleep(0.2)
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self.thread.join(timeout=2)
+
+
 class NodeIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -1388,6 +1436,96 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertIn(".tailnet.internal", status_payload["transport"]["no_proxy_hosts"])
         finally:
             node.stop()
+
+    def test_runtime_adapter_http_json_and_cli_json(self) -> None:
+        http_agent = HttpAgentHarness()
+        http_agent.start()
+        node = NodeHarness(
+            node_id="runtime-node",
+            token="token-runtime",
+            db_path=str(Path(self.tempdir.name) / "runtime.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("http-json", runtime_names)
+            self.assertIn("cli-json", runtime_names)
+
+            created_status, _ = self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-runtime",
+                {
+                    "id": "runtime-http-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"question": "ping"}},
+                },
+            )
+            self.assertEqual(created_status, 201)
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/runtimes/bind",
+                "token-runtime",
+                {
+                    "task_id": "runtime-http-1",
+                    "runtime": "http-json",
+                    "options": {"endpoint": http_agent.url, "method": "POST", "timeout_seconds": 5},
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "http-json")
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-runtime",
+                {
+                    "id": "runtime-cli-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {
+                        "input": {"topic": "cli"},
+                        "_runtime": {
+                            "runtime": "cli-json",
+                            "command": [
+                                sys.executable,
+                                "-c",
+                                "import json,sys; data=json.load(sys.stdin); print(json.dumps({'runtime':'cli-json','task_id':data['task']['id'],'worker_id':data['worker_id']}))",
+                            ],
+                        },
+                    },
+                },
+            )
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-runtime",
+                worker_id="worker-runtime-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["http-json", "cli-json"],
+                    allowed_http_hosts=["127.0.0.1"],
+                    allow_subprocess=True,
+                    allowed_commands=[sys.executable, Path(sys.executable).name],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            by_id = {item["id"]: item for item in tasks["items"]}
+            self.assertEqual(by_id["runtime-http-1"]["result"]["adapter"]["protocol"], "http-json")
+            self.assertEqual(by_id["runtime-http-1"]["result"]["runtime_execution"]["response"]["runtime"], "http-json")
+            self.assertEqual(by_id["runtime-http-1"]["result"]["runtime_execution"]["response"]["echo"], {"question": "ping"})
+            self.assertEqual(http_agent.calls[0]["task"]["id"], "runtime-http-1")
+
+            self.assertEqual(by_id["runtime-cli-1"]["result"]["adapter"]["protocol"], "cli-json")
+            self.assertEqual(by_id["runtime-cli-1"]["result"]["runtime_execution"]["stdout_json"]["runtime"], "cli-json")
+            self.assertEqual(by_id["runtime-cli-1"]["result"]["runtime_execution"]["stdout_json"]["task_id"], "runtime-cli-1")
+        finally:
+            node.stop()
+            http_agent.stop()
 
     def test_adapter_policy_allows_sandboxed_local_command(self) -> None:
         workspace = Path(self.tempdir.name) / "workspace"

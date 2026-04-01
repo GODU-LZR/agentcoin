@@ -76,6 +76,7 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- Agent adapter strategy: [docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
 - On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
@@ -126,6 +127,14 @@ The node now also has a unified outbound transport layer for weak-network and VP
 - loopback traffic is always kept direct, so local nodes, local workers, Windows, macOS, Linux, and WSL setups keep working without proxy hairpinning
 - this improves VPN and enterprise proxy compatibility, but it is not a promise of bypassing network filtering
 
+The worker runtime now also has a first agent-adapter layer:
+
+- `GET /v1/runtimes` lists built-in runtime adapters
+- `POST /v1/runtimes/bind` can attach a runtime adapter to an existing task
+- `http-json` can call an HTTP agent runtime through the same outbound transport policy
+- `cli-json` can invoke a local agent wrapper over stdin/stdout JSON
+- bridge adapters and runtime adapters are intentionally separate, so protocol import/export does not have to dictate execution mode
+
 ### Quick Start
 
 ```bash
@@ -164,12 +173,14 @@ Key endpoints:
 - `GET /v1/quarantines`
 - `GET /v1/governance-actions`
 - `GET /v1/bridges`
+- `GET /v1/runtimes`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
+- `POST /v1/runtimes/bind`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`

@@ -67,12 +67,14 @@ The outbound transport path is now centralized as well:
 - `GET /v1/audits`
 - `GET /v1/onchain/status`
 - `GET /v1/bridges`
+- `GET /v1/runtimes`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
+- `POST /v1/runtimes/bind`
 - `POST /v1/workflows/fanout`
 - `POST /v1/workflows/review-gate`
 - `POST /v1/workflows/merge`
@@ -141,6 +143,13 @@ The worker loop now also has a first bridge-aware execution layer:
 - produce normalized MCP-style tool execution result payloads
 - produce normalized A2A-style task result payloads
 - leave real external runtime invocation for later adapters
+
+The worker loop now also has a first runtime-adapter layer:
+
+- `payload._runtime` can steer execution independently of bridge metadata
+- `http-json` forwards a normalized task envelope to an HTTP agent runtime
+- `cli-json` invokes a local CLI wrapper over JSON stdin/stdout
+- runtime policy can restrict allowed runtime kinds and HTTP host targets
 
 The worker loop now also has a first policy and sandbox layer:
 

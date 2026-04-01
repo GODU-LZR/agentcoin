@@ -18,6 +18,7 @@ The current repository contains:
 - an on-chain scaffold for DID, staking, and bounty escrow on BNB Chain
 - a node-side on-chain integration skeleton for task binding, signed submission receipts, and JSON-RPC payload building
 - live JSON-RPC planning and raw transaction relay for external signers and wallets
+- a first runtime-adapter layer for HTTP and CLI agent execution
 
 ## Design Goals
 
@@ -132,6 +133,21 @@ Current bridge capabilities:
 - export of task state or result back into bridge-shaped response payloads
 - bridge-aware worker execution skeleton with normalized MCP / A2A result shapes
 - worker-side allowlists and restricted subprocess execution for bridge tasks
+
+### Runtime Adapter Model
+
+Runtime adapters decide how a worker invokes the actual agent implementation.
+
+Current runtime adapter capabilities:
+
+- `GET /v1/runtimes` exposes built-in runtime adapter descriptors
+- `POST /v1/runtimes/bind` can attach runtime metadata to an existing task
+- `payload._runtime` can route execution into:
+  - `http-json`
+  - `cli-json`
+- runtime policy can restrict allowed runtime kinds and allowed HTTP hosts
+
+This lets AgentCoin adapt different agent implementations without pretending every agent speaks the same native protocol.
 
 ### Git Adapter Model
 

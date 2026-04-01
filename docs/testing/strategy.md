@@ -18,6 +18,7 @@ The current test scope covers:
 - outbound proxy bypass and explicit proxy selection rules
 - bridge registry plus MCP / A2A import-export flow
 - bridge-aware worker execution normalization
+- runtime adapter execution for HTTP JSON and CLI JSON agents
 - adapter policy rejection and sandboxed local-command execution
 - execution audit trail and replay inspector endpoints
 - policy violation tracking, local reputation scoring, and quarantine blocking

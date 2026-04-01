@@ -31,8 +31,8 @@ class WorkerLoop:
         self.worker_id = worker_id
         self.capabilities = capabilities
         self.lease_seconds = lease_seconds
-        self.adapters = ExecutionAdapterRegistry(adapter_policy)
         self.transport = OutboundTransport(network)
+        self.adapters = ExecutionAdapterRegistry(adapter_policy, transport=self.transport)
         self.request_timeout_seconds = request_timeout_seconds
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -121,6 +121,20 @@ def main() -> None:
         default=[],
         help="Repeatable A2A intent allowlist entry.",
     )
+    parser.add_argument(
+        "--allow-runtime",
+        dest="allowed_runtime_kinds",
+        action="append",
+        default=[],
+        help="Repeatable runtime adapter allowlist entry such as http-json or cli-json.",
+    )
+    parser.add_argument(
+        "--allow-http-host",
+        dest="allowed_http_hosts",
+        action="append",
+        default=[],
+        help="Repeatable runtime HTTP host allowlist entry. Supports exact hosts, suffixes, and CIDR.",
+    )
     parser.add_argument("--allow-subprocess", action="store_true", help="Enable sandboxed subprocess execution for local-command tool.")
     parser.add_argument(
         "--allow-command",
@@ -164,6 +178,8 @@ def main() -> None:
         adapter_policy=AdapterPolicy(
             allowed_mcp_tools=args.allowed_tools,
             allowed_a2a_intents=args.allowed_intents,
+            allowed_runtime_kinds=args.allowed_runtime_kinds,
+            allowed_http_hosts=args.allowed_http_hosts,
             allow_subprocess=args.allow_subprocess,
             allowed_commands=args.allowed_commands,
             subprocess_timeout_seconds=args.subprocess_timeout_seconds,
