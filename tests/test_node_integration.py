@@ -1061,6 +1061,32 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(created["task"]["payload"]["_onchain"]["job_id"], 42)
             self.assertIsNotNone(created["task"]["payload"]["_onchain"]["spec_hash"])
 
+            _, create_intent = self._post(
+                f"{node.base_url}/v1/onchain/intents/build",
+                "token-onchain",
+                {
+                    "task_id": "onchain-task-1",
+                    "action": "createJob",
+                    "params": {
+                        "reward_amount_wei": "100000000000000000",
+                        "evaluator_address": "0x2222222222222222222222222222222222222222",
+                        "stake_required_wei": "25000000000000000",
+                        "min_reputation": 80,
+                        "deadline": 1893456000,
+                    },
+                },
+            )
+            self.assertEqual(create_intent["intent"]["function"], "createJob")
+            self.assertEqual(create_intent["intent"]["args"]["minReputation"], 80)
+            self.assertEqual(create_intent["intent"]["value_wei"], "100000000000000000")
+            create_intent_verification = verify_document(
+                create_intent["intent"],
+                secret="onchain-secret",
+                expected_scope="onchain-intent",
+                expected_key_id="onchain-node",
+            )
+            self.assertTrue(create_intent_verification["verified"])
+
             _, claim = self._post(
                 f"{node.base_url}/v1/tasks/claim",
                 "token-onchain",
@@ -1098,9 +1124,45 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(verification["verified"])
 
+            _, submit_intent = self._post(
+                f"{node.base_url}/v1/onchain/intents/build",
+                "token-onchain",
+                {"task_id": "onchain-task-1", "action": "submitWork"},
+            )
+            self.assertEqual(submit_intent["intent"]["function"], "submitWork")
+            self.assertEqual(submit_intent["intent"]["args"]["jobId"], 42)
+            self.assertTrue(submit_intent["intent"]["args"]["submissionHash"].startswith("0x"))
+
+            _, accept_intent = self._post(
+                f"{node.base_url}/v1/onchain/intents/build",
+                "token-onchain",
+                {"task_id": "onchain-task-1", "action": "acceptJob"},
+            )
+            self.assertEqual(accept_intent["intent"]["function"], "acceptJob")
+            self.assertEqual(accept_intent["intent"]["args"]["jobId"], 42)
+            self.assertTrue(accept_intent["intent"]["args"]["workerDid"].startswith("0x"))
+            self.assertEqual(len(accept_intent["intent"]["args"]["workerDid"]), 66)
+
+            _, complete_intent = self._post(
+                f"{node.base_url}/v1/onchain/intents/build",
+                "token-onchain",
+                {"task_id": "onchain-task-1", "action": "completeJob", "params": {"score": 93}},
+            )
+            self.assertEqual(complete_intent["intent"]["function"], "completeJob")
+            self.assertEqual(complete_intent["intent"]["args"]["score"], 93)
+            complete_intent_verification = verify_document(
+                complete_intent["intent"],
+                secret="onchain-secret",
+                expected_scope="onchain-intent",
+                expected_key_id="onchain-node",
+            )
+            self.assertTrue(complete_intent_verification["verified"])
+
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=onchain-task-1")
             self.assertEqual(replay["onchain_receipt"]["job_id"], 42)
             self.assertEqual(replay["onchain_status"]["job_id"], 42)
+            self.assertEqual(replay["onchain_intent_preview"]["submitWork"]["function"], "submitWork")
+            self.assertEqual(replay["onchain_intent_preview"]["completeJob"]["function"], "completeJob")
         finally:
             node.stop()
 

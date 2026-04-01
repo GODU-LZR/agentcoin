@@ -114,6 +114,7 @@ The Python node now also has a first on-chain integration skeleton:
 - `GET /v1/onchain/status` exposes the local BNB Chain binding
 - `POST /v1/onchain/task-bind` can attach or update on-chain job metadata for an existing task
 - successful task ACKs can emit a signed `_onchain_receipt` carrying `submission_hash`, `result_hash`, `receipt_uri`, and intended contract action
+- `POST /v1/onchain/intents/build` can build signed EVM transaction intents for `createJob`, `acceptJob`, `submitWork`, `completeJob`, `rejectJob`, and `slashJob`
 
 ### Quick Start
 
@@ -171,6 +172,7 @@ Key endpoints:
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/task-bind`
+- `POST /v1/onchain/intents/build`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

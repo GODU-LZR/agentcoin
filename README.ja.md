@@ -107,6 +107,7 @@ Python reference node にも最初の on-chain integration skeleton を追加し
 - `GET /v1/onchain/status` で local BNB Chain binding を確認できます
 - `POST /v1/onchain/task-bind` で既存 task に on-chain job metadata を付与できます
 - 成功した task ACK は `submission_hash`、`result_hash`、`receipt_uri`、intended contract action を含む signed `_onchain_receipt` を持てます
+- `POST /v1/onchain/intents/build` で `createJob`、`acceptJob`、`submitWork`、`completeJob`、`rejectJob`、`slashJob` 向けの signed EVM transaction intent を生成できます
 
 ### Quick Start
 
@@ -172,6 +173,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/tasks/requeue`
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/task-bind`
+- `POST /v1/onchain/intents/build`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

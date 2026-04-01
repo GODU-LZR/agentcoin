@@ -444,6 +444,16 @@ class AgentCoinNode:
                     export_preview = None
                     if bridge_protocol:
                         export_preview = node.bridges.export_message(bridge_protocol, task)
+                    onchain_preview = None
+                    if task.get("payload", {}).get("_onchain"):
+                        onchain_preview = {
+                            "submitWork": node.onchain.transaction_intent(task, action="submitWork")
+                            if task.get("result", {}).get("_onchain_receipt")
+                            else None,
+                            "completeJob": node.onchain.transaction_intent(task, action="completeJob")
+                            if task.get("result", {}).get("_onchain_receipt")
+                            else None,
+                        }
                     self._json_response(
                         HTTPStatus.OK,
                         {
@@ -452,6 +462,7 @@ class AgentCoinNode:
                             "bridge_export_preview": export_preview,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
+                            "onchain_intent_preview": onchain_preview,
                         },
                     )
                     return
@@ -507,6 +518,27 @@ class AgentCoinNode:
                             HTTPStatus.OK,
                             {"ok": updated, "task_id": task_id, "onchain": merged_payload.get("_onchain")},
                         )
+                        return
+                    if self.path == "/v1/onchain/intents/build":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        action = str(payload.get("action") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not action:
+                            raise ValueError("action is required")
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        intent = node.onchain.transaction_intent(task, action=action, params=dict(payload.get("params") or {}))
+                        signed_intent = node._sign_document(
+                            intent,
+                            hmac_scope="onchain-intent",
+                            identity_namespace="agentcoin-onchain-intent",
+                        )
+                        self._json_response(HTTPStatus.OK, {"intent": signed_intent})
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():

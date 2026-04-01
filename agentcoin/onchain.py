@@ -16,6 +16,20 @@ def sha256_hex(document: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(document).encode("utf-8")).hexdigest()
 
 
+def as_bytes32_hex(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "0x" + ("0" * 64)
+    lowered = raw.lower()
+    if lowered.startswith("0x"):
+        hex_body = lowered[2:]
+        if len(hex_body) == 64 and all(ch in "0123456789abcdef" for ch in hex_body):
+            return lowered
+    if len(lowered) == 64 and all(ch in "0123456789abcdef" for ch in lowered):
+        return f"0x{lowered}"
+    return "0x" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 @dataclass(slots=True)
 class OnchainBindings:
     enabled: bool = False
@@ -92,6 +106,29 @@ class OnchainRuntime:
         }
         return context
 
+    def transaction_intent(
+        self,
+        task: dict[str, Any],
+        *,
+        action: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        params = params or {}
+        normalized = action.strip()
+        if normalized == "createJob":
+            return self._create_job_intent(task, params=params)
+        if normalized == "acceptJob":
+            return self._accept_job_intent(task, params=params)
+        if normalized == "submitWork":
+            return self._submit_work_intent(task, params=params)
+        if normalized == "completeJob":
+            return self._complete_job_intent(task, params=params)
+        if normalized == "rejectJob":
+            return self._reject_job_intent(task, params=params)
+        if normalized == "slashJob":
+            return self._slash_job_intent(task, params=params)
+        raise ValueError(f"unsupported onchain action: {action}")
+
     def job_ref(self, job_id: int | None) -> str | None:
         if job_id is None:
             return None
@@ -137,3 +174,150 @@ class OnchainRuntime:
         if self.bindings.receipt_base_uri:
             return f"{self.bindings.receipt_base_uri.rstrip('/')}/{task_id or 'task'}/{submission_hash}.json"
         return f"agentcoin://receipts/{task_id or 'task'}/{submission_hash}.json"
+
+    def _intent_base(self, *, action: str, task: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        return {
+            "kind": "evm-transaction-intent",
+            "chain_id": self.bindings.chain_id,
+            "rpc_url": self.bindings.rpc_url,
+            "contract": "BountyEscrow",
+            "to": self.bindings.bounty_escrow_address,
+            "action": action,
+            "task_id": task.get("id"),
+            "workflow_id": task.get("workflow_id"),
+            "job_id": onchain.get("job_id"),
+            "job_ref": onchain.get("job_ref"),
+            "from": params.get("from") or self.bindings.local_controller_address,
+            "generated_at": utc_now(),
+        }
+
+    def _create_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        deadline = int(params.get("deadline") or 0)
+        reward_amount_wei = int(params.get("reward_amount_wei") or 0)
+        intent = self._intent_base(action="createJob", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": str(reward_amount_wei),
+                "function": "createJob",
+                "signature": "createJob(address,uint256,uint256,uint64,bytes32)",
+                "args": {
+                    "evaluator": params.get("evaluator_address") or "0x0000000000000000000000000000000000000000",
+                    "stakeRequired": str(int(params.get("stake_required_wei") or 0)),
+                    "minReputation": int(params.get("min_reputation") or 0),
+                    "deadline": deadline,
+                    "specHash": as_bytes32_hex(onchain.get("spec_hash")),
+                },
+            }
+        )
+        return intent
+
+    def _accept_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        job_id = onchain.get("job_id")
+        if job_id is None:
+            raise ValueError("task is not bound to an onchain job_id")
+        worker_did = params.get("worker_did") or onchain.get("local_did") or self.bindings.local_did
+        intent = self._intent_base(action="acceptJob", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": "0",
+                "function": "acceptJob",
+                "signature": "acceptJob(uint256,bytes32)",
+                "args": {
+                    "jobId": int(job_id),
+                    "workerDid": as_bytes32_hex(worker_did),
+                },
+            }
+        )
+        return intent
+
+    def _submit_work_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        job_id = onchain.get("job_id") or receipt.get("job_id")
+        if job_id is None:
+            raise ValueError("task is not bound to an onchain job_id")
+        submission_hash = receipt.get("submission_hash") or onchain.get("submission_hash")
+        receipt_uri = receipt.get("receipt_uri") or onchain.get("receipt_uri")
+        if not submission_hash:
+            raise ValueError("submission_hash is required")
+        intent = self._intent_base(action="submitWork", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": "0",
+                "function": "submitWork",
+                "signature": "submitWork(uint256,bytes32,string)",
+                "args": {
+                    "jobId": int(job_id),
+                    "submissionHash": as_bytes32_hex(submission_hash),
+                    "resultURI": str(receipt_uri or ""),
+                },
+            }
+        )
+        return intent
+
+    def _complete_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        job_id = onchain.get("job_id") or receipt.get("job_id")
+        if job_id is None:
+            raise ValueError("task is not bound to an onchain job_id")
+        intent = self._intent_base(action="completeJob", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": "0",
+                "function": "completeJob",
+                "signature": "completeJob(uint256,uint256,string)",
+                "args": {
+                    "jobId": int(job_id),
+                    "score": int(params.get("score") or 100),
+                    "receiptURI": str(receipt.get("receipt_uri") or ""),
+                },
+            }
+        )
+        return intent
+
+    def _reject_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        job_id = onchain.get("job_id") or receipt.get("job_id")
+        if job_id is None:
+            raise ValueError("task is not bound to an onchain job_id")
+        intent = self._intent_base(action="rejectJob", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": "0",
+                "function": "rejectJob",
+                "signature": "rejectJob(uint256,string)",
+                "args": {
+                    "jobId": int(job_id),
+                    "receiptURI": str(receipt.get("receipt_uri") or ""),
+                },
+            }
+        )
+        return intent
+
+    def _slash_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        job_id = onchain.get("job_id") or receipt.get("job_id")
+        if job_id is None:
+            raise ValueError("task is not bound to an onchain job_id")
+        intent = self._intent_base(action="slashJob", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": "0",
+                "function": "slashJob",
+                "signature": "slashJob(uint256,uint256,address,string,string)",
+                "args": {
+                    "jobId": int(job_id),
+                    "slashAmount": str(int(params.get("slash_amount_wei") or 0)),
+                    "recipient": params.get("recipient") or "0x0000000000000000000000000000000000000000",
+                    "reason": str(params.get("reason") or ""),
+                    "receiptURI": str(receipt.get("receipt_uri") or ""),
+                },
+            }
+        )
+        return intent
