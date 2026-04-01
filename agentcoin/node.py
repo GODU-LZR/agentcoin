@@ -6,7 +6,7 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib import error, request
+from urllib import error
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -14,6 +14,7 @@ from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope
+from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.security import (
     SignatureError,
@@ -32,6 +33,7 @@ class AgentCoinNode:
         self.config = config
         self.store = NodeStore(config.database_path)
         self.git = GitWorkspace(config.git_root) if config.git_root else None
+        self.transport = OutboundTransport(config.network)
         self.onchain = OnchainRuntime(config.onchain)
         self.bridges = BridgeRegistry(config.bridges)
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
@@ -173,11 +175,12 @@ class AgentCoinNode:
                 continue
             source_url = f"{peer.url.rstrip('/')}/v1/card"
             try:
-                req = request.Request(source_url, headers={"Accept": "application/json"}, method="GET")
-                with request.urlopen(req, timeout=5) as resp:
-                    if resp.status >= 300:
-                        raise ValueError(f"peer returned status {resp.status}")
-                    card = json.loads(resp.read().decode("utf-8"))
+                card = self.transport.request_json(
+                    source_url,
+                    method="GET",
+                    headers={"Accept": "application/json"},
+                    timeout=5,
+                )
                 verification = self._verify_peer_card(peer, card)
                 self.store.save_peer_card(peer.peer_id, source_url, card)
                 synced.append(
@@ -361,7 +364,9 @@ class AgentCoinNode:
                     )
                     return
                 if path == "/v1/onchain/status":
-                    self._json_response(HTTPStatus.OK, node.onchain.status())
+                    status_payload = node.onchain.status()
+                    status_payload["transport"] = node.config.network.transport_profile()
+                    self._json_response(HTTPStatus.OK, status_payload)
                     return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_tasks()})
@@ -453,6 +458,9 @@ class AgentCoinNode:
                             "completeJob": node.onchain.transaction_intent(task, action="completeJob")
                             if task.get("result", {}).get("_onchain_receipt")
                             else None,
+                            "estimateGas": node.onchain.rpc_payload(task, action="submitWork", rpc={"method": "eth_estimateGas"})
+                            if task.get("result", {}).get("_onchain_receipt")
+                            else None,
                         }
                     self._json_response(
                         HTTPStatus.OK,
@@ -539,6 +547,32 @@ class AgentCoinNode:
                             identity_namespace="agentcoin-onchain-intent",
                         )
                         self._json_response(HTTPStatus.OK, {"intent": signed_intent})
+                        return
+                    if self.path == "/v1/onchain/rpc-payload":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        action = str(payload.get("action") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not action:
+                            raise ValueError("action is required")
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        rpc_payload = node.onchain.rpc_payload(
+                            task,
+                            action=action,
+                            params=dict(payload.get("params") or {}),
+                            rpc=dict(payload.get("rpc") or {}),
+                        )
+                        signed_rpc_payload = node._sign_document(
+                            rpc_payload,
+                            hmac_scope="onchain-rpc-payload",
+                            identity_namespace="agentcoin-onchain-rpc",
+                        )
+                        self._json_response(HTTPStatus.OK, {"rpc_payload": signed_rpc_payload})
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():
@@ -906,20 +940,16 @@ class AgentCoinNode:
                 parsed = urlparse(item["target_url"])
                 if parsed.scheme not in {"http", "https"}:
                     raise ValueError("unsupported target_url scheme")
-                body = item["payload_json"].encode("utf-8")
                 headers = {"Content-Type": "application/json"}
                 if item["auth_token"]:
                     headers["Authorization"] = f"Bearer {item['auth_token']}"
-                req = request.Request(
+                response_payload = self.transport.request_json(
                     item["target_url"],
-                    data=body,
-                    headers=headers,
                     method="POST",
+                    payload=json.loads(item["payload_json"]),
+                    headers=headers,
+                    timeout=5,
                 )
-                with request.urlopen(req, timeout=5) as resp:
-                    if resp.status >= 300:
-                        raise ValueError(f"peer returned status {resp.status}")
-                    response_payload = json.loads(resp.read().decode("utf-8"))
                 if response_payload.get("ack", {}).get("message_id") != item["id"]:
                     raise ValueError("missing or invalid message ack")
                 receipt_peer = self._resolve_outbox_peer(item)

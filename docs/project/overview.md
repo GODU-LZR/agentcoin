@@ -12,10 +12,11 @@ The current repository contains:
 - durable local task, inbox, outbox, and workflow state persistence
 - Git-like workflow lineage, merge, and finalize semantics
 - weak-network retry, dead-letter, and local fallback behavior
+- outbound proxy and VPN-aware transport rules for peer sync, outbox delivery, worker calls, and future chain RPC
 - Git-native repository inspection and task context attachment
 - local governance primitives for policy violations, reputation, and quarantine
 - an on-chain scaffold for DID, staking, and bounty escrow on BNB Chain
-- a node-side on-chain integration skeleton for task binding and signed submission receipts
+- a node-side on-chain integration skeleton for task binding, signed submission receipts, and JSON-RPC payload building
 
 ## Design Goals
 
@@ -95,6 +96,7 @@ Configuration defines:
 - persistence path
 - peer definitions
 - overlay metadata
+- outbound network policy, explicit proxies, and no-proxy rules
 - retry and fallback limits
 
 ## Core Runtime Model

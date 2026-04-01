@@ -16,6 +16,19 @@ def sha256_hex(document: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(document).encode("utf-8")).hexdigest()
 
 
+def _hex_quantity(value: int | str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.lower().startswith("0x"):
+            return raw.lower()
+        value = int(raw)
+    return hex(int(value))
+
+
 def as_bytes32_hex(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -128,6 +141,79 @@ class OnchainRuntime:
         if normalized == "slashJob":
             return self._slash_job_intent(task, params=params)
         raise ValueError(f"unsupported onchain action: {action}")
+
+    def rpc_payload(
+        self,
+        task: dict[str, Any],
+        *,
+        action: str,
+        params: dict[str, Any] | None = None,
+        rpc: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        intent = self.transaction_intent(task, action=action, params=params or {})
+        return self.rpc_payload_for_intent(intent, rpc=rpc or {})
+
+    def rpc_payload_for_intent(self, intent: dict[str, Any], *, rpc: dict[str, Any] | None = None) -> dict[str, Any]:
+        rpc = rpc or {}
+        rpc_method = str(rpc.get("method") or "eth_sendTransaction").strip()
+        if rpc_method == "eth_sendRawTransaction":
+            raise ValueError("eth_sendRawTransaction requires an externally signed raw transaction")
+        tx_request = {
+            "from": intent.get("from"),
+            "to": intent.get("to"),
+            "value": _hex_quantity(intent.get("value_wei")) or "0x0",
+            "chainId": _hex_quantity(intent.get("chain_id")) or "0x0",
+        }
+        optional_fields = {
+            "nonce": rpc.get("nonce"),
+            "gas": rpc.get("gas"),
+            "gasPrice": rpc.get("gas_price_wei"),
+            "maxFeePerGas": rpc.get("max_fee_per_gas_wei"),
+            "maxPriorityFeePerGas": rpc.get("max_priority_fee_per_gas_wei"),
+        }
+        for key, value in optional_fields.items():
+            encoded = _hex_quantity(value)
+            if encoded is not None:
+                tx_request[key] = encoded
+        data = rpc.get("data")
+        if data:
+            tx_request["data"] = str(data)
+        request_params: list[Any]
+        if rpc_method == "eth_call":
+            request_params = [tx_request, str(rpc.get("block") or "latest")]
+        else:
+            request_params = [tx_request]
+        rpc_id = str(rpc.get("id") or f"agentcoin-{intent.get('action')}-{intent.get('task_id')}")
+        payload = {
+            "kind": "evm-json-rpc-payload",
+            "rpc_url": intent.get("rpc_url"),
+            "chain_id": intent.get("chain_id"),
+            "rpc_method": rpc_method,
+            "request": {
+                "jsonrpc": "2.0",
+                "id": rpc_id,
+                "method": rpc_method,
+                "params": request_params,
+            },
+            "transaction": tx_request,
+            "call": {
+                "contract": intent.get("contract"),
+                "function": intent.get("function"),
+                "signature": intent.get("signature"),
+                "args": dict(intent.get("args") or {}),
+                "abi_encoding_required": not bool(data),
+                "data": str(data) if data else None,
+            },
+            "intent": {
+                "action": intent.get("action"),
+                "task_id": intent.get("task_id"),
+                "workflow_id": intent.get("workflow_id"),
+                "job_id": intent.get("job_id"),
+                "job_ref": intent.get("job_ref"),
+            },
+            "generated_at": utc_now(),
+        }
+        return payload
 
     def job_ref(self, job_id: int | None) -> str | None:
         if job_id is None:

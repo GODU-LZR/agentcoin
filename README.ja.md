@@ -108,6 +108,14 @@ Python reference node にも最初の on-chain integration skeleton を追加し
 - `POST /v1/onchain/task-bind` で既存 task に on-chain job metadata を付与できます
 - 成功した task ACK は `submission_hash`、`result_hash`、`receipt_uri`、intended contract action を含む signed `_onchain_receipt` を持てます
 - `POST /v1/onchain/intents/build` で `createJob`、`acceptJob`、`submitWork`、`completeJob`、`rejectJob`、`slashJob` 向けの signed EVM transaction intent を生成できます
+- `POST /v1/onchain/rpc-payload` で `eth_sendTransaction`、`eth_estimateGas`、`eth_call` 向けの signed JSON-RPC payload skeleton を生成できます
+
+node には VPN / proxy 環境に合わせた統一 outbound transport も追加しました。
+
+- peer sync、outbox delivery、worker API call、今後の chain RPC が同じ `http_proxy` / `https_proxy` 設定を共有します
+- `no_proxy_hosts` は exact host、`.tailnet.internal` のような suffix、`100.64.0.0/10` のような CIDR を扱えます
+- loopback traffic は常に direct のままなので、local node と local worker を proxy hairpin しません
+- これは VPN / enterprise proxy 互換性の改善であり、network filtering の回避保証ではありません
 
 ### Quick Start
 
@@ -174,6 +182,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/task-bind`
 - `POST /v1/onchain/intents/build`
+- `POST /v1/onchain/rpc-payload`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`
@@ -188,6 +197,8 @@ peer capability card の同期と確認:
 curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
 curl http://127.0.0.1:8080/v1/peer-cards
 ```
+
+VPN client、enterprise proxy、overlay gateway の背後で動かす場合は、`configs/node.example.json` の `network` block を設定してください。worker 側も `--http-proxy`、`--https-proxy`、`--no-proxy-host`、`--disable-env-proxy` を使えます。
 
 ローカル task queue は lease-based coordination にも対応しました。
 

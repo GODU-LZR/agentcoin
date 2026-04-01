@@ -45,6 +45,12 @@ The reference node now also models degraded network conditions explicitly:
 - delayed task retries use `available_at` to avoid hot-loop reclaim storms
 - retry exhaustion moves work into task dead-letter instead of retrying forever
 
+The outbound transport path is now centralized as well:
+
+- peer sync, outbox delivery, worker API calls, and future chain RPC can share explicit `http_proxy` / `https_proxy`
+- `no_proxy_hosts` supports hostnames, suffixes, and CIDR ranges for overlay and local bypass
+- loopback traffic is always kept direct so local development does not depend on proxy hairpin behavior
+
 ## Implemented Endpoints
 
 - `GET /healthz`
@@ -59,6 +65,7 @@ The reference node now also models degraded network conditions explicitly:
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`
+- `GET /v1/onchain/status`
 - `GET /v1/bridges`
 - `GET /v1/outbox`
 - `GET /v1/outbox/dead-letter`
@@ -79,6 +86,7 @@ The reference node now also models degraded network conditions explicitly:
 - `POST /v1/inbox`
 - `POST /v1/outbox/flush`
 - `POST /v1/outbox/requeue`
+- `POST /v1/onchain/rpc-payload`
 - `POST /v1/peers/sync`
 
 The node can now resolve `deliver_to` either as a full URL or as a configured `peer_id`. This is better suited for encrypted overlay networks because application code can target stable peer identities instead of embedding raw addresses everywhere.
@@ -109,6 +117,12 @@ The node now also has a Git-native adapter layer:
 - branch creation
 - task attachment to real repository context
 - no attempt to replace Git history with internal workflow metadata
+
+The node now also has a first on-chain build layer:
+
+- signed EVM transaction intents for `createJob`, `acceptJob`, `submitWork`, `completeJob`, `rejectJob`, and `slashJob`
+- signed JSON-RPC payload skeletons for `eth_sendTransaction`, `eth_estimateGas`, and `eth_call`
+- explicit `abi_encoding_required` markers so a future signer/broadcaster can stay decoupled from the coordination runtime
 
 The node now also has a first protocol-bridge layer:
 

@@ -115,6 +115,14 @@ The Python node now also has a first on-chain integration skeleton:
 - `POST /v1/onchain/task-bind` can attach or update on-chain job metadata for an existing task
 - successful task ACKs can emit a signed `_onchain_receipt` carrying `submission_hash`, `result_hash`, `receipt_uri`, and intended contract action
 - `POST /v1/onchain/intents/build` can build signed EVM transaction intents for `createJob`, `acceptJob`, `submitWork`, `completeJob`, `rejectJob`, and `slashJob`
+- `POST /v1/onchain/rpc-payload` can build signed JSON-RPC payload skeletons for `eth_sendTransaction`, `eth_estimateGas`, and `eth_call`
+
+The node now also has a unified outbound transport layer for weak-network and VPN/proxy-heavy environments:
+
+- explicit `http_proxy` / `https_proxy` configuration for peer sync, outbox delivery, worker API calls, and future chain RPC traffic
+- `no_proxy_hosts` rules support exact hosts, suffixes like `.tailnet.internal`, and CIDR blocks like `100.64.0.0/10`
+- loopback traffic is always kept direct, so local nodes, local workers, Windows, macOS, Linux, and WSL setups keep working without proxy hairpinning
+- this improves VPN and enterprise proxy compatibility, but it is not a promise of bypassing network filtering
 
 ### Quick Start
 
@@ -173,6 +181,7 @@ Key endpoints:
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/task-bind`
 - `POST /v1/onchain/intents/build`
+- `POST /v1/onchain/rpc-payload`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`
@@ -201,6 +210,8 @@ The node can also fetch and cache remote capability cards:
 curl -X POST http://127.0.0.1:8080/v1/peers/sync -H "Authorization: Bearer change-me"
 curl http://127.0.0.1:8080/v1/peer-cards
 ```
+
+When running behind a VPN client, enterprise proxy, or overlay gateway, set the `network` block in `configs/node.example.json`. For worker-side traffic, `agentcoin-worker` now supports `--http-proxy`, `--https-proxy`, `--no-proxy-host`, and `--disable-env-proxy`.
 
 The local task queue now supports lease-based coordination for multiple agents:
 

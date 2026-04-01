@@ -16,6 +16,18 @@
     "mcp",
     "a2a"
   ],
+  "network": {
+    "http_proxy": "http://127.0.0.1:10809",
+    "https_proxy": "http://127.0.0.1:10809",
+    "no_proxy_hosts": [
+      "127.0.0.1",
+      "localhost",
+      "::1",
+      "100.64.0.0/10",
+      ".tailnet.internal"
+    ],
+    "use_environment_proxies": true
+  },
   "onchain": {
     "enabled": true,
     "chain_id": 97,

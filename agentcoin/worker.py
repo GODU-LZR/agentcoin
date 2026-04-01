@@ -5,10 +5,11 @@ import json
 import logging
 import time
 from typing import Any
-from urllib import error, request
+from urllib import error
 
 from agentcoin.adapters import AdapterPolicy, ExecutionAdapterRegistry
 from agentcoin.models import utc_now
+from agentcoin.net import OutboundNetworkConfig, OutboundTransport
 
 LOG = logging.getLogger("agentcoin.worker")
 
@@ -22,6 +23,8 @@ class WorkerLoop:
         capabilities: list[str],
         lease_seconds: int = 60,
         adapter_policy: AdapterPolicy | None = None,
+        network: OutboundNetworkConfig | None = None,
+        request_timeout_seconds: float = 10,
     ) -> None:
         self.node_url = node_url.rstrip("/")
         self.token = token
@@ -29,21 +32,18 @@ class WorkerLoop:
         self.capabilities = capabilities
         self.lease_seconds = lease_seconds
         self.adapters = ExecutionAdapterRegistry(adapter_policy)
+        self.transport = OutboundTransport(network)
+        self.request_timeout_seconds = request_timeout_seconds
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = request.Request(
-            f"{self.node_url}{path}",
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.token}",
-            },
-            method="POST",
-        )
         try:
-            with request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+            return self.transport.request_json(
+                f"{self.node_url}{path}",
+                method="POST",
+                payload=payload,
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=self.request_timeout_seconds,
+            )
         except (error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             LOG.warning("request failed path=%s worker_id=%s error=%s", path, self.worker_id, exc)
             return None
@@ -131,6 +131,21 @@ def main() -> None:
     )
     parser.add_argument("--workspace-root", help="Restrict subprocess cwd to this root path.")
     parser.add_argument("--subprocess-timeout-seconds", type=int, default=10, help="Timeout for allowlisted subprocess execution.")
+    parser.add_argument("--http-proxy", help="Optional outbound HTTP proxy URL for node communication.")
+    parser.add_argument("--https-proxy", help="Optional outbound HTTPS proxy URL for node communication.")
+    parser.add_argument(
+        "--no-proxy-host",
+        dest="no_proxy_hosts",
+        action="append",
+        default=[],
+        help="Repeatable hostname, suffix, or CIDR rule that should bypass proxy.",
+    )
+    parser.add_argument(
+        "--disable-env-proxy",
+        action="store_true",
+        help="Ignore environment HTTP(S)_PROXY values for worker-to-node requests.",
+    )
+    parser.add_argument("--request-timeout-seconds", type=float, default=10, help="Timeout for worker-to-node API requests.")
     parser.add_argument("--once", action="store_true", help="Claim at most one task and exit.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     args = parser.parse_args()
@@ -154,6 +169,13 @@ def main() -> None:
             subprocess_timeout_seconds=args.subprocess_timeout_seconds,
             workspace_root=args.workspace_root,
         ),
+        network=OutboundNetworkConfig(
+            http_proxy=args.http_proxy,
+            https_proxy=args.https_proxy,
+            no_proxy_hosts=args.no_proxy_hosts or ["127.0.0.1", "localhost", "::1"],
+            use_environment_proxies=not args.disable_env_proxy,
+        ),
+        request_timeout_seconds=args.request_timeout_seconds,
     )
 
     while True:

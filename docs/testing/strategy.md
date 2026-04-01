@@ -15,6 +15,7 @@ The current test scope covers:
 - explicit message ACK validation
 - signed peer-card sync and inbox signature verification
 - SSH identity signed delivery receipt verification
+- outbound proxy bypass and explicit proxy selection rules
 - bridge registry plus MCP / A2A import-export flow
 - bridge-aware worker execution normalization
 - adapter policy rejection and sandboxed local-command execution
@@ -27,6 +28,7 @@ The current test scope covers:
 - hybrid human and AI approval policy
 - Git repository status, diff, branch, and task-context attachment
 - weak-network retry, dead-letter, and local fallback
+- on-chain JSON-RPC payload generation and signature verification
 
 ## What Exists Today
 
@@ -60,6 +62,7 @@ Manual validation is still used for exploratory and design-phase scenarios that 
 ### Failure Modes
 
 - peer unavailable
+- proxy enabled with loopback or overlay no-proxy bypass
 - invalid message ACK
 - task retry exhaustion
 - outbox retry exhaustion
@@ -191,7 +194,7 @@ Target:
 ### Syntax check
 
 ```bash
-python -m py_compile agentcoin/models.py agentcoin/config.py agentcoin/store.py agentcoin/node.py agentcoin/worker.py
+python -m py_compile agentcoin/models.py agentcoin/config.py agentcoin/net.py agentcoin/store.py agentcoin/node.py agentcoin/onchain.py agentcoin/worker.py
 ```
 
 ### Run node

@@ -13,6 +13,7 @@ from urllib import error, request
 
 from agentcoin.adapters import AdapterPolicy
 from agentcoin.config import NodeConfig, PeerConfig
+from agentcoin.net import OutboundNetworkConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.onchain import OnchainBindings
 from agentcoin.security import sign_document_with_ssh, verify_document
@@ -30,7 +31,8 @@ class NodeHarness:
                  local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None,
                  signing_secret: str | None = None, require_signed_inbox: bool = False,
                  identity_principal: str | None = None, identity_private_key_path: str | None = None,
-                 identity_public_key: str | None = None, onchain: OnchainBindings | None = None) -> None:
+                 identity_public_key: str | None = None, onchain: OnchainBindings | None = None,
+                 network: OutboundNetworkConfig | None = None) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -51,6 +53,7 @@ class NodeHarness:
             outbox_max_attempts=outbox_max_attempts,
             task_retry_limit=2,
             task_retry_backoff_seconds=1,
+            network=network or OutboundNetworkConfig(),
             onchain=onchain or OnchainBindings(),
         )
         self.node = AgentCoinNode(self.config)
@@ -1044,6 +1047,8 @@ class NodeIntegrationTests(unittest.TestCase):
             _, status_payload = self._get(f"{node.base_url}/v1/onchain/status")
             self.assertTrue(status_payload["enabled"])
             self.assertEqual(status_payload["local_identity"]["did"], "did:agentcoin:test:worker-1")
+            self.assertIn("transport", status_payload)
+            self.assertTrue(status_payload["transport"]["proxy_enabled"])
 
             created_status, created = self._post(
                 f"{node.base_url}/v1/tasks",
@@ -1158,11 +1163,67 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(complete_intent_verification["verified"])
 
+            _, rpc_payload = self._post(
+                f"{node.base_url}/v1/onchain/rpc-payload",
+                "token-onchain",
+                {
+                    "task_id": "onchain-task-1",
+                    "action": "submitWork",
+                    "rpc": {
+                        "method": "eth_estimateGas",
+                        "nonce": 7,
+                        "gas": 250000,
+                    },
+                },
+            )
+            self.assertEqual(rpc_payload["rpc_payload"]["rpc_method"], "eth_estimateGas")
+            self.assertEqual(rpc_payload["rpc_payload"]["request"]["method"], "eth_estimateGas")
+            self.assertEqual(rpc_payload["rpc_payload"]["request"]["params"][0]["nonce"], "0x7")
+            self.assertEqual(rpc_payload["rpc_payload"]["request"]["params"][0]["gas"], "0x3d090")
+            self.assertEqual(rpc_payload["rpc_payload"]["call"]["function"], "submitWork")
+            self.assertTrue(rpc_payload["rpc_payload"]["call"]["abi_encoding_required"])
+            rpc_payload_verification = verify_document(
+                rpc_payload["rpc_payload"],
+                secret="onchain-secret",
+                expected_scope="onchain-rpc-payload",
+                expected_key_id="onchain-node",
+            )
+            self.assertTrue(rpc_payload_verification["verified"])
+
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=onchain-task-1")
             self.assertEqual(replay["onchain_receipt"]["job_id"], 42)
             self.assertEqual(replay["onchain_status"]["job_id"], 42)
             self.assertEqual(replay["onchain_intent_preview"]["submitWork"]["function"], "submitWork")
             self.assertEqual(replay["onchain_intent_preview"]["completeJob"]["function"], "completeJob")
+            self.assertEqual(replay["onchain_intent_preview"]["estimateGas"]["rpc_method"], "eth_estimateGas")
+        finally:
+            node.stop()
+
+    def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
+        node = NodeHarness(
+            node_id="network-profile-node",
+            token="token-network",
+            db_path=str(Path(self.tempdir.name) / "network.db"),
+            capabilities=["worker"],
+            network=OutboundNetworkConfig(
+                http_proxy="http://127.0.0.1:10809",
+                https_proxy="http://127.0.0.1:10809",
+                no_proxy_hosts=["127.0.0.1", ".tailnet.internal"],
+                use_environment_proxies=False,
+            ),
+            onchain=OnchainBindings(
+                enabled=True,
+                bounty_escrow_address="0x000000000000000000000000000000000000b077",
+                rpc_url="https://rpc.example.invalid",
+            ),
+        )
+        node.start()
+        try:
+            _, status_payload = self._get(f"{node.base_url}/v1/onchain/status")
+            self.assertTrue(status_payload["transport"]["explicit_http_proxy"])
+            self.assertTrue(status_payload["transport"]["explicit_https_proxy"])
+            self.assertFalse(status_payload["transport"]["use_environment_proxies"])
+            self.assertIn(".tailnet.internal", status_payload["transport"]["no_proxy_hosts"])
         finally:
             node.stop()
 
