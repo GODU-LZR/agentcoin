@@ -393,6 +393,75 @@ class OnchainRuntime:
             return f"{self.bindings.receipt_base_uri.rstrip('/')}/{task_id or 'task'}/{submission_hash}.json"
         return f"agentcoin://receipts/{task_id or 'task'}/{submission_hash}.json"
 
+    @staticmethod
+    def settlement_score(poaw_summary: dict[str, Any]) -> int:
+        positive_points = int(poaw_summary.get("positive_points") or 0)
+        negative_points = int(poaw_summary.get("negative_points") or 0)
+        total_points = int(poaw_summary.get("total_points") or 0)
+        score = 70 + positive_points + negative_points
+        if positive_points == 0 and total_points <= 0:
+            score = 0
+        return max(0, min(100, score))
+
+    @staticmethod
+    def slash_amount_wei(poaw_summary: dict[str, Any]) -> int:
+        negative_points = abs(int(poaw_summary.get("negative_points") or 0))
+        if negative_points <= 0:
+            return 0
+        return negative_points * 10**15
+
+    def settlement_preview(
+        self,
+        task: dict[str, Any],
+        *,
+        poaw_summary: dict[str, Any],
+        reputation: dict[str, Any] | None = None,
+        violations: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        reputation = reputation or {}
+        violations = list(violations or [])
+        result = dict(task.get("result") or {})
+        adapter = dict(result.get("adapter") or {})
+        adapter_rejected = str(adapter.get("status") or "").strip().lower() == "rejected"
+        negative_points = int(poaw_summary.get("negative_points") or 0)
+        score = self.settlement_score(poaw_summary)
+        slash_amount = self.slash_amount_wei(poaw_summary)
+        severe_violation = any(str(item.get("severity") or "").strip().lower() in {"high", "critical"} for item in violations)
+        quarantined = bool(reputation.get("quarantined"))
+
+        recommended_resolution = "completeJob"
+        resolution_params: dict[str, Any] = {"score": score}
+        if adapter_rejected:
+            recommended_resolution = "rejectJob"
+            resolution_params = {}
+        elif quarantined or severe_violation or negative_points <= -30:
+            recommended_resolution = "slashJob"
+            resolution_params = {
+                "slash_amount_wei": str(slash_amount),
+                "recipient": self.bindings.local_controller_address or "0x0000000000000000000000000000000000000000",
+                "reason": "poaw policy violations",
+            }
+
+        sequence = ["submitWork", recommended_resolution]
+        intents: list[dict[str, Any]] = []
+        for action in sequence:
+            params = resolution_params if action == recommended_resolution else {}
+            intents.append(self.transaction_intent(task, action=action, params=params))
+
+        return {
+            "job_id": task.get("payload", {}).get("_onchain", {}).get("job_id"),
+            "poaw_summary": poaw_summary,
+            "reputation": reputation,
+            "violation_count": len(violations),
+            "recommended_resolution": recommended_resolution,
+            "recommended_sequence": sequence,
+            "score": score,
+            "slash_amount_wei": str(slash_amount),
+            "resolution_params": resolution_params,
+            "intents": intents,
+            "generated_at": utc_now(),
+        }
+
     def _intent_base(self, *, action: str, task: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
         return {

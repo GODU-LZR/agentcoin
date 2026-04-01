@@ -149,6 +149,12 @@ runtime には最小の local `PoAW` ledger も追加しました。
 - `GET /v1/poaw/summary` で actor / task 単位の points 集計を取得できます
 - これはまだ chain settlement engine ではなく、local useful-work accounting skeleton です
 
+runtime には最小の on-chain settlement preview も追加しました。
+
+- `GET /v1/onchain/settlement-preview?task_id=...` で completed task を推奨 on-chain action に変換できます
+- preview は local `PoAW` summary、task-specific violation、worker reputation を合わせて評価します
+- これは signed preview であり、自動送信ではありません
+
 ### Quick Start
 
 ```bash
@@ -185,6 +191,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/schema/examples`
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
+- `GET /v1/onchain/settlement-preview?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`

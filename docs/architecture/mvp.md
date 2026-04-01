@@ -68,6 +68,7 @@ The outbound transport path is now centralized as well:
 - `GET /v1/schema/examples`
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
+- `GET /v1/onchain/settlement-preview?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
@@ -187,6 +188,12 @@ The runtime now also persists a first local PoAW ledger:
 - policy violations emit negative score events
 - score events can be queried or summarized by actor / task
 - this is local accounting only, not final settlement
+
+The runtime now also exposes a first settlement-preview layer:
+
+- a completed task can be mapped into a signed `submitWork` + resolution sequence
+- the resolution path can resolve to `completeJob`, `rejectJob`, or `slashJob`
+- the preview uses local PoAW summaries, task-scoped violations, and worker reputation
 
 The runtime now also has a first local governance loop:
 

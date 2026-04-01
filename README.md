@@ -156,6 +156,12 @@ The runtime now also has a first local `PoAW` ledger:
 - `GET /v1/poaw/summary` exposes aggregated points by actor or task
 - this is a local scoring skeleton for useful-work accounting, not a chain settlement engine yet
 
+The runtime now also has a first on-chain settlement preview:
+
+- `GET /v1/onchain/settlement-preview?task_id=...` maps a completed task into recommended on-chain actions
+- the preview combines local `PoAW` summaries, task-specific violations, and worker reputation
+- the result is a signed operator preview, not an auto-broadcasted settlement
+
 ### Quick Start
 
 ```bash
@@ -184,6 +190,7 @@ Key endpoints:
 - `GET /v1/schema/examples`
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
+- `GET /v1/onchain/settlement-preview?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`

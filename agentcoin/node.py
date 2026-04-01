@@ -273,6 +273,32 @@ class AgentCoinNode:
         receipt = self.onchain.result_receipt(task, result=result, action=action)
         return self._sign_document(receipt, hmac_scope="onchain-receipt", identity_namespace="agentcoin-onchain")
 
+    def _task_settlement_preview(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.onchain.enabled:
+            return None
+        if not task.get("payload", {}).get("_onchain"):
+            return None
+        audits = self.store.list_execution_audits(task_id=str(task.get("id") or ""), limit=200)
+        worker_id = ""
+        if audits:
+            worker_id = str(audits[0].get("worker_id") or "")
+        if not worker_id:
+            worker_id = str(task.get("result", {}).get("worker_id") or "")
+        reputation = self.store.get_actor_reputation(worker_id, actor_type="worker") if worker_id else {}
+        violations = self.store.list_policy_violations(actor_id=worker_id, limit=200) if worker_id else []
+        violations = [item for item in violations if item.get("task_id") == task.get("id")]
+        preview = self.onchain.settlement_preview(
+            task,
+            poaw_summary=self.store.summarize_score_events(task_id=str(task.get("id") or "")),
+            reputation=reputation,
+            violations=violations,
+        )
+        return self._sign_document(
+            preview,
+            hmac_scope="onchain-settlement-preview",
+            identity_namespace="agentcoin-onchain-settlement",
+        )
+
     @staticmethod
     def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         payload = dict(task)
@@ -546,6 +572,21 @@ class AgentCoinNode:
                     status_payload["transport"] = node.config.network.transport_profile()
                     self._json_response(HTTPStatus.OK, status_payload)
                     return
+                if path == "/v1/onchain/settlement-preview":
+                    task_id = (query.get("task_id") or [""])[0]
+                    if not task_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
+                        return
+                    task = node.store.get_task(task_id)
+                    if not task:
+                        self._json_response(HTTPStatus.NOT_FOUND, {"error": "task not found"})
+                        return
+                    preview = node._task_settlement_preview(task)
+                    if not preview:
+                        self._json_response(HTTPStatus.CONFLICT, {"error": "task is not bound to onchain settlement"})
+                        return
+                    self._json_response(HTTPStatus.OK, {"settlement": preview})
+                    return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_tasks()]})
                     return
@@ -702,6 +743,7 @@ class AgentCoinNode:
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
                             "onchain_intent_preview": onchain_preview,
+                            "onchain_settlement_preview": node._task_settlement_preview(task),
                         },
                     )
                     return

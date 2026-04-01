@@ -107,6 +107,7 @@ class NodeConfig:
                 "git_diff": f"{self.base_url}/v1/git/diff" if self.git_root else "",
                 "onchain_status": f"{self.base_url}/v1/onchain/status" if self.onchain.enabled else "",
                 "onchain_bind": f"{self.base_url}/v1/onchain/task-bind" if self.onchain.enabled else "",
+                "onchain_settlement_preview": f"{self.base_url}/v1/onchain/settlement-preview" if self.onchain.enabled else "",
                 "onchain_rpc_payload": f"{self.base_url}/v1/onchain/rpc-payload" if self.onchain.enabled else "",
                 "onchain_rpc_plan": f"{self.base_url}/v1/onchain/rpc-plan" if self.onchain.enabled else "",
                 "onchain_rpc_send_raw": f"{self.base_url}/v1/onchain/rpc/send-raw" if self.onchain.enabled else "",

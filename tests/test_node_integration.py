@@ -1727,6 +1727,92 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_onchain_settlement_preview_uses_poaw_and_violations(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:settlement-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="onchain-settlement-node",
+            token="token-onchain-settlement",
+            db_path=str(Path(self.tempdir.name) / "onchain-settlement.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-onchain-settlement",
+                {
+                    "id": "settlement-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 77,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-onchain-settlement",
+                {"worker_id": "worker-settlement-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-onchain-settlement",
+                {
+                    "task_id": "settlement-task-1",
+                    "worker_id": "worker-settlement-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-settlement-1"},
+                },
+            )
+
+            _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=settlement-task-1")
+            settlement = preview["settlement"]
+            self.assertEqual(settlement["recommended_sequence"], ["submitWork", "completeJob"])
+            self.assertEqual(settlement["recommended_resolution"], "completeJob")
+            self.assertGreaterEqual(settlement["score"], 80)
+            self.assertEqual(settlement["intents"][0]["function"], "submitWork")
+            self.assertEqual(settlement["intents"][1]["function"], "completeJob")
+            preview_verification = verify_document(
+                settlement,
+                secret="settlement-secret",
+                expected_scope="onchain-settlement-preview",
+                expected_key_id="onchain-settlement-node",
+            )
+            self.assertTrue(preview_verification["verified"])
+
+            node.node.store.record_policy_violation(
+                actor_id="worker-settlement-1",
+                actor_type="worker",
+                task_id="settlement-task-1",
+                source="adapter-policy",
+                reason="sandbox escape attempt",
+                severity="high",
+            )
+            _, preview_after = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=settlement-task-1")
+            settlement_after = preview_after["settlement"]
+            self.assertEqual(settlement_after["recommended_sequence"], ["submitWork", "slashJob"])
+            self.assertEqual(settlement_after["recommended_resolution"], "slashJob")
+            self.assertEqual(settlement_after["intents"][1]["function"], "slashJob")
+            self.assertGreater(int(settlement_after["slash_amount_wei"]), 0)
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-task-1")
+            self.assertEqual(replay["onchain_settlement_preview"]["recommended_resolution"], "slashJob")
+        finally:
+            node.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",
