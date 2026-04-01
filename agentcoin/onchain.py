@@ -433,6 +433,8 @@ class OnchainRuntime:
         severe_violation = any(str(item.get("severity") or "").strip().lower() in {"high", "critical"} for item in violations)
         quarantined = bool(reputation.get("quarantined"))
         open_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "open"]
+        upheld_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "upheld"]
+        dismissed_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "dismissed"]
 
         recommended_resolution = "completeJob"
         resolution_params: dict[str, Any] = {"score": score}
@@ -444,6 +446,14 @@ class OnchainRuntime:
             recommended_resolution = "challengeJob"
             resolution_params = {
                 "evidence_hash": str(first.get("evidence_hash") or ""),
+            }
+        elif upheld_disputes:
+            first = upheld_disputes[0]
+            recommended_resolution = "slashJob"
+            resolution_params = {
+                "slash_amount_wei": str(max(slash_amount, 5 * 10**15)),
+                "recipient": self.bindings.local_controller_address or "0x0000000000000000000000000000000000000000",
+                "reason": f"upheld dispute: {str(first.get('reason') or 'dispute')}",
             }
         elif quarantined or severe_violation or negative_points <= -30:
             recommended_resolution = "slashJob"
@@ -465,6 +475,8 @@ class OnchainRuntime:
             "reputation": reputation,
             "violation_count": len(violations),
             "open_dispute_count": len(open_disputes),
+            "upheld_dispute_count": len(upheld_disputes),
+            "dismissed_dispute_count": len(dismissed_disputes),
             "recommended_resolution": recommended_resolution,
             "recommended_sequence": sequence,
             "score": score,

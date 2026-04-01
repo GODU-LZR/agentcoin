@@ -1974,6 +1974,42 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(resolve_status, 200)
             self.assertEqual(resolved["dispute"]["status"], "dismissed")
+
+            _, preview_after_dismiss = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
+            self.assertEqual(preview_after_dismiss["settlement"]["recommended_resolution"], "completeJob")
+            self.assertEqual(preview_after_dismiss["settlement"]["dismissed_dispute_count"], 1)
+
+            dispute_status_2, dispute_payload_2 = self._post(
+                f"{node.base_url}/v1/disputes",
+                "token-challenge",
+                {
+                    "task_id": "challenge-task-1",
+                    "challenger_id": "reviewer-challenge-2",
+                    "actor_id": "worker-challenge-1",
+                    "actor_type": "worker",
+                    "reason": "re-run confirmed defect",
+                    "evidence_hash": "evidence-hash-2",
+                    "severity": "high",
+                },
+            )
+            self.assertEqual(dispute_status_2, 201)
+            resolve_status_2, resolved_2 = self._post(
+                f"{node.base_url}/v1/disputes/resolve",
+                "token-challenge",
+                {
+                    "dispute_id": dispute_payload_2["dispute"]["id"],
+                    "resolution_status": "upheld",
+                    "reason": "challenge upheld after deterministic replay",
+                    "operator_id": "operator-challenge-2",
+                },
+            )
+            self.assertEqual(resolve_status_2, 200)
+            self.assertEqual(resolved_2["dispute"]["status"], "upheld")
+
+            _, preview_after_upheld = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
+            self.assertEqual(preview_after_upheld["settlement"]["recommended_resolution"], "slashJob")
+            self.assertEqual(preview_after_upheld["settlement"]["upheld_dispute_count"], 1)
+            self.assertEqual(preview_after_upheld["settlement"]["intents"][1]["function"], "slashJob")
         finally:
             node.stop()
 

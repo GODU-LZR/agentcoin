@@ -457,7 +457,50 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(resolved["status"], "upheld")
         self.assertEqual(resolved["resolution"]["operator_id"], "operator-1")
 
+        worker_reputation = self.store.get_actor_reputation("worker-disputed")
+        self.assertEqual(worker_reputation["score"], 70)
+        self.assertEqual(worker_reputation["violations"], 1)
+
+        reviewer_reputation = self.store.get_actor_reputation("reviewer-1", actor_type="reviewer")
+        self.assertEqual(reviewer_reputation["score"], 105)
+
+        dispute_events = self.store.list_score_events(task_id="dispute-task")
+        event_types = {item["event_type"] for item in dispute_events}
+        self.assertIn("policy-violation", event_types)
+        self.assertIn("dispute-upheld", event_types)
+
         actions = self.store.list_governance_actions(actor_id="worker-disputed")
         action_types = {item["action_type"] for item in actions}
         self.assertIn("dispute-opened", action_types)
         self.assertIn("dispute-resolved", action_types)
+
+    def test_dismissed_dispute_rewards_actor_and_penalizes_challenger(self) -> None:
+        self.store.add_task(TaskEnvelope(id="dismiss-task", kind="exec", payload={}, role="worker"))
+        opened = self.store.open_dispute(
+            task_id="dismiss-task",
+            challenger_id="reviewer-dismiss",
+            actor_id="worker-dismissed",
+            actor_type="worker",
+            reason="false alarm",
+            evidence_hash="evidence-dismiss",
+            severity="medium",
+        )
+        dispute_id = opened["dispute"]["id"]
+        resolved = self.store.resolve_dispute(
+            dispute_id=dispute_id,
+            resolution_status="dismissed",
+            reason="challenge rejected",
+            operator_id="operator-dismiss",
+        )
+        assert resolved is not None
+        self.assertEqual(resolved["status"], "dismissed")
+
+        worker_reputation = self.store.get_actor_reputation("worker-dismissed")
+        self.assertEqual(worker_reputation["score"], 103)
+        reviewer_reputation = self.store.get_actor_reputation("reviewer-dismiss", actor_type="reviewer")
+        self.assertEqual(reviewer_reputation["score"], 95)
+
+        dispute_events = self.store.list_score_events(task_id="dismiss-task")
+        event_types = {item["event_type"] for item in dispute_events}
+        self.assertIn("dispute-cleared", event_types)
+        self.assertIn("dispute-dismissed", event_types)

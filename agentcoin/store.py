@@ -855,6 +855,7 @@ class NodeStore:
                 "operator_id": operator_id,
                 "payload": payload or {},
             }
+            resolution_name = str(resolution["status"])
             conn.execute(
                 """
                 UPDATE disputes
@@ -869,6 +870,104 @@ class NodeStore:
                     dispute_id,
                 ),
             )
+            actor_id = row["actor_id"]
+            actor_type = str(row["actor_type"] or "worker")
+            challenger_id = str(row["challenger_id"] or "")
+            if resolution_name == "upheld":
+                if actor_id:
+                    self._record_policy_violation_with_conn(
+                        conn,
+                        actor_id=actor_id,
+                        actor_type=actor_type,
+                        task_id=row["task_id"],
+                        source="dispute",
+                        reason=f"dispute upheld: {reason}",
+                        severity=str(row["severity"] or "medium"),
+                        payload={
+                            "dispute_id": dispute_id,
+                            "challenger_id": challenger_id,
+                            "evidence_hash": row["evidence_hash"],
+                            "resolution": resolution,
+                        },
+                        created_at=now,
+                    )
+                if challenger_id:
+                    self._insert_score_event(
+                        conn,
+                        actor_id=challenger_id,
+                        actor_type="reviewer",
+                        task_id=row["task_id"],
+                        event_type="dispute-upheld",
+                        points=8,
+                        payload={
+                            "dispute_id": dispute_id,
+                            "actor_id": actor_id,
+                            "severity": row["severity"],
+                        },
+                        created_at=now,
+                    )
+                    self._apply_reputation_delta_with_conn(
+                        conn,
+                        actor_id=challenger_id,
+                        actor_type="reviewer",
+                        score_delta=5,
+                        metadata_update={
+                            "last_dispute_outcome": "upheld",
+                            "last_dispute_id": dispute_id,
+                        },
+                        updated_at=now,
+                    )
+            elif resolution_name == "dismissed":
+                if actor_id:
+                    self._insert_score_event(
+                        conn,
+                        actor_id=actor_id,
+                        actor_type=actor_type,
+                        task_id=row["task_id"],
+                        event_type="dispute-cleared",
+                        points=4,
+                        payload={
+                            "dispute_id": dispute_id,
+                            "challenger_id": challenger_id,
+                        },
+                        created_at=now,
+                    )
+                    self._apply_reputation_delta_with_conn(
+                        conn,
+                        actor_id=actor_id,
+                        actor_type=actor_type,
+                        score_delta=3,
+                        metadata_update={
+                            "last_dispute_outcome": "dismissed",
+                            "last_dispute_id": dispute_id,
+                        },
+                        updated_at=now,
+                    )
+                if challenger_id:
+                    self._insert_score_event(
+                        conn,
+                        actor_id=challenger_id,
+                        actor_type="reviewer",
+                        task_id=row["task_id"],
+                        event_type="dispute-dismissed",
+                        points=-5,
+                        payload={
+                            "dispute_id": dispute_id,
+                            "actor_id": actor_id,
+                        },
+                        created_at=now,
+                    )
+                    self._apply_reputation_delta_with_conn(
+                        conn,
+                        actor_id=challenger_id,
+                        actor_type="reviewer",
+                        score_delta=-5,
+                        metadata_update={
+                            "last_dispute_outcome": "dismissed",
+                            "last_dispute_id": dispute_id,
+                        },
+                        updated_at=now,
+                    )
             self._insert_governance_action(
                 conn,
                 actor_id=row["actor_id"] or row["challenger_id"],
@@ -1074,6 +1173,80 @@ class NodeStore:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    def _apply_reputation_delta_with_conn(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        actor_id: str,
+        actor_type: str = "worker",
+        score_delta: int = 0,
+        penalty_points_delta: int = 0,
+        violations_delta: int = 0,
+        metadata_update: dict[str, Any] | None = None,
+        updated_at: str | None = None,
+    ) -> dict[str, Any]:
+        now = updated_at or utc_now()
+        existing = conn.execute(
+            """
+            SELECT score, penalty_points, violations, quarantined, quarantine_reason, last_violation_at, metadata_json, created_at
+            FROM actor_reputation
+            WHERE actor_id = ?
+            """,
+            (actor_id,),
+        ).fetchone()
+        if existing:
+            score = max(0, min(150, int(existing["score"]) + int(score_delta)))
+            penalty_points = max(0, int(existing["penalty_points"]) + int(penalty_points_delta))
+            violations = max(0, int(existing["violations"]) + int(violations_delta))
+            quarantined = bool(existing["quarantined"])
+            quarantine_reason = existing["quarantine_reason"]
+            last_violation_at = existing["last_violation_at"]
+            metadata = json.loads(existing["metadata_json"] or "{}")
+            created = existing["created_at"]
+        else:
+            score = max(0, min(150, 100 + int(score_delta)))
+            penalty_points = max(0, int(penalty_points_delta))
+            violations = max(0, int(violations_delta))
+            quarantined = False
+            quarantine_reason = None
+            last_violation_at = None
+            metadata = {}
+            created = now
+
+        if metadata_update:
+            metadata.update(metadata_update)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO actor_reputation
+            (actor_id, actor_type, score, penalty_points, violations, quarantined,
+             quarantine_reason, last_violation_at, metadata_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                actor_id,
+                actor_type,
+                score,
+                penalty_points,
+                violations,
+                1 if quarantined else 0,
+                quarantine_reason,
+                last_violation_at,
+                json.dumps(metadata, ensure_ascii=False),
+                created,
+                now,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT actor_id, actor_type, score, penalty_points, violations, quarantined,
+                   quarantine_reason, last_violation_at, metadata_json, created_at, updated_at
+            FROM actor_reputation
+            WHERE actor_id = ?
+            """,
+            (actor_id,),
+        ).fetchone()
+        return self._reputation_from_row(row)
 
     def get_actor_reputation(self, actor_id: str, actor_type: str = "worker") -> dict[str, Any]:
         conn = self._connect()
