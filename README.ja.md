@@ -156,6 +156,14 @@ runtime には最小の on-chain settlement preview も追加しました。
 - open dispute がある場合は recommendation を `challengeJob` に寄せます
 - これは signed preview であり、自動送信ではありません
 
+on-chain settlement relay も復旧可能な記録として扱えるようになりました。
+
+- `POST /v1/onchain/settlement-relay` は raw transaction を順番に relay し、signed relay receipt を返します
+- `GET /v1/onchain/settlement-relays` は永続化された relay history を返します
+- `GET /v1/onchain/settlement-relays/latest?task_id=...` は task ごとの最新 relay state を返します
+- `POST /v1/onchain/settlement-relays/replay` は記録済み failure index から relay を再開できます
+- 永続化 record には `final_status`、`last_successful_index`、`next_index`、`retry_count`、failure category が残ります
+
 ### Quick Start
 
 ```bash
@@ -193,6 +201,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
 - `GET /v1/disputes`
+- `GET /v1/onchain/settlement-relays`
+- `GET /v1/onchain/settlement-relays/latest?task_id=...`
 - `GET /v1/onchain/settlement-preview?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
@@ -238,6 +248,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/onchain/rpc-payload`
 - `POST /v1/onchain/rpc-plan`
 - `POST /v1/onchain/rpc/send-raw`
+- `POST /v1/onchain/settlement-relays/replay`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`
 - `POST /v1/git/branch`

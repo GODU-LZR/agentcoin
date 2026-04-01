@@ -185,6 +185,12 @@ class NodeStore:
                     completed_steps INTEGER NOT NULL,
                     step_count INTEGER NOT NULL,
                     stopped_on_error INTEGER NOT NULL DEFAULT 0,
+                    final_status TEXT NOT NULL DEFAULT 'completed',
+                    last_successful_index INTEGER NOT NULL DEFAULT -1,
+                    next_index INTEGER NOT NULL DEFAULT 0,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    failure_category TEXT,
+                    resumed_from_relay_id TEXT,
                     relay_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -213,6 +219,12 @@ class NodeStore:
             self._ensure_column(conn, "tasks", "completed_at", "TEXT")
             self._ensure_column(conn, "inbox", "acked", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "outbox", "task_id", "TEXT")
+            self._ensure_column(conn, "settlement_relays", "final_status", "TEXT NOT NULL DEFAULT 'completed'")
+            self._ensure_column(conn, "settlement_relays", "last_successful_index", "INTEGER NOT NULL DEFAULT -1")
+            self._ensure_column(conn, "settlement_relays", "next_index", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "settlement_relays", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "settlement_relays", "failure_category", "TEXT")
+            self._ensure_column(conn, "settlement_relays", "resumed_from_relay_id", "TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -1110,16 +1122,30 @@ class NodeStore:
         finally:
             conn.close()
 
-    def save_settlement_relay(self, relay: dict[str, Any]) -> dict[str, Any]:
+    def save_settlement_relay(
+        self,
+        relay: dict[str, Any],
+        *,
+        retry_count: int = 0,
+        resumed_from_relay_id: str | None = None,
+    ) -> dict[str, Any]:
         relay_id = str(uuid4())
         created_at = utc_now()
+        final_status = str(relay.get("final_status") or "").strip() or "completed"
+        last_successful_index = int(relay.get("last_successful_index") or -1)
+        next_index = int(relay.get("next_index") or 0)
+        failure_category = str(relay.get("failure_category") or "").strip() or None
         conn = self._connect()
         try:
             conn.execute(
                 """
                 INSERT INTO settlement_relays
-                (id, task_id, recommended_resolution, completed_steps, step_count, stopped_on_error, relay_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    id, task_id, recommended_resolution, completed_steps, step_count, stopped_on_error,
+                    final_status, last_successful_index, next_index, retry_count, failure_category,
+                    resumed_from_relay_id, relay_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     relay_id,
@@ -1128,6 +1154,12 @@ class NodeStore:
                     int(relay.get("completed_steps") or 0),
                     int(relay.get("step_count") or 0),
                     1 if bool(relay.get("stopped_on_error")) else 0,
+                    final_status,
+                    last_successful_index,
+                    next_index,
+                    retry_count,
+                    failure_category,
+                    resumed_from_relay_id,
                     json.dumps(relay, ensure_ascii=False),
                     created_at,
                 ),
@@ -1140,6 +1172,12 @@ class NodeStore:
                 "completed_steps": int(relay.get("completed_steps") or 0),
                 "step_count": int(relay.get("step_count") or 0),
                 "stopped_on_error": bool(relay.get("stopped_on_error")),
+                "final_status": final_status,
+                "last_successful_index": last_successful_index,
+                "next_index": next_index,
+                "retry_count": retry_count,
+                "failure_category": failure_category,
+                "resumed_from_relay_id": resumed_from_relay_id,
                 "relay": relay,
                 "created_at": created_at,
             }
@@ -1153,7 +1191,8 @@ class NodeStore:
                 rows = conn.execute(
                     """
                     SELECT id, task_id, recommended_resolution, completed_steps, step_count,
-                           stopped_on_error, relay_json, created_at
+                           stopped_on_error, final_status, last_successful_index, next_index, retry_count,
+                           failure_category, resumed_from_relay_id, relay_json, created_at
                     FROM settlement_relays
                     WHERE task_id = ?
                     ORDER BY created_at DESC, rowid DESC
@@ -1165,7 +1204,8 @@ class NodeStore:
                 rows = conn.execute(
                     """
                     SELECT id, task_id, recommended_resolution, completed_steps, step_count,
-                           stopped_on_error, relay_json, created_at
+                           stopped_on_error, final_status, last_successful_index, next_index, retry_count,
+                           failure_category, resumed_from_relay_id, relay_json, created_at
                     FROM settlement_relays
                     ORDER BY created_at DESC, rowid DESC
                     LIMIT ?
@@ -1180,6 +1220,12 @@ class NodeStore:
                     "completed_steps": int(row["completed_steps"] or 0),
                     "step_count": int(row["step_count"] or 0),
                     "stopped_on_error": bool(row["stopped_on_error"]),
+                    "final_status": row["final_status"],
+                    "last_successful_index": int(row["last_successful_index"] or -1),
+                    "next_index": int(row["next_index"] or 0),
+                    "retry_count": int(row["retry_count"] or 0),
+                    "failure_category": row["failure_category"],
+                    "resumed_from_relay_id": row["resumed_from_relay_id"],
                     "relay": json.loads(row["relay_json"] or "{}"),
                     "created_at": row["created_at"],
                 }
@@ -1187,6 +1233,44 @@ class NodeStore:
             ]
         finally:
             conn.close()
+
+    def get_settlement_relay(self, relay_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, task_id, recommended_resolution, completed_steps, step_count,
+                       stopped_on_error, final_status, last_successful_index, next_index, retry_count,
+                       failure_category, resumed_from_relay_id, relay_json, created_at
+                FROM settlement_relays
+                WHERE id = ?
+                """,
+                (relay_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "recommended_resolution": row["recommended_resolution"],
+                "completed_steps": int(row["completed_steps"] or 0),
+                "step_count": int(row["step_count"] or 0),
+                "stopped_on_error": bool(row["stopped_on_error"]),
+                "final_status": row["final_status"],
+                "last_successful_index": int(row["last_successful_index"] or -1),
+                "next_index": int(row["next_index"] or 0),
+                "retry_count": int(row["retry_count"] or 0),
+                "failure_category": row["failure_category"],
+                "resumed_from_relay_id": row["resumed_from_relay_id"],
+                "relay": json.loads(row["relay_json"] or "{}"),
+                "created_at": row["created_at"],
+            }
+        finally:
+            conn.close()
+
+    def get_latest_settlement_relay(self, task_id: str) -> dict[str, Any] | None:
+        items = self.list_settlement_relays(task_id=task_id, limit=1)
+        return items[0] if items else None
 
     @staticmethod
     def _completion_score_event(

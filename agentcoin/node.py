@@ -316,6 +316,173 @@ class AgentCoinNode:
             timeout=timeout,
         )
 
+    @staticmethod
+    def _classify_relay_failure(error_message: str) -> str:
+        lowered = str(error_message or "").strip().lower()
+        if not lowered:
+            return "unknown"
+        if any(
+            token in lowered
+            for token in [
+                "timed out",
+                "timeout",
+                "connection refused",
+                "connection reset",
+                "unreachable",
+                "name or service not known",
+                "failed to establish a new connection",
+                "max retries exceeded",
+                "actively refused",
+                "winerror 10061",
+            ]
+        ):
+            return "network"
+        if "missing result" in lowered or "invalid" in lowered or "required" in lowered or "mismatch" in lowered:
+            return "validation"
+        if "rpc" in lowered or "jsonrpc" in lowered or "json-rpc" in lowered:
+            return "rpc"
+        if lowered.startswith("{") and "code" in lowered:
+            return "rpc"
+        return "transport"
+
+    @staticmethod
+    def _relay_final_status(*, step_count: int, failures: list[dict[str, Any]], next_index: int) -> str:
+        if failures and next_index <= 0:
+            return "failed"
+        if failures or next_index < step_count:
+            return "partial"
+        return "completed"
+
+    @staticmethod
+    def _rebuild_raw_transactions_from_relay_record(relay_record: dict[str, Any]) -> list[dict[str, Any]]:
+        relay = dict(relay_record.get("relay") or {})
+        indexed_steps: dict[int, dict[str, Any]] = {}
+        for item in list(relay.get("submitted_steps") or []):
+            index = int(item.get("index") or 0)
+            raw_payload = dict(item.get("raw_relay_payload") or {})
+            indexed_steps[index] = {
+                "action": item.get("action"),
+                "raw_transaction": raw_payload.get("raw_transaction"),
+                "rpc_url": raw_payload.get("rpc_url"),
+            }
+        for item in list(relay.get("failures") or []):
+            index = int(item.get("index") or 0)
+            raw_payload = dict(item.get("raw_relay_payload") or {})
+            indexed_steps[index] = {
+                "action": item.get("action"),
+                "raw_transaction": raw_payload.get("raw_transaction"),
+                "rpc_url": raw_payload.get("rpc_url"),
+            }
+        raw_transactions: list[dict[str, Any]] = []
+        for index in sorted(indexed_steps):
+            raw_transactions.append(indexed_steps[index])
+        if not raw_transactions:
+            raise ValueError("relay record does not contain replayable raw transactions")
+        return raw_transactions
+
+    def _execute_settlement_relay(
+        self,
+        *,
+        task_id: str,
+        raw_transactions: list[dict[str, Any]],
+        rpc_options: dict[str, Any] | None = None,
+        rpc_url: str | None = None,
+        timeout: float = 10,
+        continue_on_error: bool = False,
+        resume_from_index: int = 0,
+        retry_count: int = 0,
+        resumed_from_relay_id: str | None = None,
+    ) -> dict[str, Any]:
+        task = self.store.get_task(task_id)
+        if not task:
+            raise ValueError("task not found")
+        settlement = self._task_settlement_preview(task)
+        if not settlement:
+            raise ValueError("task is not bound to onchain settlement")
+        plan = self.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options or {})
+        bundle = self.onchain.settlement_raw_bundle(
+            plan,
+            raw_transactions=list(raw_transactions or []),
+            rpc_url=rpc_url,
+        )
+        relayed_steps: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for step in bundle["steps"]:
+            step_index = int(step.get("index") or 0)
+            if step_index < resume_from_index:
+                continue
+            raw_payload = dict(step.get("raw_relay_payload") or {})
+            step_rpc_url = str(raw_payload.get("rpc_url") or "").strip()
+            if not step_rpc_url:
+                raise ValueError("rpc_url is required for settlement relay")
+            try:
+                response = self._chain_rpc_call(step_rpc_url, raw_payload["request"], timeout=timeout)
+                if "error" in response:
+                    raise ValueError(f"rpc error: {response.get('error')}")
+                if "result" not in response:
+                    raise ValueError("rpc response missing result")
+                relayed_steps.append(
+                    {
+                        "index": step_index,
+                        "action": step.get("action"),
+                        "response": response,
+                        "tx_hash": response.get("result"),
+                        "raw_relay_payload": raw_payload,
+                    }
+                )
+            except Exception as exc:
+                failure = {
+                    "index": step_index,
+                    "action": step.get("action"),
+                    "error": str(exc),
+                    "category": self._classify_relay_failure(str(exc)),
+                    "raw_relay_payload": raw_payload,
+                }
+                failures.append(failure)
+                if not continue_on_error:
+                    break
+        last_successful_index = max(
+            (
+                int(item["index"])
+                if item.get("index") is not None
+                else -1
+                for item in relayed_steps
+            ),
+            default=-1,
+        )
+        next_index = failures[0]["index"] if failures else max(resume_from_index, last_successful_index + 1)
+        relay = {
+            "kind": "evm-settlement-relay",
+            "task_id": task_id,
+            "recommended_resolution": bundle.get("recommended_resolution"),
+            "step_count": bundle.get("step_count"),
+            "resume_from_index": resume_from_index,
+            "resumed": resume_from_index > 0,
+            "resumed_from_relay_id": resumed_from_relay_id,
+            "retry_count": retry_count,
+            "submitted_steps": relayed_steps,
+            "failures": failures,
+            "completed_steps": len(relayed_steps),
+            "last_successful_index": last_successful_index,
+            "stopped_on_error": bool(failures) and not continue_on_error,
+            "next_index": next_index,
+            "failure_category": failures[0]["category"] if failures else None,
+            "final_status": self._relay_final_status(
+                step_count=int(bundle.get("step_count") or 0),
+                failures=failures,
+                next_index=int(next_index),
+            ),
+            "transport": self.config.network.transport_profile(),
+            "generated_at": utc_now(),
+        }
+        persisted = self.store.save_settlement_relay(
+            relay,
+            retry_count=retry_count,
+            resumed_from_relay_id=resumed_from_relay_id,
+        )
+        relay["relay_record_id"] = persisted["id"]
+        return relay
+
     def dispatch_candidates(self, required_capabilities: list[str], prefer_local: bool = False) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         if self._supports_capabilities(required_capabilities):
@@ -726,6 +893,17 @@ class AgentCoinNode:
                         {"items": node.store.list_settlement_relays(task_id=task_id, limit=limit)},
                     )
                     return
+                if path == "/v1/onchain/settlement-relays/latest":
+                    task_id = (query.get("task_id") or [""])[0]
+                    if not task_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
+                        return
+                    item = node.store.get_latest_settlement_relay(task_id)
+                    if not item:
+                        self._json_response(HTTPStatus.NOT_FOUND, {"error": "settlement relay not found"})
+                        return
+                    self._json_response(HTTPStatus.OK, item)
+                    return
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return
@@ -793,6 +971,7 @@ class AgentCoinNode:
                             "poaw_summary": node.store.summarize_score_events(task_id=task_id),
                             "disputes": node.store.list_disputes(task_id=task_id, limit=200),
                             "settlement_relays": node.store.list_settlement_relays(task_id=task_id, limit=200),
+                            "latest_settlement_relay": node.store.get_latest_settlement_relay(task_id),
                             "bridge_export_preview": export_preview,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
@@ -1127,74 +1306,51 @@ class AgentCoinNode:
                         task_id = str(payload.get("task_id") or "").strip()
                         if not task_id:
                             raise ValueError("task_id is required")
-                        task = node.store.get_task(task_id)
-                        if not task:
-                            raise ValueError("task not found")
-                        settlement = node._task_settlement_preview(task)
-                        if not settlement:
-                            raise ValueError("task is not bound to onchain settlement")
-                        rpc_options = dict(payload.get("rpc") or {})
-                        plan = node.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options)
-                        bundle = node.onchain.settlement_raw_bundle(
-                            plan,
+                        relay = node._execute_settlement_relay(
+                            task_id=task_id,
                             raw_transactions=list(payload.get("raw_transactions") or []),
+                            rpc_options=dict(payload.get("rpc") or {}),
                             rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                            timeout=float(payload.get("timeout_seconds") or 10),
+                            continue_on_error=bool(payload.get("continue_on_error")),
+                            resume_from_index=int(payload.get("resume_from_index") or 0),
                         )
-                        timeout = float(payload.get("timeout_seconds") or 10)
-                        continue_on_error = bool(payload.get("continue_on_error"))
-                        resume_from_index = int(payload.get("resume_from_index") or 0)
-                        relayed_steps: list[dict[str, Any]] = []
-                        failures: list[dict[str, Any]] = []
-                        for step in bundle["steps"]:
-                            step_index = int(step.get("index") or 0)
-                            if step_index < resume_from_index:
-                                continue
-                            raw_payload = dict(step.get("raw_relay_payload") or {})
-                            rpc_url = str(raw_payload.get("rpc_url") or "").strip()
-                            if not rpc_url:
-                                raise ValueError("rpc_url is required for settlement relay")
-                            try:
-                                response = node._chain_rpc_call(rpc_url, raw_payload["request"], timeout=timeout)
-                                if "error" in response:
-                                    raise ValueError(str(response.get("error")))
-                                if "result" not in response:
-                                    raise ValueError("rpc response missing result")
-                                relayed_steps.append(
-                                    {
-                                        "index": step_index,
-                                        "action": step.get("action"),
-                                        "response": response,
-                                        "tx_hash": response.get("result"),
-                                        "raw_relay_payload": raw_payload,
-                                    }
-                                )
-                            except Exception as exc:
-                                failure = {
-                                    "index": step_index,
-                                    "action": step.get("action"),
-                                    "error": str(exc),
-                                    "raw_relay_payload": raw_payload,
-                                }
-                                failures.append(failure)
-                                if not continue_on_error:
-                                    break
-                        relay = {
-                            "kind": "evm-settlement-relay",
-                            "task_id": task_id,
-                            "recommended_resolution": bundle.get("recommended_resolution"),
-                            "step_count": bundle.get("step_count"),
-                            "resume_from_index": resume_from_index,
-                            "resumed": resume_from_index > 0,
-                            "submitted_steps": relayed_steps,
-                            "failures": failures,
-                            "completed_steps": len(relayed_steps),
-                            "stopped_on_error": bool(failures) and not continue_on_error,
-                            "next_index": failures[0]["index"] if failures else (resume_from_index + len(relayed_steps)),
-                            "transport": node.config.network.transport_profile(),
-                            "generated_at": utc_now(),
-                        }
-                        persisted = node.store.save_settlement_relay(relay)
-                        relay["relay_record_id"] = persisted["id"]
+                        signed_relay = node._sign_document(
+                            relay,
+                            hmac_scope="onchain-settlement-relay",
+                            identity_namespace="agentcoin-onchain-settlement-relay",
+                        )
+                        self._json_response(HTTPStatus.OK, {"relay": signed_relay})
+                        return
+                    if self.path == "/v1/onchain/settlement-relays/replay":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        relay_id = str(payload.get("relay_id") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        relay_record = None
+                        if relay_id:
+                            relay_record = node.store.get_settlement_relay(relay_id)
+                        elif task_id:
+                            relay_record = node.store.get_latest_settlement_relay(task_id)
+                        else:
+                            raise ValueError("relay_id or task_id is required")
+                        if not relay_record:
+                            raise ValueError("settlement relay not found")
+                        raw_transactions = list(payload.get("raw_transactions") or [])
+                        if not raw_transactions:
+                            raw_transactions = node._rebuild_raw_transactions_from_relay_record(relay_record)
+                        relay = node._execute_settlement_relay(
+                            task_id=str(relay_record.get("task_id") or task_id),
+                            raw_transactions=raw_transactions,
+                            rpc_options=dict(payload.get("rpc") or {}),
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                            timeout=float(payload.get("timeout_seconds") or 10),
+                            continue_on_error=bool(payload.get("continue_on_error")),
+                            resume_from_index=int(payload.get("resume_from_index") or relay_record.get("next_index") or 0),
+                            retry_count=int(relay_record.get("retry_count") or 0) + 1,
+                            resumed_from_relay_id=str(relay_record.get("id") or ""),
+                        )
                         signed_relay = node._sign_document(
                             relay,
                             hmac_scope="onchain-settlement-relay",

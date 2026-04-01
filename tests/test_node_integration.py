@@ -2331,6 +2331,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(relay["recommended_resolution"], "completeJob")
             self.assertEqual(relay["completed_steps"], 2)
             self.assertFalse(relay["stopped_on_error"])
+            self.assertEqual(relay["final_status"], "completed")
+            self.assertEqual(relay["last_successful_index"], 1)
+            self.assertEqual(relay["next_index"], 2)
+            self.assertEqual(relay["retry_count"], 0)
             self.assertEqual(relay["submitted_steps"][0]["tx_hash"], "0xsettlement1")
             self.assertEqual(relay["submitted_steps"][1]["tx_hash"], "0xsettlement2")
             self.assertTrue(relay["relay_record_id"])
@@ -2346,11 +2350,19 @@ class NodeIntegrationTests(unittest.TestCase):
             _, relay_history = self._get(f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-relay-task-1")
             self.assertEqual(len(relay_history["items"]), 1)
             self.assertEqual(relay_history["items"][0]["completed_steps"], 2)
+            self.assertEqual(relay_history["items"][0]["final_status"], "completed")
             self.assertEqual(relay_history["items"][0]["relay"]["recommended_resolution"], "completeJob")
+            latest_status, latest_relay = self._get(
+                f"{node.base_url}/v1/onchain/settlement-relays/latest?task_id=settlement-relay-task-1"
+            )
+            self.assertEqual(latest_status, 200)
+            self.assertEqual(latest_relay["id"], relay["relay_record_id"])
+            self.assertEqual(latest_relay["last_successful_index"], 1)
 
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-relay-task-1")
             self.assertEqual(len(replay["settlement_relays"]), 1)
             self.assertEqual(replay["settlement_relays"][0]["relay"]["completed_steps"], 2)
+            self.assertEqual(replay["latest_settlement_relay"]["id"], relay["relay_record_id"])
         finally:
             node.stop()
             rpc.stop()
@@ -2428,8 +2440,11 @@ class NodeIntegrationTests(unittest.TestCase):
             failed_relay = failed_relay_payload["relay"]
             self.assertEqual(failed_relay["completed_steps"], 1)
             self.assertTrue(failed_relay["stopped_on_error"])
+            self.assertEqual(failed_relay["final_status"], "partial")
+            self.assertEqual(failed_relay["last_successful_index"], 0)
             self.assertEqual(failed_relay["next_index"], 1)
             self.assertEqual(len(failed_relay["failures"]), 1)
+            self.assertEqual(failed_relay["failure_category"], "network")
 
             _, resumed_relay_payload = self._post(
                 f"{node.base_url}/v1/onchain/settlement-relay",
@@ -2448,6 +2463,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(resumed_relay["resume_from_index"], 1)
             self.assertEqual(resumed_relay["completed_steps"], 1)
             self.assertFalse(resumed_relay["stopped_on_error"])
+            self.assertEqual(resumed_relay["final_status"], "completed")
             self.assertEqual(resumed_relay["next_index"], 2)
             self.assertEqual(resumed_relay["submitted_steps"][0]["action"], "completeJob")
             verification = verify_document(
@@ -2457,6 +2473,112 @@ class NodeIntegrationTests(unittest.TestCase):
                 expected_key_id="settlement-resume-node",
             )
             self.assertTrue(verification["verified"])
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_onchain_settlement_relay_replay_can_resume_from_latest_history(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0xreplay{call_count['raw']}"
+
+        rpc = RpcHarness({"eth_sendRawTransaction": raw_tx_response})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:replay-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-replay-node",
+            token="token-settlement-replay",
+            db_path=str(Path(self.tempdir.name) / "settlement-replay.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-replay-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-replay",
+                {
+                    "id": "settlement-replay-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 96,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-settlement-replay",
+                {"worker_id": "worker-replay-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-settlement-replay",
+                {
+                    "task_id": "settlement-replay-task-1",
+                    "worker_id": "worker-replay-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-replay-1"},
+                },
+            )
+
+            _, failed_relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-replay",
+                {
+                    "task_id": "settlement-replay-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": "http://127.0.0.1:1"},
+                    ],
+                },
+            )
+            failed_relay = failed_relay_payload["relay"]
+            self.assertTrue(failed_relay["relay_record_id"])
+            self.assertEqual(failed_relay["next_index"], 1)
+
+            _, replayed_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relays/replay",
+                "token-settlement-replay",
+                {
+                    "relay_id": failed_relay["relay_record_id"],
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            replayed = replayed_payload["relay"]
+            self.assertTrue(replayed["resumed"])
+            self.assertEqual(replayed["resume_from_index"], 1)
+            self.assertEqual(replayed["retry_count"], 1)
+            self.assertEqual(replayed["resumed_from_relay_id"], failed_relay["relay_record_id"])
+            self.assertEqual(replayed["completed_steps"], 1)
+            self.assertEqual(replayed["final_status"], "completed")
+
+            _, latest = self._get(f"{node.base_url}/v1/onchain/settlement-relays/latest?task_id=settlement-replay-task-1")
+            self.assertEqual(latest["id"], replayed["relay_record_id"])
+            self.assertEqual(latest["retry_count"], 1)
+            self.assertEqual(latest["resumed_from_relay_id"], failed_relay["relay_record_id"])
+
+            _, history = self._get(f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-replay-task-1")
+            self.assertEqual(len(history["items"]), 2)
+            self.assertEqual(history["items"][0]["retry_count"], 1)
+            self.assertEqual(history["items"][1]["retry_count"], 0)
         finally:
             node.stop()
             rpc.stop()
