@@ -528,6 +528,55 @@ class OnchainRuntime:
             "generated_at": utc_now(),
         }
 
+    def settlement_raw_bundle(
+        self,
+        plan: dict[str, Any],
+        *,
+        raw_transactions: list[dict[str, Any]],
+        rpc_url: str | None = None,
+    ) -> dict[str, Any]:
+        items = list(raw_transactions or [])
+        steps = list(plan.get("steps") or [])
+        if len(items) != len(steps):
+            raise ValueError("raw_transactions length must match plan steps")
+        bundled_steps: list[dict[str, Any]] = []
+        for step, item in zip(steps, items, strict=False):
+            action = str(step.get("action") or "")
+            raw_action = str(item.get("action") or action).strip()
+            if raw_action and raw_action != action:
+                raise ValueError(f"raw transaction action mismatch for step {action}")
+            raw_tx = str(item.get("raw_transaction") or "").strip()
+            if not raw_tx:
+                raise ValueError(f"raw_transaction is required for step {action}")
+            raw_payload = self.raw_transaction_payload(
+                raw_tx,
+                rpc_url=rpc_url or str(step.get("rpc_payload", {}).get("rpc_url") or "").strip() or None,
+                request_id=str(item.get("request_id") or "").strip() or None,
+            )
+            bundled_steps.append(
+                {
+                    "index": step.get("index"),
+                    "action": action,
+                    "intent": step.get("intent"),
+                    "rpc_payload": step.get("rpc_payload"),
+                    "raw_transaction": raw_tx,
+                    "raw_relay_payload": raw_payload,
+                    "signed_by": item.get("signed_by"),
+                    "signature_ref": item.get("signature_ref"),
+                }
+            )
+        return {
+            "kind": "evm-settlement-raw-bundle",
+            "task_id": plan.get("task_id"),
+            "workflow_id": plan.get("workflow_id"),
+            "job_id": plan.get("job_id"),
+            "recommended_resolution": plan.get("recommended_resolution"),
+            "resolved_live": bool(plan.get("resolved_live")),
+            "step_count": len(bundled_steps),
+            "steps": bundled_steps,
+            "generated_at": utc_now(),
+        }
+
     def _intent_base(self, *, action: str, task: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
         return {

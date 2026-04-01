@@ -2173,6 +2173,85 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_onchain_settlement_raw_bundle_wraps_signed_transactions(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:bundle-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-bundle-node",
+            token="token-settlement-bundle",
+            db_path=str(Path(self.tempdir.name) / "settlement-bundle.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-bundle-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-bundle",
+                {
+                    "id": "settlement-bundle-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 93,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-settlement-bundle",
+                {"worker_id": "worker-bundle-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-settlement-bundle",
+                {
+                    "task_id": "settlement-bundle-task-1",
+                    "worker_id": "worker-bundle-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-bundle-1"},
+                },
+            )
+
+            _, bundle_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-raw-bundle",
+                "token-settlement-bundle",
+                {
+                    "task_id": "settlement-bundle-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaabbbb", "signed_by": "wallet-1"},
+                        {"action": "completeJob", "raw_transaction": "0xccccdddd", "signed_by": "wallet-1"},
+                    ],
+                },
+            )
+            bundle = bundle_payload["bundle"]
+            self.assertEqual(bundle["kind"], "evm-settlement-raw-bundle")
+            self.assertEqual(bundle["recommended_resolution"], "completeJob")
+            self.assertEqual(bundle["step_count"], 2)
+            self.assertEqual([step["action"] for step in bundle["steps"]], ["submitWork", "completeJob"])
+            self.assertEqual(bundle["steps"][0]["raw_relay_payload"]["request"]["method"], "eth_sendRawTransaction")
+            self.assertEqual(bundle["steps"][1]["raw_transaction"], "0xccccdddd")
+            verification = verify_document(
+                bundle,
+                secret="settlement-bundle-secret",
+                expected_scope="onchain-settlement-raw-bundle",
+                expected_key_id="settlement-bundle-node",
+            )
+            self.assertTrue(verification["verified"])
+        finally:
+            node.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",

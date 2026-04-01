@@ -602,6 +602,12 @@ class AgentCoinNode:
                         {"error": "use POST /v1/onchain/settlement-rpc-plan with task_id"},
                     )
                     return
+                if path == "/v1/onchain/settlement-raw-bundle":
+                    self._json_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED,
+                        {"error": "use POST /v1/onchain/settlement-raw-bundle with task_id and raw_transactions"},
+                    )
+                    return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_tasks()]})
                     return
@@ -1071,6 +1077,33 @@ class AgentCoinNode:
                             identity_namespace="agentcoin-onchain-settlement-rpc-plan",
                         )
                         self._json_response(HTTPStatus.OK, {"plan": signed_plan})
+                        return
+                    if self.path == "/v1/onchain/settlement-raw-bundle":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        settlement = node._task_settlement_preview(task)
+                        if not settlement:
+                            raise ValueError("task is not bound to onchain settlement")
+                        rpc_options = dict(payload.get("rpc") or {})
+                        plan = node.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options)
+                        bundle = node.onchain.settlement_raw_bundle(
+                            plan,
+                            raw_transactions=list(payload.get("raw_transactions") or []),
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                        )
+                        signed_bundle = node._sign_document(
+                            bundle,
+                            hmac_scope="onchain-settlement-raw-bundle",
+                            identity_namespace="agentcoin-onchain-settlement-raw-bundle",
+                        )
+                        self._json_response(HTTPStatus.OK, {"bundle": signed_bundle})
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():

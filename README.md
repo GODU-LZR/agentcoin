@@ -169,6 +169,11 @@ The node can now also expand that preview into a settlement RPC sequence:
 - `POST /v1/onchain/settlement-rpc-plan` expands the recommended sequence into ordered intents and JSON-RPC payloads
 - optional `resolve_live=true` resolves nonce / gas price / gas estimate for each step
 
+It can also assemble an externally signed raw-transaction bundle:
+
+- `POST /v1/onchain/settlement-raw-bundle` attaches externally signed raw transactions back onto the settlement sequence
+- this keeps private-key signing out of the node while still producing a signed bundle artifact
+
 ### Quick Start
 
 ```bash
@@ -200,6 +205,7 @@ Key endpoints:
 - `GET /v1/disputes`
 - `GET /v1/onchain/settlement-preview?task_id=...`
 - `POST /v1/onchain/settlement-rpc-plan`
+- `POST /v1/onchain/settlement-raw-bundle`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
