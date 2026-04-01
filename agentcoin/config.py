@@ -105,6 +105,7 @@ class NodeConfig:
                 "poaw_events": f"{self.base_url}/v1/poaw/events",
                 "poaw_summary": f"{self.base_url}/v1/poaw/summary",
                 "disputes": f"{self.base_url}/v1/disputes",
+                "disputes_vote": f"{self.base_url}/v1/disputes/vote",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",
                 "git_diff": f"{self.base_url}/v1/git/diff" if self.git_root else "",
                 "onchain_status": f"{self.base_url}/v1/onchain/status" if self.onchain.enabled else "",

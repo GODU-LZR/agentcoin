@@ -433,6 +433,7 @@ class OnchainRuntime:
         severe_violation = any(str(item.get("severity") or "").strip().lower() in {"high", "critical"} for item in violations)
         quarantined = bool(reputation.get("quarantined"))
         open_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "open"]
+        escalated_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "escalated"]
         upheld_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "upheld"]
         dismissed_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "dismissed"]
 
@@ -441,8 +442,8 @@ class OnchainRuntime:
         if adapter_rejected:
             recommended_resolution = "rejectJob"
             resolution_params = {}
-        elif open_disputes:
-            first = open_disputes[0]
+        elif open_disputes or escalated_disputes:
+            first = (open_disputes or escalated_disputes)[0]
             recommended_resolution = "challengeJob"
             resolution_params = {
                 "evidence_hash": str(first.get("evidence_hash") or ""),
@@ -475,6 +476,7 @@ class OnchainRuntime:
             "reputation": reputation,
             "violation_count": len(violations),
             "open_dispute_count": len(open_disputes),
+            "escalated_dispute_count": len(escalated_disputes),
             "upheld_dispute_count": len(upheld_disputes),
             "dismissed_dispute_count": len(dismissed_disputes),
             "recommended_resolution": recommended_resolution,

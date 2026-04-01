@@ -516,3 +516,61 @@ class NodeStoreTests(unittest.TestCase):
         self.assertIn("dispute-cleared", event_types)
         self.assertIn("dispute-dismissed", event_types)
         self.assertIn("dispute-bond-slashed", event_types)
+
+    def test_committee_votes_can_auto_resolve_or_escalate_dispute(self) -> None:
+        self.store.add_task(TaskEnvelope(id="committee-task", kind="exec", payload={}, role="worker"))
+        opened = self.store.open_dispute(
+            task_id="committee-task",
+            challenger_id="reviewer-committee",
+            actor_id="worker-committee",
+            actor_type="worker",
+            reason="committee challenge",
+            evidence_hash="committee-evidence",
+            severity="medium",
+            committee_quorum=2,
+            committee_deadline="2030-01-01T00:00:00Z",
+        )
+        dispute_id = opened["dispute"]["id"]
+        self.assertEqual(opened["dispute"]["committee_quorum"], 2)
+        self.assertEqual(opened["dispute"]["committee_tally"]["approve"], 0)
+
+        first_vote = self.store.vote_dispute(
+            dispute_id=dispute_id,
+            voter_id="committee-a",
+            decision="approve",
+            note="looks valid",
+        )
+        assert first_vote is not None
+        self.assertEqual(first_vote["status"], "open")
+        self.assertEqual(first_vote["committee_tally"]["approve"], 1)
+        self.assertEqual(len(first_vote["committee_votes"]), 1)
+
+        second_vote = self.store.vote_dispute(
+            dispute_id=dispute_id,
+            voter_id="committee-b",
+            decision="approve",
+            note="confirmed",
+        )
+        assert second_vote is not None
+        self.assertEqual(second_vote["status"], "upheld")
+        self.assertEqual(second_vote["resolution"]["operator_id"], "committee:committee-b")
+
+        committee_actions = self.store.list_governance_actions(actor_id="committee-b")
+        self.assertEqual(committee_actions[0]["action_type"], "dispute-voted")
+
+        opened_escalated = self.store.open_dispute(
+            task_id="committee-task",
+            challenger_id="reviewer-committee-2",
+            actor_id="worker-committee",
+            actor_type="worker",
+            reason="split committee",
+            evidence_hash="committee-evidence-2",
+            severity="medium",
+            committee_quorum=2,
+        )
+        escalated_id = opened_escalated["dispute"]["id"]
+        self.store.vote_dispute(dispute_id=escalated_id, voter_id="committee-c", decision="approve")
+        escalated = self.store.vote_dispute(dispute_id=escalated_id, voter_id="committee-d", decision="abstain")
+        assert escalated is not None
+        self.assertEqual(escalated["status"], "escalated")
+        self.assertEqual(escalated["resolution"]["payload"]["committee_tally"]["abstain"], 1)

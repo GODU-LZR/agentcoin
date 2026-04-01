@@ -163,6 +163,9 @@ class NodeStore:
                     severity TEXT NOT NULL,
                     bond_amount_wei TEXT NOT NULL DEFAULT '0',
                     bond_status TEXT NOT NULL DEFAULT 'none',
+                    committee_votes_json TEXT NOT NULL DEFAULT '[]',
+                    committee_quorum INTEGER NOT NULL DEFAULT 0,
+                    committee_deadline TEXT,
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     resolution_json TEXT,
@@ -223,6 +226,9 @@ class NodeStore:
             self._ensure_column(conn, "outbox", "task_id", "TEXT")
             self._ensure_column(conn, "disputes", "bond_amount_wei", "TEXT NOT NULL DEFAULT '0'")
             self._ensure_column(conn, "disputes", "bond_status", "TEXT NOT NULL DEFAULT 'none'")
+            self._ensure_column(conn, "disputes", "committee_votes_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "disputes", "committee_quorum", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "disputes", "committee_deadline", "TEXT")
             self._ensure_column(conn, "settlement_relays", "final_status", "TEXT NOT NULL DEFAULT 'completed'")
             self._ensure_column(conn, "settlement_relays", "last_successful_index", "INTEGER NOT NULL DEFAULT -1")
             self._ensure_column(conn, "settlement_relays", "next_index", "INTEGER NOT NULL DEFAULT 0")
@@ -674,6 +680,7 @@ class NodeStore:
 
     @staticmethod
     def _dispute_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        committee_votes = json.loads(row["committee_votes_json"] or "[]")
         return {
             "id": row["id"],
             "task_id": row["task_id"],
@@ -685,6 +692,10 @@ class NodeStore:
             "severity": row["severity"],
             "bond_amount_wei": str(row["bond_amount_wei"] or "0"),
             "bond_status": row["bond_status"],
+            "committee_votes": committee_votes,
+            "committee_quorum": int(row["committee_quorum"] or 0),
+            "committee_deadline": row["committee_deadline"],
+            "committee_tally": NodeStore._committee_tally(committee_votes),
             "status": row["status"],
             "payload": json.loads(row["payload_json"] or "{}"),
             "resolution": json.loads(row["resolution_json"]) if row["resolution_json"] else None,
@@ -692,6 +703,15 @@ class NodeStore:
             "updated_at": row["updated_at"],
             "resolved_at": row["resolved_at"],
         }
+
+    @staticmethod
+    def _committee_tally(votes: list[dict[str, Any]] | None) -> dict[str, int]:
+        tally = {"approve": 0, "reject": 0, "abstain": 0}
+        for item in list(votes or []):
+            decision = str(item.get("decision") or "").strip().lower()
+            if decision in tally:
+                tally[decision] += 1
+        return tally
 
     def _insert_score_event(
         self,
@@ -787,12 +807,15 @@ class NodeStore:
         severity: str = "medium",
         evidence_hash: str | None = None,
         bond_amount_wei: str | int | None = None,
+        committee_quorum: int | None = None,
+        committee_deadline: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
         dispute_id = str(uuid4())
         normalized_bond_amount = str(bond_amount_wei or "0").strip() or "0"
         bond_status = "locked" if normalized_bond_amount != "0" else "none"
+        normalized_committee_quorum = max(0, int(committee_quorum or 0))
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -800,8 +823,9 @@ class NodeStore:
                 """
                 INSERT INTO disputes
                 (id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
-                 bond_amount_wei, bond_status, status, payload_json, resolution_json, created_at, updated_at, resolved_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, ?, ?, NULL)
+                 bond_amount_wei, bond_status, committee_votes_json, committee_quorum, committee_deadline,
+                 status, payload_json, resolution_json, created_at, updated_at, resolved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, 'open', ?, NULL, ?, ?, NULL)
                 """,
                 (
                     dispute_id,
@@ -814,6 +838,8 @@ class NodeStore:
                     str(severity or "medium").strip().lower() or "medium",
                     normalized_bond_amount,
                     bond_status,
+                    normalized_committee_quorum,
+                    committee_deadline,
                     json.dumps(payload or {}, ensure_ascii=False),
                     now,
                     now,
@@ -831,6 +857,8 @@ class NodeStore:
                     "evidence_hash": evidence_hash,
                     "bond_amount_wei": normalized_bond_amount,
                     "bond_status": bond_status,
+                    "committee_quorum": normalized_committee_quorum,
+                    "committee_deadline": committee_deadline,
                     "context": payload or {},
                 },
                 created_at=now,
@@ -849,6 +877,10 @@ class NodeStore:
                     "severity": str(severity or "medium").strip().lower() or "medium",
                     "bond_amount_wei": normalized_bond_amount,
                     "bond_status": bond_status,
+                    "committee_votes": [],
+                    "committee_quorum": normalized_committee_quorum,
+                    "committee_deadline": committee_deadline,
+                    "committee_tally": self._committee_tally([]),
                     "status": "open",
                     "payload": payload or {},
                     "resolution": None,
@@ -876,7 +908,7 @@ class NodeStore:
             row = conn.execute(
                 """
                 SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
-                       bond_amount_wei, bond_status,
+                       bond_amount_wei, bond_status, committee_votes_json, committee_quorum, committee_deadline,
                        status, payload_json, resolution_json, created_at, updated_at, resolved_at
                 FROM disputes
                 WHERE id = ?
@@ -1080,7 +1112,7 @@ class NodeStore:
             updated = conn.execute(
                 """
                 SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
-                       bond_amount_wei, bond_status,
+                       bond_amount_wei, bond_status, committee_votes_json, committee_quorum, committee_deadline,
                        status, payload_json, resolution_json, created_at, updated_at, resolved_at
                 FROM disputes
                 WHERE id = ?
@@ -1116,7 +1148,7 @@ class NodeStore:
             rows = conn.execute(
                 f"""
                 SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
-                       bond_amount_wei, bond_status,
+                       bond_amount_wei, bond_status, committee_votes_json, committee_quorum, committee_deadline,
                        status, payload_json, resolution_json, created_at, updated_at, resolved_at
                 FROM disputes
                 {where_clause}
@@ -1126,6 +1158,128 @@ class NodeStore:
                 (*params, limit),
             ).fetchall()
             return [self._dispute_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def vote_dispute(
+        self,
+        *,
+        dispute_id: str,
+        voter_id: str,
+        decision: str,
+        note: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        normalized_decision = str(decision or "").strip().lower()
+        if normalized_decision not in {"approve", "reject", "abstain"}:
+            raise ValueError("decision must be approve, reject, or abstain")
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       bond_amount_wei, bond_status, committee_votes_json, committee_quorum, committee_deadline,
+                       status, payload_json, resolution_json, created_at, updated_at, resolved_at
+                FROM disputes
+                WHERE id = ?
+                """,
+                (dispute_id,),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            if str(row["status"] or "") != "open":
+                conn.commit()
+                return self._dispute_from_row(row)
+            committee_quorum = int(row["committee_quorum"] or 0)
+            if committee_quorum <= 0:
+                raise ValueError("dispute does not require committee voting")
+            votes = json.loads(row["committee_votes_json"] or "[]")
+            filtered_votes = [item for item in votes if str(item.get("voter_id") or "") != voter_id]
+            filtered_votes.append(
+                {
+                    "voter_id": voter_id,
+                    "decision": normalized_decision,
+                    "note": note,
+                    "payload": payload or {},
+                    "created_at": now,
+                }
+            )
+            conn.execute(
+                """
+                UPDATE disputes
+                SET committee_votes_json = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(filtered_votes, ensure_ascii=False),
+                    now,
+                    dispute_id,
+                ),
+            )
+            tally = self._committee_tally(filtered_votes)
+            self._insert_governance_action(
+                conn,
+                actor_id=voter_id,
+                actor_type="reviewer",
+                action_type="dispute-voted",
+                reason=f"committee vote: {normalized_decision}",
+                payload={
+                    "dispute_id": dispute_id,
+                    "task_id": row["task_id"],
+                    "decision": normalized_decision,
+                    "committee_quorum": committee_quorum,
+                    "committee_tally": tally,
+                },
+                created_at=now,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        resolution_status = None
+        resolution_reason = None
+        tally = self._committee_tally(filtered_votes)
+        if tally["approve"] >= committee_quorum:
+            resolution_status = "upheld"
+            resolution_reason = "committee quorum approved challenge"
+        elif tally["reject"] >= committee_quorum:
+            resolution_status = "dismissed"
+            resolution_reason = "committee quorum rejected challenge"
+        elif len(filtered_votes) >= committee_quorum and max(tally["approve"], tally["reject"]) < committee_quorum:
+            resolution_status = "escalated"
+            resolution_reason = "committee reached quorum without decisive outcome"
+
+        if resolution_status:
+            return self.resolve_dispute(
+                dispute_id=dispute_id,
+                resolution_status=resolution_status,
+                reason=resolution_reason or "committee resolution",
+                operator_id=f"committee:{voter_id}",
+                payload={
+                    "committee_votes": filtered_votes,
+                    "committee_tally": tally,
+                    "committee_quorum": committee_quorum,
+                },
+            )
+        return self.get_dispute(dispute_id)
+
+    def get_dispute(self, dispute_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       bond_amount_wei, bond_status, committee_votes_json, committee_quorum, committee_deadline,
+                       status, payload_json, resolution_json, created_at, updated_at, resolved_at
+                FROM disputes
+                WHERE id = ?
+                """,
+                (dispute_id,),
+            ).fetchone()
+            return self._dispute_from_row(row) if row else None
         finally:
             conn.close()
 

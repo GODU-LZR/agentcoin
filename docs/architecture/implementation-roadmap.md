@@ -21,7 +21,7 @@ Status legend:
 
 ## Phase 2
 
-- `[~]` challenge bond local skeleton
+- `[x]` challenge bond local skeleton
 - `[x]` disputes include `bond_amount_wei`
 - `[x]` disputes include `bond_status`
 - `[x]` challenger bond required config
@@ -32,14 +32,14 @@ Status legend:
 
 ## Phase 3
 
-- `[ ]` dispute committee local skeleton
-- `[ ]` committee member role in capability schema
-- `[ ]` dispute `committee_votes`
-- `[ ]` dispute `quorum`
-- `[ ]` dispute `deadline`
-- `[ ]` `approve / reject / abstain`
-- `[ ]` committee result -> `upheld / dismissed / escalated`
-- `[ ]` replay-inspect committee timeline
+- `[x]` dispute committee local skeleton
+- `[x]` committee member role in capability schema
+- `[x]` dispute `committee_votes`
+- `[x]` dispute `quorum`
+- `[x]` dispute `deadline`
+- `[x]` `approve / reject / abstain`
+- `[x]` committee result -> `upheld / dismissed / escalated`
+- `[x]` replay-inspect committee timeline
 
 ## Phase 4
 

@@ -243,6 +243,7 @@ Key endpoints:
 - `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/dispatch/evaluate`
 - `POST /v1/disputes`
+- `POST /v1/disputes/vote`
 - `POST /v1/disputes/resolve`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`

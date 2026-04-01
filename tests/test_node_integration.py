@@ -390,6 +390,7 @@ class NodeIntegrationTests(unittest.TestCase):
             capability_ids = {item["id"] for item in capability_schema["capabilities"]}
             self.assertIn("reviewer", capability_ids)
             self.assertIn("ai-reviewer", capability_ids)
+            self.assertIn("committee-member", capability_ids)
 
             _, examples = self._get(f"{node.base_url}/v1/schema/examples")
             self.assertEqual(examples["task_envelope"]["@type"], "agentcoin:TaskEnvelope")
@@ -2018,6 +2019,131 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(preview_after_upheld["settlement"]["recommended_resolution"], "slashJob")
             self.assertEqual(preview_after_upheld["settlement"]["upheld_dispute_count"], 1)
             self.assertEqual(preview_after_upheld["settlement"]["intents"][1]["function"], "slashJob")
+        finally:
+            node.stop()
+
+    def test_dispute_committee_votes_can_resolve_or_escalate(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:committee-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="committee-node",
+            token="token-committee",
+            db_path=str(Path(self.tempdir.name) / "committee.db"),
+            capabilities=["worker", "committee-member"],
+            signing_secret="committee-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-committee",
+                {
+                    "id": "committee-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 89,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-committee",
+                {"worker_id": "worker-committee-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-committee",
+                {
+                    "task_id": "committee-task-1",
+                    "worker_id": "worker-committee-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-committee-1"},
+                },
+            )
+
+            _, opened = self._post(
+                f"{node.base_url}/v1/disputes",
+                "token-committee",
+                {
+                    "task_id": "committee-task-1",
+                    "challenger_id": "reviewer-committee-1",
+                    "actor_id": "worker-committee-1",
+                    "actor_type": "worker",
+                    "reason": "committee review requested",
+                    "evidence_hash": "committee-evidence-1",
+                    "severity": "high",
+                    "committee_quorum": 2,
+                    "committee_deadline": "2030-01-01T00:00:00Z",
+                },
+            )
+            dispute_id = opened["dispute"]["id"]
+            self.assertEqual(opened["dispute"]["committee_quorum"], 2)
+
+            _, vote_one = self._post(
+                f"{node.base_url}/v1/disputes/vote",
+                "token-committee",
+                {"dispute_id": dispute_id, "voter_id": "committee-a", "decision": "approve"},
+            )
+            self.assertEqual(vote_one["dispute"]["status"], "open")
+            self.assertEqual(vote_one["dispute"]["committee_tally"]["approve"], 1)
+
+            _, vote_two = self._post(
+                f"{node.base_url}/v1/disputes/vote",
+                "token-committee",
+                {"dispute_id": dispute_id, "voter_id": "committee-b", "decision": "approve"},
+            )
+            self.assertEqual(vote_two["dispute"]["status"], "upheld")
+            self.assertEqual(vote_two["dispute"]["resolution"]["operator_id"], "committee:committee-b")
+
+            _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=committee-task-1")
+            self.assertEqual(preview["settlement"]["recommended_resolution"], "slashJob")
+
+            _, opened_two = self._post(
+                f"{node.base_url}/v1/disputes",
+                "token-committee",
+                {
+                    "task_id": "committee-task-1",
+                    "challenger_id": "reviewer-committee-2",
+                    "actor_id": "worker-committee-1",
+                    "actor_type": "worker",
+                    "reason": "committee split vote",
+                    "evidence_hash": "committee-evidence-2",
+                    "severity": "medium",
+                    "committee_quorum": 2,
+                },
+            )
+            split_id = opened_two["dispute"]["id"]
+            self._post(
+                f"{node.base_url}/v1/disputes/vote",
+                "token-committee",
+                {"dispute_id": split_id, "voter_id": "committee-c", "decision": "approve"},
+            )
+            _, split_vote = self._post(
+                f"{node.base_url}/v1/disputes/vote",
+                "token-committee",
+                {"dispute_id": split_id, "voter_id": "committee-d", "decision": "abstain"},
+            )
+            self.assertEqual(split_vote["dispute"]["status"], "escalated")
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=committee-task-1")
+            escalated = [item for item in replay["disputes"] if item["id"] == split_id][0]
+            self.assertEqual(escalated["committee_tally"]["abstain"], 1)
+
+            _, preview_escalated = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=committee-task-1")
+            self.assertEqual(preview_escalated["settlement"]["recommended_resolution"], "challengeJob")
+            self.assertEqual(preview_escalated["settlement"]["escalated_dispute_count"], 1)
         finally:
             node.stop()
 

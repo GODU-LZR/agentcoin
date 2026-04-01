@@ -11,6 +11,7 @@ CAPABILITY_PROFILES: dict[str, dict[str, list[str] | str]] = {
     "reviewer": {"title": "Reviewer", "aliases": ["review"], "implies": []},
     "ai-reviewer": {"title": "AI Reviewer", "aliases": ["ai-review", "llm-reviewer"], "implies": ["reviewer"]},
     "human-reviewer": {"title": "Human Reviewer", "aliases": ["human-review"], "implies": ["reviewer"]},
+    "committee-member": {"title": "Dispute Committee Member", "aliases": ["juror", "arbiter"], "implies": ["reviewer"]},
     "planner": {"title": "Planner", "aliases": ["coordinator", "orchestrator"], "implies": []},
     "task-routing": {"title": "Task Router", "aliases": ["dispatcher", "router"], "implies": ["planner"]},
     "local-command": {"title": "Local Command Executor", "aliases": ["shell", "cli-tool"], "implies": ["worker"]},

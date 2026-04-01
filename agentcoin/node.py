@@ -1658,9 +1658,32 @@ class AgentCoinNode:
                                 str(payload.get("bond_amount_wei") or "").strip()
                                 or str(node.config.challenge_bond_required_wei)
                             ),
+                            committee_quorum=int(payload.get("committee_quorum") or 0),
+                            committee_deadline=str(payload.get("committee_deadline") or "").strip() or None,
                             payload=dict(payload.get("payload") or {}),
                         )
                         self._json_response(HTTPStatus.CREATED, result)
+                        return
+                    if self.path == "/v1/disputes/vote":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        dispute_id = str(payload.get("dispute_id") or "").strip()
+                        voter_id = str(payload.get("voter_id") or "").strip()
+                        decision = str(payload.get("decision") or "").strip()
+                        if not dispute_id or not voter_id or not decision:
+                            raise ValueError("dispute_id, voter_id, and decision are required")
+                        result = node.store.vote_dispute(
+                            dispute_id=dispute_id,
+                            voter_id=voter_id,
+                            decision=decision,
+                            note=str(payload.get("note") or "").strip() or None,
+                            payload=dict(payload.get("payload") or {}),
+                        )
+                        if not result:
+                            self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
+                            return
+                        self._json_response(HTTPStatus.OK, {"ok": True, "dispute": result})
                         return
                     if self.path == "/v1/disputes/resolve":
                         if not self._require_auth():
