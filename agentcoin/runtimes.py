@@ -35,6 +35,12 @@ class RuntimeRegistry:
                 title="HTTP JSON Runtime Adapter",
                 description="Execute a task by forwarding a normalized envelope to an HTTP JSON agent runtime.",
             ),
+            "openai-chat": RuntimeAdapterDescriptor(
+                runtime="openai-chat",
+                version="0.1",
+                title="OpenAI-Compatible Chat Adapter",
+                description="Execute a task by calling an OpenAI-compatible chat completions endpoint, including OpenClaw Gateway.",
+            ),
             "ollama-chat": RuntimeAdapterDescriptor(
                 runtime="ollama-chat",
                 version="0.1",

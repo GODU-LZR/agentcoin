@@ -80,6 +80,7 @@ flowchart TB
 - 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
 - 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)
 - Agent 适配策略：[docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
+- OpenClaw 集成：[docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 - 链上路线图：[docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - 蓝图偏差检查：[docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - 通信说明：[docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
@@ -132,6 +133,7 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `GET /v1/runtimes` 可列出内置 runtime adapter
 - `POST /v1/runtimes/bind` 可把 runtime adapter 绑定到已有任务
 - `http-json` 可通过同一套出站网络策略调用 HTTP Agent
+- `openai-chat` 可调用 OpenAI 兼容网关，包括 OpenClaw Gateway
 - `ollama-chat` 可直接调用本地 Ollama 兼容聊天接口，适合离线和私有部署
 - `cli-json` 可通过 stdin/stdout JSON 调用本地 CLI Agent 包装器
 - bridge adapter 和 runtime adapter 被刻意拆开，协议兼容不再强绑定执行方式

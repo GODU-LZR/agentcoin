@@ -73,6 +73,7 @@ flowchart TB
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
 - Agent adapter strategy: [docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
+- OpenClaw integration: [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 - On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
@@ -125,6 +126,7 @@ worker runtime には最初の agent-adapter layer も追加しました。
 - `GET /v1/runtimes` で built-in runtime adapter を列挙できます
 - `POST /v1/runtimes/bind` で既存 task に runtime adapter を束ねられます
 - `http-json` は同じ outbound transport policy を使って HTTP agent runtime を呼び出せます
+- `openai-chat` は OpenAI-compatible gateway を呼び出せるので、OpenClaw Gateway にもそのまま接続できます
 - `ollama-chat` は local Ollama 互換 chat endpoint を呼び出せるので、offline と private execution に向きます
 - `cli-json` は stdin/stdout JSON で local CLI agent wrapper を実行できます
 - bridge adapter と runtime adapter を分けることで、protocol compatibility と execution mode を分離しています

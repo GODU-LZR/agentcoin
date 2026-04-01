@@ -144,6 +144,7 @@ Current runtime adapter capabilities:
 - `POST /v1/runtimes/bind` can attach runtime metadata to an existing task
 - `payload._runtime` can route execution into:
   - `http-json`
+  - `openai-chat`
   - `ollama-chat`
   - `cli-json`
 - runtime policy can restrict allowed runtime kinds and allowed HTTP hosts

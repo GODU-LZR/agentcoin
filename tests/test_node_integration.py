@@ -223,6 +223,64 @@ class OllamaHarness:
         self.thread.join(timeout=2)
 
 
+class OpenAICompatHarness:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.headers: list[dict[str, str]] = []
+        self.port = _free_port()
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), self._build_handler())
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/v1/chat/completions"
+
+    def _build_handler(self) -> type[BaseHTTPRequestHandler]:
+        harness = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                payload = json.loads(raw.decode("utf-8"))
+                harness.calls.append(payload)
+                harness.headers.append({key: value for key, value in self.headers.items()})
+                response = {
+                    "id": "chatcmpl-openclaw-1",
+                    "object": "chat.completion",
+                    "model": payload.get("model"),
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": f"openai:{payload.get('messages', [{}])[-1].get('content', '')}",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    def start(self) -> None:
+        self.thread.start()
+        time.sleep(0.2)
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self.thread.join(timeout=2)
+
+
 class NodeIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -1644,6 +1702,75 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
             ollama.stop()
+
+    def test_runtime_adapter_openai_chat_for_openclaw_gateway(self) -> None:
+        gateway = OpenAICompatHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-openai-node",
+            token="token-openai",
+            db_path=str(Path(self.tempdir.name) / "runtime-openai.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("openai-chat", runtime_names)
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-openai",
+                {
+                    "id": "runtime-openai-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "hello openclaw"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/runtimes/bind",
+                "token-openai",
+                {
+                    "task_id": "runtime-openai-1",
+                    "runtime": "openai-chat",
+                    "options": {
+                        "endpoint": gateway.url,
+                        "model": "openclaw/gateway",
+                        "prompt": "hello openclaw",
+                        "auth_token": "gw-secret-token",
+                        "temperature": 0,
+                        "timeout_seconds": 10,
+                    },
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "openai-chat")
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-openai",
+                worker_id="worker-openai-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["openai-chat"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-openai-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "openai-chat")
+            self.assertEqual(task["result"]["adapter"]["model"], "openclaw/gateway")
+            self.assertEqual(task["result"]["runtime_execution"]["assistant_message"]["content"], "openai:hello openclaw")
+            self.assertEqual(gateway.calls[0]["model"], "openclaw/gateway")
+            self.assertEqual(gateway.calls[0]["messages"][0]["content"], "hello openclaw")
+            self.assertEqual(gateway.headers[0]["Authorization"], "Bearer gw-secret-token")
+        finally:
+            node.stop()
+            gateway.stop()
 
     def test_adapter_policy_allows_sandboxed_local_command(self) -> None:
         workspace = Path(self.tempdir.name) / "workspace"

@@ -164,6 +164,8 @@ class ExecutionAdapterRegistry:
             )
         if runtime_kind == "http-json":
             return self._execute_http_runtime(task, runtime=runtime, worker_id=worker_id)
+        if runtime_kind == "openai-chat":
+            return self._execute_openai_chat_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "ollama-chat":
             return self._execute_ollama_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "cli-json":
@@ -363,6 +365,33 @@ class ExecutionAdapterRegistry:
             content = json.dumps(prompt, ensure_ascii=False)
         return [{"role": "user", "content": content}]
 
+    @staticmethod
+    def _normalize_openai_messages(task: dict[str, Any], runtime: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_messages = runtime.get("messages") or task.get("payload", {}).get("messages")
+        if isinstance(raw_messages, list) and raw_messages:
+            normalized: list[dict[str, Any]] = []
+            for item in raw_messages:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "user").strip() or "user"
+                content = item.get("content")
+                if isinstance(content, (dict, list)):
+                    normalized.append({"role": role, "content": content})
+                else:
+                    normalized.append({"role": role, "content": str(content or "")})
+            if normalized:
+                return normalized
+        prompt = runtime.get("prompt")
+        if prompt is None:
+            prompt = task.get("payload", {}).get("input")
+        if prompt is None:
+            prompt = task.get("payload", {})
+        if isinstance(prompt, str):
+            content = prompt
+        else:
+            content = json.dumps(prompt, ensure_ascii=False)
+        return [{"role": "user", "content": content}]
+
     def _execute_ollama_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
         endpoint = str(runtime.get("endpoint") or "http://127.0.0.1:11434/api/chat").strip()
         if not self.policy.http_host_allowed(endpoint):
@@ -439,6 +468,96 @@ class ExecutionAdapterRegistry:
             "endpoint": endpoint,
             "model": model,
             "done": bool(response.get("done")),
+        }
+        return result
+
+    def _execute_openai_chat_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        endpoint = str(runtime.get("endpoint") or "").strip()
+        if not endpoint:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:openai-chat",
+                reason="runtime.endpoint is required",
+                extra={"runtime": "openai-chat"},
+            )
+        if not self.policy.http_host_allowed(endpoint):
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:openai-chat",
+                reason="runtime endpoint host is not allowlisted",
+                extra={"runtime": "openai-chat", "endpoint": endpoint},
+            )
+        model = str(runtime.get("model") or "").strip()
+        if not model:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:openai-chat",
+                reason="runtime.model is required",
+                extra={"runtime": "openai-chat", "endpoint": endpoint},
+            )
+        request_body: dict[str, Any] = {
+            "model": model,
+            "messages": self._normalize_openai_messages(task, runtime),
+        }
+        for optional_key in ("temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "stream"):
+            if optional_key in runtime:
+                request_body[optional_key] = runtime.get(optional_key)
+        headers = {"Content-Type": "application/json"}
+        headers.update(dict(runtime.get("headers") or {}))
+        auth_token = str(runtime.get("auth_token") or "").strip()
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        try:
+            response = self.transport.request_json(
+                endpoint,
+                method="POST",
+                payload=request_body,
+                headers=headers,
+                timeout=float(runtime.get("timeout_seconds") or 60),
+            )
+        except Exception as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:openai-chat",
+                reason=str(exc),
+                extra={"runtime": "openai-chat", "endpoint": endpoint, "model": model},
+            )
+        choices = list(response.get("choices") or [])
+        first_choice = dict(choices[0] or {}) if choices else {}
+        assistant_message = dict(first_choice.get("message") or {})
+        result = self._base_result(task, worker_id=worker_id)
+        result["adapter"] = {
+            "mode": "runtime-adapter",
+            "protocol": "openai-chat",
+            "status": "completed",
+            "endpoint": endpoint,
+            "model": model,
+        }
+        result["policy_receipt"] = {
+            "mode": "runtime-adapter",
+            "protocol": "openai-chat",
+            "decision": "allowed",
+            "runtime": "openai-chat",
+            "endpoint": endpoint,
+            "model": model,
+        }
+        result["runtime_execution"] = {
+            "runtime": "openai-chat",
+            "endpoint": endpoint,
+            "request": {key: value for key, value in request_body.items() if key != "messages"} | {"messages": request_body["messages"]},
+            "response": response,
+            "assistant_message": assistant_message,
+            "finish_reason": first_choice.get("finish_reason"),
+        }
+        result["execution_receipt"] = {
+            "protocol": "openai-chat",
+            "endpoint": endpoint,
+            "model": model,
+            "response_id": response.get("id"),
         }
         return result
 

@@ -25,6 +25,7 @@ They write protocol context into `payload._bridge`.
 These decide how a worker actually invokes an agent runtime.
 
 - `http-json`
+- `openai-chat`
 - `ollama-chat`
 - `cli-json`
 
@@ -114,6 +115,32 @@ Task binding shape:
 
 The worker sends a non-streaming Ollama-style chat request and normalizes the assistant message into the task result.
 
+### 4. OpenAI-Compatible Chat Agent
+
+Best for:
+
+- OpenClaw Gateway
+- OpenAI-compatible gateways
+- model routers that already expose `/v1/chat/completions`
+
+Task binding shape:
+
+```json
+{
+  "_runtime": {
+    "runtime": "openai-chat",
+    "endpoint": "http://127.0.0.1:3000/v1/chat/completions",
+    "model": "openclaw/gateway",
+    "auth_token": "replace-me",
+    "prompt": "Review this task",
+    "temperature": 0,
+    "timeout_seconds": 60
+  }
+}
+```
+
+The worker sends an OpenAI-compatible chat completions request and normalizes the first assistant message into the task result.
+
 ## How To Adapt Common Agent Categories
 
 ### LangGraph / custom Python agents
@@ -131,6 +158,13 @@ The worker sends a non-streaming Ollama-style chat request and normalizes the as
 - expose a narrow HTTP execution endpoint
 - map incoming task payload into that framework's planner/worker call
 - return normalized JSON result
+
+### OpenClaw Gateway
+
+- use `openai-chat`
+- point `endpoint` to the gateway chat-completions path
+- keep AgentCoin responsible for routing, receipts, retry, and governance
+- keep OpenClaw responsible for model execution
 
 ### Ollama-hosted local models
 

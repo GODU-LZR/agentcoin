@@ -77,6 +77,7 @@ flowchart TB
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
 - Agent adapter strategy: [docs/architecture/agent-adapters.md](docs/architecture/agent-adapters.md)
+- OpenClaw integration: [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 - On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
@@ -132,6 +133,7 @@ The worker runtime now also has a first agent-adapter layer:
 - `GET /v1/runtimes` lists built-in runtime adapters
 - `POST /v1/runtimes/bind` can attach a runtime adapter to an existing task
 - `http-json` can call an HTTP agent runtime through the same outbound transport policy
+- `openai-chat` can call an OpenAI-compatible gateway, including OpenClaw Gateway
 - `ollama-chat` can call a local Ollama-compatible chat endpoint for offline and private execution
 - `cli-json` can invoke a local agent wrapper over stdin/stdout JSON
 - bridge adapters and runtime adapters are intentionally separate, so protocol import/export does not have to dictate execution mode
