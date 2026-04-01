@@ -134,6 +134,8 @@ class OnchainRuntime:
             return self._accept_job_intent(task, params=params)
         if normalized == "submitWork":
             return self._submit_work_intent(task, params=params)
+        if normalized == "challengeJob":
+            return self._challenge_job_intent(task, params=params)
         if normalized == "completeJob":
             return self._complete_job_intent(task, params=params)
         if normalized == "rejectJob":
@@ -417,9 +419,11 @@ class OnchainRuntime:
         poaw_summary: dict[str, Any],
         reputation: dict[str, Any] | None = None,
         violations: list[dict[str, Any]] | None = None,
+        disputes: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         reputation = reputation or {}
         violations = list(violations or [])
+        disputes = list(disputes or [])
         result = dict(task.get("result") or {})
         adapter = dict(result.get("adapter") or {})
         adapter_rejected = str(adapter.get("status") or "").strip().lower() == "rejected"
@@ -428,12 +432,19 @@ class OnchainRuntime:
         slash_amount = self.slash_amount_wei(poaw_summary)
         severe_violation = any(str(item.get("severity") or "").strip().lower() in {"high", "critical"} for item in violations)
         quarantined = bool(reputation.get("quarantined"))
+        open_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "open"]
 
         recommended_resolution = "completeJob"
         resolution_params: dict[str, Any] = {"score": score}
         if adapter_rejected:
             recommended_resolution = "rejectJob"
             resolution_params = {}
+        elif open_disputes:
+            first = open_disputes[0]
+            recommended_resolution = "challengeJob"
+            resolution_params = {
+                "evidence_hash": str(first.get("evidence_hash") or ""),
+            }
         elif quarantined or severe_violation or negative_points <= -30:
             recommended_resolution = "slashJob"
             resolution_params = {
@@ -453,6 +464,7 @@ class OnchainRuntime:
             "poaw_summary": poaw_summary,
             "reputation": reputation,
             "violation_count": len(violations),
+            "open_dispute_count": len(open_disputes),
             "recommended_resolution": recommended_resolution,
             "recommended_sequence": sequence,
             "score": score,
@@ -540,6 +552,28 @@ class OnchainRuntime:
                     "jobId": int(job_id),
                     "submissionHash": as_bytes32_hex(submission_hash),
                     "resultURI": str(receipt_uri or ""),
+                },
+            }
+        )
+        return intent
+
+    def _challenge_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        job_id = onchain.get("job_id")
+        if job_id is None:
+            raise ValueError("task is not bound to an onchain job_id")
+        evidence_hash = str(params.get("evidence_hash") or "").strip()
+        if not evidence_hash:
+            raise ValueError("evidence_hash is required")
+        intent = self._intent_base(action="challengeJob", task=task, params=params)
+        intent.update(
+            {
+                "value_wei": "0",
+                "function": "challengeJob",
+                "signature": "challengeJob(uint256,bytes32)",
+                "args": {
+                    "jobId": int(job_id),
+                    "evidenceHash": as_bytes32_hex(evidence_hash),
                 },
             }
         )

@@ -425,3 +425,39 @@ class NodeStoreTests(unittest.TestCase):
         claim = self.store.claim_task(worker_id="worker-manual", worker_capabilities=["worker"], lease_seconds=30)
         self.assertIsNotNone(claim)
         self.assertEqual(claim["id"], "queued-manual")
+
+    def test_open_and_resolve_dispute_records_governance_history(self) -> None:
+        self.store.add_task(TaskEnvelope(id="dispute-task", kind="exec", payload={}, role="worker"))
+        opened = self.store.open_dispute(
+            task_id="dispute-task",
+            challenger_id="reviewer-1",
+            actor_id="worker-disputed",
+            actor_type="worker",
+            reason="output quality challenge",
+            evidence_hash="evidence-123",
+            severity="high",
+            payload={"notes": "needs recheck"},
+        )
+        self.assertTrue(opened["ok"])
+        self.assertEqual(opened["dispute"]["status"], "open")
+        self.assertEqual(opened["dispute"]["evidence_hash"], "evidence-123")
+
+        disputes = self.store.list_disputes(task_id="dispute-task", status="open")
+        self.assertEqual(len(disputes), 1)
+        self.assertEqual(disputes[0]["challenger_id"], "reviewer-1")
+
+        resolved = self.store.resolve_dispute(
+            dispute_id=disputes[0]["id"],
+            resolution_status="upheld",
+            reason="manual review confirmed issue",
+            operator_id="operator-1",
+            payload={"score_delta": -10},
+        )
+        assert resolved is not None
+        self.assertEqual(resolved["status"], "upheld")
+        self.assertEqual(resolved["resolution"]["operator_id"], "operator-1")
+
+        actions = self.store.list_governance_actions(actor_id="worker-disputed")
+        action_types = {item["action_type"] for item in actions}
+        self.assertIn("dispute-opened", action_types)
+        self.assertIn("dispute-resolved", action_types)

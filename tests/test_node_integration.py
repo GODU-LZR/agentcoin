@@ -1877,6 +1877,106 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_dispute_api_drives_challenge_job_preview(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:challenge-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="challenge-node",
+            token="token-challenge",
+            db_path=str(Path(self.tempdir.name) / "challenge.db"),
+            capabilities=["worker"],
+            signing_secret="challenge-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-challenge",
+                {
+                    "id": "challenge-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 88,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-challenge",
+                {"worker_id": "worker-challenge-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-challenge",
+                {
+                    "task_id": "challenge-task-1",
+                    "worker_id": "worker-challenge-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-challenge-1"},
+                },
+            )
+
+            dispute_status, dispute_payload = self._post(
+                f"{node.base_url}/v1/disputes",
+                "token-challenge",
+                {
+                    "task_id": "challenge-task-1",
+                    "challenger_id": "reviewer-challenge-1",
+                    "actor_id": "worker-challenge-1",
+                    "actor_type": "worker",
+                    "reason": "deterministic check mismatch",
+                    "evidence_hash": "evidence-hash-1",
+                    "severity": "high",
+                    "payload": {"oracle": "ci-runner"},
+                },
+            )
+            self.assertEqual(dispute_status, 201)
+            self.assertEqual(dispute_payload["dispute"]["status"], "open")
+
+            _, disputes = self._get(f"{node.base_url}/v1/disputes?task_id=challenge-task-1&status=open")
+            self.assertEqual(len(disputes["items"]), 1)
+            self.assertEqual(disputes["items"][0]["challenger_id"], "reviewer-challenge-1")
+
+            _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
+            settlement = preview["settlement"]
+            self.assertEqual(settlement["recommended_sequence"], ["submitWork", "challengeJob"])
+            self.assertEqual(settlement["recommended_resolution"], "challengeJob")
+            self.assertEqual(settlement["open_dispute_count"], 1)
+            self.assertEqual(settlement["intents"][1]["function"], "challengeJob")
+            self.assertTrue(settlement["intents"][1]["args"]["evidenceHash"].startswith("0x"))
+            self.assertEqual(len(settlement["intents"][1]["args"]["evidenceHash"]), 66)
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=challenge-task-1")
+            self.assertEqual(len(replay["disputes"]), 1)
+            self.assertEqual(replay["onchain_settlement_preview"]["recommended_resolution"], "challengeJob")
+
+            resolve_status, resolved = self._post(
+                f"{node.base_url}/v1/disputes/resolve",
+                "token-challenge",
+                {
+                    "dispute_id": disputes["items"][0]["id"],
+                    "resolution_status": "dismissed",
+                    "reason": "challenge dismissed after review",
+                    "operator_id": "operator-challenge-1",
+                },
+            )
+            self.assertEqual(resolve_status, 200)
+            self.assertEqual(resolved["dispute"]["status"], "dismissed")
+        finally:
+            node.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",

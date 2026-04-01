@@ -153,6 +153,7 @@ runtime には最小の on-chain settlement preview も追加しました。
 
 - `GET /v1/onchain/settlement-preview?task_id=...` で completed task を推奨 on-chain action に変換できます
 - preview は local `PoAW` summary、task-specific violation、worker reputation を合わせて評価します
+- open dispute がある場合は recommendation を `challengeJob` に寄せます
 - これは signed preview であり、自動送信ではありません
 
 ### Quick Start
@@ -191,6 +192,7 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/schema/examples`
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
+- `GET /v1/disputes`
 - `GET /v1/onchain/settlement-preview?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
@@ -214,6 +216,8 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/dispatch/evaluate`
+- `POST /v1/disputes`
+- `POST /v1/disputes/resolve`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`

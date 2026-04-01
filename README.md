@@ -160,6 +160,7 @@ The runtime now also has a first on-chain settlement preview:
 
 - `GET /v1/onchain/settlement-preview?task_id=...` maps a completed task into recommended on-chain actions
 - the preview combines local `PoAW` summaries, task-specific violations, and worker reputation
+- open disputes can now shift the recommendation toward `challengeJob`
 - the result is a signed operator preview, not an auto-broadcasted settlement
 
 ### Quick Start
@@ -190,6 +191,7 @@ Key endpoints:
 - `GET /v1/schema/examples`
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
+- `GET /v1/disputes`
 - `GET /v1/onchain/settlement-preview?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
@@ -213,6 +215,8 @@ Key endpoints:
 - `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/dispatch/evaluate`
+- `POST /v1/disputes`
+- `POST /v1/disputes/resolve`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
 - `POST /v1/runtimes/bind`

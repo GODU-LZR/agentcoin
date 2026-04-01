@@ -287,11 +287,13 @@ class AgentCoinNode:
         reputation = self.store.get_actor_reputation(worker_id, actor_type="worker") if worker_id else {}
         violations = self.store.list_policy_violations(actor_id=worker_id, limit=200) if worker_id else []
         violations = [item for item in violations if item.get("task_id") == task.get("id")]
+        disputes = self.store.list_disputes(task_id=str(task.get("id") or ""), limit=200)
         preview = self.onchain.settlement_preview(
             task,
             poaw_summary=self.store.summarize_score_events(task_id=str(task.get("id") or "")),
             reputation=reputation,
             violations=violations,
+            disputes=disputes,
         )
         return self._sign_document(
             preview,
@@ -681,6 +683,23 @@ class AgentCoinNode:
                     limit = int((query.get("limit") or ["200"])[0])
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_governance_actions(actor_id=actor_id, limit=limit)})
                     return
+                if path == "/v1/disputes":
+                    task_id = (query.get("task_id") or [None])[0]
+                    challenger_id = (query.get("challenger_id") or [None])[0]
+                    status_name = (query.get("status") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "items": node.store.list_disputes(
+                                task_id=task_id,
+                                challenger_id=challenger_id,
+                                status=status_name,
+                                limit=limit,
+                            )
+                        },
+                    )
+                    return
                 if path == "/v1/bridges":
                     self._json_response(HTTPStatus.OK, {"items": node.bridges.list_bridges()})
                     return
@@ -746,6 +765,7 @@ class AgentCoinNode:
                             "audits": node.store.list_execution_audits(task_id=task_id, limit=200),
                             "poaw_events": node.store.list_score_events(task_id=task_id, limit=200),
                             "poaw_summary": node.store.summarize_score_events(task_id=task_id),
+                            "disputes": node.store.list_disputes(task_id=task_id, limit=200),
                             "bridge_export_preview": export_preview,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
@@ -1276,6 +1296,48 @@ class AgentCoinNode:
                             ),
                         )
                         self._json_response(HTTPStatus.OK, result)
+                        return
+                    if self.path == "/v1/disputes":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        challenger_id = str(payload.get("challenger_id") or "").strip()
+                        reason = str(payload.get("reason") or "").strip()
+                        if not task_id or not challenger_id or not reason:
+                            raise ValueError("task_id, challenger_id, and reason are required")
+                        result = node.store.open_dispute(
+                            task_id=task_id,
+                            challenger_id=challenger_id,
+                            actor_id=str(payload.get("actor_id") or "").strip() or None,
+                            actor_type=str(payload.get("actor_type") or "worker").strip() or "worker",
+                            reason=reason,
+                            evidence_hash=str(payload.get("evidence_hash") or "").strip() or None,
+                            severity=str(payload.get("severity") or "medium").strip() or "medium",
+                            payload=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.CREATED, result)
+                        return
+                    if self.path == "/v1/disputes/resolve":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        dispute_id = str(payload.get("dispute_id") or "").strip()
+                        resolution_status = str(payload.get("resolution_status") or "").strip()
+                        reason = str(payload.get("reason") or "").strip()
+                        if not dispute_id or not resolution_status or not reason:
+                            raise ValueError("dispute_id, resolution_status, and reason are required")
+                        result = node.store.resolve_dispute(
+                            dispute_id=dispute_id,
+                            resolution_status=resolution_status,
+                            reason=reason,
+                            operator_id=str(payload.get("operator_id") or "").strip() or None,
+                            payload=dict(payload.get("payload") or {}),
+                        )
+                        if not result:
+                            self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
+                            return
+                        self._json_response(HTTPStatus.OK, {"ok": True, "dispute": result})
                         return
                     if self.path == "/v1/git/branch":
                         if not self._require_auth():

@@ -152,6 +152,22 @@ class NodeStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS disputes (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    challenger_id TEXT NOT NULL,
+                    actor_id TEXT,
+                    actor_type TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_hash TEXT,
+                    severity TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    resolution_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    resolved_at TEXT
+                );
                 CREATE TABLE IF NOT EXISTS score_events (
                     id TEXT PRIMARY KEY,
                     actor_id TEXT NOT NULL,
@@ -481,6 +497,7 @@ class NodeStore:
             policy_violations = conn.execute("SELECT COUNT(*) FROM policy_violations").fetchone()[0]
             active_quarantines = conn.execute("SELECT COUNT(*) FROM quarantines WHERE active = 1").fetchone()[0]
             governance_actions = conn.execute("SELECT COUNT(*) FROM governance_actions").fetchone()[0]
+            disputes_open = conn.execute("SELECT COUNT(*) FROM disputes WHERE status = 'open'").fetchone()[0]
             score_events = conn.execute("SELECT COUNT(*) FROM score_events").fetchone()[0]
             return {
                 "tasks": task_count,
@@ -502,6 +519,7 @@ class NodeStore:
                 "policy_violations": policy_violations,
                 "quarantines_active": active_quarantines,
                 "governance_actions": governance_actions,
+                "disputes_open": disputes_open,
                 "score_events": score_events,
             }
         finally:
@@ -626,6 +644,25 @@ class NodeStore:
             "created_at": row["created_at"],
         }
 
+    @staticmethod
+    def _dispute_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "challenger_id": row["challenger_id"],
+            "actor_id": row["actor_id"],
+            "actor_type": row["actor_type"],
+            "reason": row["reason"],
+            "evidence_hash": row["evidence_hash"],
+            "severity": row["severity"],
+            "status": row["status"],
+            "payload": json.loads(row["payload_json"] or "{}"),
+            "resolution": json.loads(row["resolution_json"]) if row["resolution_json"] else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "resolved_at": row["resolved_at"],
+        }
+
     def _insert_score_event(
         self,
         conn: sqlite3.Connection,
@@ -706,6 +743,194 @@ class NodeStore:
                 (*params, limit),
             ).fetchall()
             return [self._score_event_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def open_dispute(
+        self,
+        *,
+        task_id: str,
+        challenger_id: str,
+        reason: str,
+        actor_id: str | None = None,
+        actor_type: str = "worker",
+        severity: str = "medium",
+        evidence_hash: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        dispute_id = str(uuid4())
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO disputes
+                (id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                 status, payload_json, resolution_json, created_at, updated_at, resolved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL, ?, ?, NULL)
+                """,
+                (
+                    dispute_id,
+                    task_id,
+                    challenger_id,
+                    actor_id,
+                    actor_type,
+                    reason,
+                    evidence_hash,
+                    str(severity or "medium").strip().lower() or "medium",
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            self._insert_governance_action(
+                conn,
+                actor_id=actor_id or challenger_id,
+                actor_type=actor_type,
+                action_type="dispute-opened",
+                reason=reason,
+                payload={
+                    "task_id": task_id,
+                    "challenger_id": challenger_id,
+                    "evidence_hash": evidence_hash,
+                    "context": payload or {},
+                },
+                created_at=now,
+            )
+            conn.commit()
+            return {
+                "ok": True,
+                "dispute": {
+                    "id": dispute_id,
+                    "task_id": task_id,
+                    "challenger_id": challenger_id,
+                    "actor_id": actor_id,
+                    "actor_type": actor_type,
+                    "reason": reason,
+                    "evidence_hash": evidence_hash,
+                    "severity": str(severity or "medium").strip().lower() or "medium",
+                    "status": "open",
+                    "payload": payload or {},
+                    "resolution": None,
+                    "created_at": now,
+                    "updated_at": now,
+                    "resolved_at": None,
+                },
+            }
+        finally:
+            conn.close()
+
+    def resolve_dispute(
+        self,
+        *,
+        dispute_id: str,
+        resolution_status: str,
+        reason: str,
+        operator_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       status, payload_json, resolution_json, created_at, updated_at, resolved_at
+                FROM disputes
+                WHERE id = ?
+                """,
+                (dispute_id,),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+            if str(row["status"]) != "open":
+                conn.commit()
+                return self._dispute_from_row(row)
+            resolution = {
+                "status": str(resolution_status or "dismissed").strip().lower() or "dismissed",
+                "reason": reason,
+                "operator_id": operator_id,
+                "payload": payload or {},
+            }
+            conn.execute(
+                """
+                UPDATE disputes
+                SET status = ?, resolution_json = ?, updated_at = ?, resolved_at = ?
+                WHERE id = ?
+                """,
+                (
+                    resolution["status"],
+                    json.dumps(resolution, ensure_ascii=False),
+                    now,
+                    now,
+                    dispute_id,
+                ),
+            )
+            self._insert_governance_action(
+                conn,
+                actor_id=row["actor_id"] or row["challenger_id"],
+                actor_type=row["actor_type"],
+                action_type="dispute-resolved",
+                reason=reason,
+                payload={
+                    "task_id": row["task_id"],
+                    "dispute_id": dispute_id,
+                    "operator_id": operator_id,
+                    "resolution": resolution,
+                },
+                created_at=now,
+            )
+            conn.commit()
+            updated = conn.execute(
+                """
+                SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       status, payload_json, resolution_json, created_at, updated_at, resolved_at
+                FROM disputes
+                WHERE id = ?
+                """,
+                (dispute_id,),
+            ).fetchone()
+            return self._dispute_from_row(updated) if updated else None
+        finally:
+            conn.close()
+
+    def list_disputes(
+        self,
+        *,
+        task_id: str | None = None,
+        challenger_id: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            conditions: list[str] = []
+            params: list[Any] = []
+            if task_id:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+            if challenger_id:
+                conditions.append("challenger_id = ?")
+                params.append(challenger_id)
+            if status:
+                conditions.append("status = ?")
+                params.append(status)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            rows = conn.execute(
+                f"""
+                SELECT id, task_id, challenger_id, actor_id, actor_type, reason, evidence_hash, severity,
+                       status, payload_json, resolution_json, created_at, updated_at, resolved_at
+                FROM disputes
+                {where_clause}
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+            return [self._dispute_from_row(row) for row in rows]
         finally:
             conn.close()
 
