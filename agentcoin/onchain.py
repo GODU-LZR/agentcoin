@@ -548,9 +548,10 @@ class OnchainRuntime:
             raw_tx = str(item.get("raw_transaction") or "").strip()
             if not raw_tx:
                 raise ValueError(f"raw_transaction is required for step {action}")
+            step_rpc_url = str(item.get("rpc_url") or "").strip() or rpc_url or str(step.get("rpc_payload", {}).get("rpc_url") or "").strip()
             raw_payload = self.raw_transaction_payload(
                 raw_tx,
-                rpc_url=rpc_url or str(step.get("rpc_payload", {}).get("rpc_url") or "").strip() or None,
+                rpc_url=step_rpc_url or None,
                 request_id=str(item.get("request_id") or "").strip() or None,
             )
             bundled_steps.append(

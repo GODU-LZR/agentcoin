@@ -1133,18 +1133,26 @@ class AgentCoinNode:
                         )
                         timeout = float(payload.get("timeout_seconds") or 10)
                         continue_on_error = bool(payload.get("continue_on_error"))
+                        resume_from_index = int(payload.get("resume_from_index") or 0)
                         relayed_steps: list[dict[str, Any]] = []
                         failures: list[dict[str, Any]] = []
                         for step in bundle["steps"]:
+                            step_index = int(step.get("index") or 0)
+                            if step_index < resume_from_index:
+                                continue
                             raw_payload = dict(step.get("raw_relay_payload") or {})
                             rpc_url = str(raw_payload.get("rpc_url") or "").strip()
                             if not rpc_url:
                                 raise ValueError("rpc_url is required for settlement relay")
                             try:
                                 response = node._chain_rpc_call(rpc_url, raw_payload["request"], timeout=timeout)
+                                if "error" in response:
+                                    raise ValueError(str(response.get("error")))
+                                if "result" not in response:
+                                    raise ValueError("rpc response missing result")
                                 relayed_steps.append(
                                     {
-                                        "index": step.get("index"),
+                                        "index": step_index,
                                         "action": step.get("action"),
                                         "response": response,
                                         "tx_hash": response.get("result"),
@@ -1153,7 +1161,7 @@ class AgentCoinNode:
                                 )
                             except Exception as exc:
                                 failure = {
-                                    "index": step.get("index"),
+                                    "index": step_index,
                                     "action": step.get("action"),
                                     "error": str(exc),
                                     "raw_relay_payload": raw_payload,
@@ -1166,10 +1174,13 @@ class AgentCoinNode:
                             "task_id": task_id,
                             "recommended_resolution": bundle.get("recommended_resolution"),
                             "step_count": bundle.get("step_count"),
+                            "resume_from_index": resume_from_index,
+                            "resumed": resume_from_index > 0,
                             "submitted_steps": relayed_steps,
                             "failures": failures,
                             "completed_steps": len(relayed_steps),
                             "stopped_on_error": bool(failures) and not continue_on_error,
+                            "next_index": failures[0]["index"] if failures else (resume_from_index + len(relayed_steps)),
                             "transport": node.config.network.transport_profile(),
                             "generated_at": utc_now(),
                         }

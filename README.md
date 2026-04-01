@@ -177,6 +177,7 @@ It can also assemble an externally signed raw-transaction bundle:
 It can now also relay that bundle sequentially:
 
 - `POST /v1/onchain/settlement-relay` submits every raw transaction in order and returns one signed relay receipt
+- relay now supports `resume_from_index` so failed multi-step settlement can continue from the first failed step
 
 ### Quick Start
 

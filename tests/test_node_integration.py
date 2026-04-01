@@ -2345,6 +2345,112 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_onchain_settlement_relay_can_resume_from_failed_step(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0xresume{call_count['raw']}"
+
+        rpc = RpcHarness({"eth_sendRawTransaction": raw_tx_response})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:resume-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-resume-node",
+            token="token-settlement-resume",
+            db_path=str(Path(self.tempdir.name) / "settlement-resume.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-resume-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-resume",
+                {
+                    "id": "settlement-resume-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 95,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-settlement-resume",
+                {"worker_id": "worker-resume-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-settlement-resume",
+                {
+                    "task_id": "settlement-resume-task-1",
+                    "worker_id": "worker-resume-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-resume-1"},
+                },
+            )
+
+            _, failed_relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-resume",
+                {
+                    "task_id": "settlement-resume-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0x1111", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0x2222", "rpc_url": "http://127.0.0.1:1"},
+                    ],
+                },
+            )
+            failed_relay = failed_relay_payload["relay"]
+            self.assertEqual(failed_relay["completed_steps"], 1)
+            self.assertTrue(failed_relay["stopped_on_error"])
+            self.assertEqual(failed_relay["next_index"], 1)
+            self.assertEqual(len(failed_relay["failures"]), 1)
+
+            _, resumed_relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-resume",
+                {
+                    "task_id": "settlement-resume-task-1",
+                    "resume_from_index": 1,
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0x1111", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0x2222", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            resumed_relay = resumed_relay_payload["relay"]
+            self.assertTrue(resumed_relay["resumed"])
+            self.assertEqual(resumed_relay["resume_from_index"], 1)
+            self.assertEqual(resumed_relay["completed_steps"], 1)
+            self.assertFalse(resumed_relay["stopped_on_error"])
+            self.assertEqual(resumed_relay["next_index"], 2)
+            self.assertEqual(resumed_relay["submitted_steps"][0]["action"], "completeJob")
+            verification = verify_document(
+                resumed_relay,
+                secret="settlement-resume-secret",
+                expected_scope="onchain-settlement-relay",
+                expected_key_id="settlement-resume-node",
+            )
+            self.assertTrue(verification["verified"])
+        finally:
+            node.stop()
+            rpc.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",
