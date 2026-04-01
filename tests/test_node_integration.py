@@ -2013,6 +2013,166 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_onchain_settlement_rpc_plan_expands_recommended_sequence(self) -> None:
+        rpc = RpcHarness(
+            {
+                "eth_getTransactionCount": "0xa",
+                "eth_gasPrice": "0x12a05f200",
+                "eth_estimateGas": "0x6000",
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:plan-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-plan-node",
+            token="token-settlement-plan",
+            db_path=str(Path(self.tempdir.name) / "settlement-plan.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-plan-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-plan",
+                {
+                    "id": "settlement-plan-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 91,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-settlement-plan",
+                {"worker_id": "worker-plan-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-settlement-plan",
+                {
+                    "task_id": "settlement-plan-task-1",
+                    "worker_id": "worker-plan-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-plan-1"},
+                },
+            )
+
+            _, plan_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-rpc-plan",
+                "token-settlement-plan",
+                {
+                    "task_id": "settlement-plan-task-1",
+                    "resolve_live": True,
+                },
+            )
+            plan = plan_payload["plan"]
+            self.assertEqual(plan["kind"], "evm-settlement-rpc-plan")
+            self.assertEqual(plan["recommended_resolution"], "completeJob")
+            self.assertTrue(plan["resolved_live"])
+            self.assertEqual([step["action"] for step in plan["steps"]], ["submitWork", "completeJob"])
+            self.assertEqual(plan["steps"][0]["rpc_payload"]["transaction"]["nonce"], "0xa")
+            self.assertEqual(plan["steps"][1]["rpc_payload"]["transaction"]["gas"], "0x6000")
+            verification = verify_document(
+                plan,
+                secret="settlement-plan-secret",
+                expected_scope="onchain-settlement-rpc-plan",
+                expected_key_id="settlement-plan-node",
+            )
+            self.assertTrue(verification["verified"])
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_onchain_settlement_rpc_plan_tracks_challenge_sequence(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:challenge-plan-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="challenge-plan-node",
+            token="token-challenge-plan",
+            db_path=str(Path(self.tempdir.name) / "challenge-plan.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-challenge-plan",
+                {
+                    "id": "challenge-plan-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 92,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-challenge-plan",
+                {"worker_id": "worker-challenge-plan-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-challenge-plan",
+                {
+                    "task_id": "challenge-plan-task-1",
+                    "worker_id": "worker-challenge-plan-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-challenge-plan-1"},
+                },
+            )
+            self._post(
+                f"{node.base_url}/v1/disputes",
+                "token-challenge-plan",
+                {
+                    "task_id": "challenge-plan-task-1",
+                    "challenger_id": "reviewer-open-1",
+                    "actor_id": "worker-challenge-plan-1",
+                    "reason": "challenge for settlement plan",
+                    "evidence_hash": "challenge-plan-evidence",
+                    "severity": "high",
+                },
+            )
+
+            _, plan_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-rpc-plan",
+                "token-challenge-plan",
+                {"task_id": "challenge-plan-task-1"},
+            )
+            plan = plan_payload["plan"]
+            self.assertFalse(plan["resolved_live"])
+            self.assertEqual(plan["recommended_resolution"], "challengeJob")
+            self.assertEqual([step["action"] for step in plan["steps"]], ["submitWork", "challengeJob"])
+            self.assertEqual(plan["steps"][1]["intent"]["function"], "challengeJob")
+        finally:
+            node.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",

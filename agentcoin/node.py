@@ -596,6 +596,12 @@ class AgentCoinNode:
                         return
                     self._json_response(HTTPStatus.OK, {"settlement": preview})
                     return
+                if path == "/v1/onchain/settlement-rpc-plan":
+                    self._json_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED,
+                        {"error": "use POST /v1/onchain/settlement-rpc-plan with task_id"},
+                    )
+                    return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_tasks()]})
                     return
@@ -1017,6 +1023,54 @@ class AgentCoinNode:
                             identity_namespace="agentcoin-onchain-rpc-relay",
                         )
                         self._json_response(HTTPStatus.OK, {"relay": signed_relay})
+                        return
+                    if self.path == "/v1/onchain/settlement-rpc-plan":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        settlement = node._task_settlement_preview(task)
+                        if not settlement:
+                            raise ValueError("task is not bound to onchain settlement")
+                        rpc_options = dict(payload.get("rpc") or {})
+                        plan = node.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options)
+                        resolve_live = bool(payload.get("resolve_live"))
+                        if resolve_live:
+                            steps: list[dict[str, Any]] = []
+                            for step in plan["steps"]:
+                                live_results: dict[str, Any] = {}
+                                for probe in step["probes"]:
+                                    rpc_url = str(step["rpc_payload"].get("rpc_url") or "").strip()
+                                    if not rpc_url:
+                                        raise ValueError("rpc_url is required for resolve_live")
+                                    live_results[probe["name"]] = node._chain_rpc_call(
+                                        rpc_url,
+                                        probe["request"],
+                                        timeout=float(payload.get("timeout_seconds") or 10),
+                                    )
+                                planned_rpc_payload = node.onchain.apply_rpc_probe_results(step["rpc_payload"], live_results)
+                                steps.append(
+                                    {
+                                        **step,
+                                        "rpc_payload": planned_rpc_payload,
+                                        "live_results": live_results,
+                                    }
+                                )
+                            plan["steps"] = steps
+                            plan["resolved_live"] = True
+                        else:
+                            plan["resolved_live"] = False
+                        signed_plan = node._sign_document(
+                            plan,
+                            hmac_scope="onchain-settlement-rpc-plan",
+                            identity_namespace="agentcoin-onchain-settlement-rpc-plan",
+                        )
+                        self._json_response(HTTPStatus.OK, {"plan": signed_plan})
                         return
                     if self.path == "/v1/workflows/fanout":
                         if not self._require_auth():

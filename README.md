@@ -164,6 +164,11 @@ The runtime now also has a first on-chain settlement preview:
 - resolved disputes now also feed back into local score events and reputation
 - the result is a signed operator preview, not an auto-broadcasted settlement
 
+The node can now also expand that preview into a settlement RPC sequence:
+
+- `POST /v1/onchain/settlement-rpc-plan` expands the recommended sequence into ordered intents and JSON-RPC payloads
+- optional `resolve_live=true` resolves nonce / gas price / gas estimate for each step
+
 ### Quick Start
 
 ```bash
@@ -194,6 +199,7 @@ Key endpoints:
 - `GET /v1/poaw/summary`
 - `GET /v1/disputes`
 - `GET /v1/onchain/settlement-preview?task_id=...`
+- `POST /v1/onchain/settlement-rpc-plan`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`

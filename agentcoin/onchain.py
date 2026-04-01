@@ -486,6 +486,48 @@ class OnchainRuntime:
             "generated_at": utc_now(),
         }
 
+    def settlement_rpc_plan(
+        self,
+        task: dict[str, Any],
+        *,
+        settlement_preview: dict[str, Any],
+        rpc: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        rpc_options = {
+            "include_nonce": True,
+            "include_gas_price": True,
+            "include_estimate_gas": True,
+            "force_estimate_gas": True,
+            **(rpc or {}),
+        }
+        sequence = list(settlement_preview.get("recommended_sequence") or [])
+        resolution_action = str(settlement_preview.get("recommended_resolution") or "").strip()
+        resolution_params = dict(settlement_preview.get("resolution_params") or {})
+        steps: list[dict[str, Any]] = []
+        for index, action in enumerate(sequence):
+            params = resolution_params if action == resolution_action else {}
+            intent = self.transaction_intent(task, action=action, params=params)
+            rpc_payload = self.rpc_payload_for_intent(intent, rpc=rpc_options)
+            probes = self.rpc_probe_payloads(rpc_payload, rpc=rpc_options)
+            steps.append(
+                {
+                    "index": index,
+                    "action": action,
+                    "intent": intent,
+                    "rpc_payload": rpc_payload,
+                    "probes": probes,
+                }
+            )
+        return {
+            "kind": "evm-settlement-rpc-plan",
+            "task_id": task.get("id"),
+            "workflow_id": task.get("workflow_id"),
+            "job_id": task.get("payload", {}).get("_onchain", {}).get("job_id"),
+            "recommended_resolution": resolution_action,
+            "steps": steps,
+            "generated_at": utc_now(),
+        }
+
     def _intent_base(self, *, action: str, task: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
         return {
