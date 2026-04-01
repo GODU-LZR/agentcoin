@@ -79,8 +79,10 @@ flowchart TB
 - 项目说明：[docs/project/overview.md](docs/project/overview.md)
 - 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
 - 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)
+- 链上路线图：[docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - 蓝图偏差检查：[docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - 通信说明：[docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
+- 合约骨架：[contracts/README.md](contracts/README.md)
 - GPL 声明：[docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
 - 协议全文：[LICENSE](LICENSE)
 
@@ -99,6 +101,12 @@ flowchart TB
 - `签名传输`：capability card 和 task envelope 现在可以带 `HMAC` 签名，供 peer 验签。
 - `非对称身份`：节点现在也可以用兼容 `ssh-keygen` 的 `Ed25519` 密钥为 card、任务和回执签名。
 - `兼容多 Agent`：通过通用任务信封和能力名片接口接入不同 Agent。
+
+仓库现在也加入了第一版面向 BNB Chain 的链上骨架：
+
+- `AgentDIDRegistry`：链上智能体身份与基础信誉锚点
+- `StakingPool`：原生 BNB 的质押、锁定、解锁与惩罚
+- `BountyEscrow`：任务资金托管、接单、提交、完成、拒绝、退款与罚没流程
 
 ### 快速启动
 

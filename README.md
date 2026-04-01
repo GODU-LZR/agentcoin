@@ -76,8 +76,10 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
+- Contracts scaffold: [contracts/README.md](contracts/README.md)
 - GPL notice: [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
 - License text: [LICENSE](LICENSE)
 
@@ -99,6 +101,12 @@ The repository now includes a minimal cross-platform reference node built with P
 - `Signed transport`: capability cards and task envelopes can carry HMAC signatures for peer verification.
 - `Asymmetric identity`: nodes can also sign cards, task envelopes, and delivery receipts with `ssh-keygen` compatible Ed25519 keys.
 - `Agent-friendly`: exposes generic task envelopes and capability-card endpoints that can front different agent runtimes.
+
+The repository now also includes a first on-chain scaffold for the BNB Chain track:
+
+- `AgentDIDRegistry`: portable agent identity and simple reputation anchor
+- `StakingPool`: native BNB stake, lock, unlock, and slash flow
+- `BountyEscrow`: funded jobs, worker acceptance, submission, completion, rejection, refund, and slash flow
 
 ### Quick Start
 

@@ -72,8 +72,10 @@ flowchart TB
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
+- On-chain roadmap: [docs/architecture/onchain-roadmap.md](docs/architecture/onchain-roadmap.md)
 - Blueprint alignment: [docs/architecture/alignment-gap.md](docs/architecture/alignment-gap.md)
 - Connectivity notes: [docs/architecture/e2ee-connectivity.md](docs/architecture/e2ee-connectivity.md)
+- Contracts scaffold: [contracts/README.md](contracts/README.md)
 - GPL notice: [docs/legal/gpl-notice.md](docs/legal/gpl-notice.md)
 - License text: [LICENSE](LICENSE)
 
@@ -92,6 +94,12 @@ flowchart TB
 - `署名付き transport`: capability card と task envelope に `HMAC` 署名を付けて peer 検証できます
 - `非対称 identity`: `ssh-keygen` 互換の `Ed25519` key で card, task, receipt を署名できます
 - `多様な Agent との互換性`: 汎用 task envelope と capability card を採用
+
+このリポジトリには、BNB Chain 向けの最初の on-chain scaffold も追加しました。
+
+- `AgentDIDRegistry`: portable な agent identity と基本 reputation anchor
+- `StakingPool`: native BNB の stake / lock / unlock / slash
+- `BountyEscrow`: funded job lifecycle と evaluator-driven settlement
 
 ### Quick Start
 

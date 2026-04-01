@@ -14,6 +14,7 @@ The current repository contains:
 - weak-network retry, dead-letter, and local fallback behavior
 - Git-native repository inspection and task context attachment
 - local governance primitives for policy violations, reputation, and quarantine
+- an on-chain scaffold for DID, staking, and bounty escrow on BNB Chain
 
 ## Design Goals
 
@@ -29,9 +30,11 @@ The current repository contains:
 - `agentcoin/`: runtime source code
 - `configs/`: example configuration
 - `docs/architecture/`: architecture and connectivity notes
+- `docs/architecture/onchain-roadmap.md`: BNB Chain trust and settlement rollout plan
 - `docs/project/`: project-level documentation
 - `docs/testing/`: testing strategy and verification notes
 - `docs/whitepaper/`: multilingual whitepapers
+- `contracts/`: Solidity scaffold for the BNB Chain trust and settlement layer
 - `compose.yaml`: local Docker Compose entrypoint
 
 ## Runtime Components
