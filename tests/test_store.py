@@ -314,6 +314,60 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(audits[0]["status"], "completed")
         self.assertEqual(audits[0]["payload"]["result"]["policy_receipt"]["decision"], "allowed")
 
+        score_events = self.store.list_score_events(actor_id="worker-audit")
+        self.assertEqual(len(score_events), 1)
+        self.assertEqual(score_events[0]["event_type"], "task-completed")
+        self.assertEqual(score_events[0]["points"], 10)
+
+    def test_poaw_summary_aggregates_completion_and_violation_events(self) -> None:
+        self.store.add_task(
+            TaskEnvelope(
+                id="poaw-review-task",
+                kind="review",
+                payload={},
+                role="reviewer",
+                workflow_id="wf-poaw",
+                required_capabilities=["reviewer"],
+            )
+        )
+        claimed = self.store.claim_task(
+            worker_id="reviewer-poaw",
+            worker_capabilities=["reviewer"],
+            lease_seconds=30,
+        )
+        assert claimed is not None
+        self.assertTrue(
+            self.store.ack_task(
+                task_id="poaw-review-task",
+                worker_id="reviewer-poaw",
+                lease_token=claimed["lease_token"],
+                success=True,
+                result={"approved": True},
+            )
+        )
+
+        violation = self.store.record_policy_violation(
+            actor_id="reviewer-poaw",
+            actor_type="worker",
+            task_id="poaw-review-task",
+            source="review-policy",
+            reason="approval policy mismatch",
+            severity="medium",
+        )
+        self.assertEqual(violation["severity"], "medium")
+
+        events = self.store.list_score_events(actor_id="reviewer-poaw")
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["event_type"], "policy-violation")
+        self.assertEqual(events[0]["points"], -15)
+
+        summary = self.store.summarize_score_events(actor_id="reviewer-poaw", actor_type="worker")
+        self.assertEqual(summary["event_count"], 2)
+        self.assertEqual(summary["total_points"], -1)
+        self.assertEqual(summary["positive_points"], 14)
+        self.assertEqual(summary["negative_points"], -15)
+        self.assertEqual(summary["reputation"]["violations"], 1)
+
     def test_policy_violations_update_reputation_and_block_claim(self) -> None:
         self.store.add_task(TaskEnvelope(id="queued-task", kind="exec", payload={}, role="worker"))
 

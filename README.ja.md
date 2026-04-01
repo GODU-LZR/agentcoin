@@ -136,8 +136,17 @@ runtime には最小の semantic layer も追加しました。
 - `AgentCard` と `TaskEnvelope` は軽量な JSON-LD 風 `semantics` を持ちます
 - `GET /v1/schema/context` で shared context document を取得できます
 - `GET /v1/schema/capabilities` で capability family、alias、implied role を取得できます
+- `GET /v1/tasks/dispatch/preview` で semantic dispatch candidate と score を確認できます
 - `GET /v1/schema/examples` で card / task semantic shape の例を取得できます
 - まだ軽量ですが、元の blueprint の ontology gap を埋め始めています
+
+runtime には最小の local `PoAW` ledger も追加しました。
+
+- successful ACK は正の score event を記録します
+- policy violation は負の score event を記録します
+- `GET /v1/poaw/events` で raw event ledger を取得できます
+- `GET /v1/poaw/summary` で actor / task 単位の points 集計を取得できます
+- これはまだ chain settlement engine ではなく、local useful-work accounting skeleton です
 
 ### Quick Start
 
@@ -171,7 +180,10 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `GET /v1/card`
 - `GET /v1/schema/context`
 - `GET /v1/schema/capabilities`
+- `GET /v1/tasks/dispatch/preview`
 - `GET /v1/schema/examples`
+- `GET /v1/poaw/events`
+- `GET /v1/poaw/summary`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`

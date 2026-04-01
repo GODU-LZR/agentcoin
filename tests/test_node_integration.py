@@ -415,20 +415,36 @@ class NodeIntegrationTests(unittest.TestCase):
             db_path=str(Path(self.tempdir.name) / "semantic-peer-b.db"),
             capabilities=["ai-reviewer"],
         )
+        node_c = NodeHarness(
+            node_id="semantic-peer-c",
+            token="token-sem-c",
+            db_path=str(Path(self.tempdir.name) / "semantic-peer-c.db"),
+            capabilities=["reviewer"],
+        )
         node_a = NodeHarness(
             node_id="semantic-peer-a",
             token="token-sem-a",
             db_path=str(Path(self.tempdir.name) / "semantic-peer-a.db"),
             capabilities=["human-reviewer"],
-            peers=[PeerConfig(peer_id="semantic-peer-b", name="Semantic Peer B", url="", auth_token="token-sem-b")],
+            peers=[
+                PeerConfig(peer_id="semantic-peer-b", name="Semantic Peer B", url="", auth_token="token-sem-b"),
+                PeerConfig(peer_id="semantic-peer-c", name="Semantic Peer C", url="", auth_token="token-sem-c"),
+            ],
         )
         node_b.start()
+        node_c.start()
         node_a.config.peers[0].url = node_b.base_url
+        node_a.config.peers[1].url = node_c.base_url
         node_a.start()
         try:
             sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-sem-a", {})
             self.assertEqual(sync_status, 200)
             self.assertEqual(sync_payload["items"][0]["status"], "ok")
+            self.assertEqual(sync_payload["items"][1]["status"], "ok")
+
+            _, preview = self._get(f"{node_a.base_url}/v1/tasks/dispatch/preview?required_capabilities=reviewer")
+            self.assertEqual(preview["candidates"][0]["target_ref"], "semantic-peer-c")
+            self.assertEqual(preview["candidates"][0]["match"]["exact_matches"], ["reviewer"])
 
             status, dispatch = self._post(
                 f"{node_a.base_url}/v1/tasks/dispatch",
@@ -443,7 +459,7 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(status, 201)
             self.assertEqual(dispatch["target"]["target_type"], "peer")
-            self.assertEqual(dispatch["target"]["target_ref"], "semantic-peer-b")
+            self.assertEqual(dispatch["target"]["target_ref"], "semantic-peer-c")
 
             self._post(
                 f"{node_a.base_url}/v1/tasks",
@@ -471,6 +487,7 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node_a.stop()
             node_b.stop()
+            node_c.stop()
 
     def test_signed_peer_sync_and_signed_inbox_verification(self) -> None:
         shared_a = "node-a-shared-secret"
@@ -1923,6 +1940,82 @@ class NodeIntegrationTests(unittest.TestCase):
             task = [item for item in tasks["items"] if item["id"] == "openclaw-bind-task-1"][0]
             self.assertEqual(task["payload"]["_runtime"]["runtime"], "openai-chat")
             self.assertEqual(task["payload"]["_runtime"]["provider"], "openclaw-gateway")
+        finally:
+            node.stop()
+
+    def test_poaw_endpoints_expose_completion_and_violation_ledger(self) -> None:
+        node = NodeHarness(
+            node_id="poaw-node",
+            token="token-poaw",
+            db_path=str(Path(self.tempdir.name) / "poaw.db"),
+            capabilities=["worker", "reviewer"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-poaw",
+                {
+                    "id": "poaw-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "workflow_id": "wf-poaw-http",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": "review this"},
+                },
+            )
+
+            claim_status, claim_payload = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-poaw",
+                {
+                    "worker_id": "worker-poaw-http",
+                    "worker_capabilities": ["reviewer"],
+                    "lease_seconds": 30,
+                },
+            )
+            self.assertEqual(claim_status, 200)
+            self.assertEqual(claim_payload["task"]["id"], "poaw-task-1")
+
+            ack_status, ack_payload = self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-poaw",
+                {
+                    "task_id": "poaw-task-1",
+                    "worker_id": "worker-poaw-http",
+                    "lease_token": claim_payload["task"]["lease_token"],
+                    "success": True,
+                    "result": {"approved": True},
+                },
+            )
+            self.assertEqual(ack_status, 200)
+            self.assertTrue(ack_payload["ok"])
+
+            violation = node.node.store.record_policy_violation(
+                actor_id="worker-poaw-http",
+                actor_type="worker",
+                task_id="poaw-task-1",
+                source="adapter-policy",
+                reason="allowlist mismatch",
+                severity="medium",
+            )
+            self.assertEqual(violation["severity"], "medium")
+
+            _, events = self._get(f"{node.base_url}/v1/poaw/events?actor_id=worker-poaw-http")
+            self.assertEqual(len(events["items"]), 2)
+            self.assertEqual(events["items"][0]["event_type"], "policy-violation")
+            self.assertEqual(events["items"][1]["event_type"], "review-approved")
+
+            _, summary = self._get(f"{node.base_url}/v1/poaw/summary?actor_id=worker-poaw-http&actor_type=worker")
+            self.assertEqual(summary["event_count"], 2)
+            self.assertEqual(summary["positive_points"], 14)
+            self.assertEqual(summary["negative_points"], -15)
+            self.assertEqual(summary["total_points"], -1)
+            self.assertEqual(summary["reputation"]["violations"], 1)
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=poaw-task-1")
+            self.assertEqual(replay["poaw_summary"]["event_count"], 2)
+            self.assertEqual(len(replay["poaw_events"]), 2)
         finally:
             node.stop()
 

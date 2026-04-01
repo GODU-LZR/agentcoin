@@ -152,6 +152,16 @@ class NodeStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS score_events (
+                    id TEXT PRIMARY KEY,
+                    actor_id TEXT NOT NULL,
+                    actor_type TEXT NOT NULL,
+                    task_id TEXT,
+                    event_type TEXT NOT NULL,
+                    points INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -471,6 +481,7 @@ class NodeStore:
             policy_violations = conn.execute("SELECT COUNT(*) FROM policy_violations").fetchone()[0]
             active_quarantines = conn.execute("SELECT COUNT(*) FROM quarantines WHERE active = 1").fetchone()[0]
             governance_actions = conn.execute("SELECT COUNT(*) FROM governance_actions").fetchone()[0]
+            score_events = conn.execute("SELECT COUNT(*) FROM score_events").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -491,6 +502,7 @@ class NodeStore:
                 "policy_violations": policy_violations,
                 "quarantines_active": active_quarantines,
                 "governance_actions": governance_actions,
+                "score_events": score_events,
             }
         finally:
             conn.close()
@@ -600,6 +612,227 @@ class NodeStore:
             "critical": 50,
         }
         return penalties.get(str(severity or "medium").strip().lower(), 15)
+
+    @staticmethod
+    def _score_event_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "actor_id": row["actor_id"],
+            "actor_type": row["actor_type"],
+            "task_id": row["task_id"],
+            "event_type": row["event_type"],
+            "points": row["points"],
+            "payload": json.loads(row["payload_json"] or "{}"),
+            "created_at": row["created_at"],
+        }
+
+    def _insert_score_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        actor_id: str,
+        actor_type: str,
+        event_type: str,
+        points: int,
+        payload: dict[str, Any] | None = None,
+        task_id: str | None = None,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        event_id = str(uuid4())
+        timestamp = created_at or utc_now()
+        stored_payload = payload or {}
+        conn.execute(
+            """
+            INSERT INTO score_events
+            (id, actor_id, actor_type, task_id, event_type, points, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                actor_id,
+                actor_type,
+                task_id,
+                event_type,
+                int(points),
+                json.dumps(stored_payload, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        return {
+            "id": event_id,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "task_id": task_id,
+            "event_type": event_type,
+            "points": int(points),
+            "payload": stored_payload,
+            "created_at": timestamp,
+        }
+
+    def list_score_events(
+        self,
+        *,
+        actor_id: str | None = None,
+        actor_type: str | None = None,
+        task_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            conditions: list[str] = []
+            params: list[Any] = []
+            if actor_id:
+                conditions.append("actor_id = ?")
+                params.append(actor_id)
+            if actor_type:
+                conditions.append("actor_type = ?")
+                params.append(actor_type)
+            if task_id:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+            if event_type:
+                conditions.append("event_type = ?")
+                params.append(event_type)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            rows = conn.execute(
+                f"""
+                SELECT id, actor_id, actor_type, task_id, event_type, points, payload_json, created_at
+                FROM score_events
+                {where_clause}
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+            return [self._score_event_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def summarize_score_events(
+        self,
+        *,
+        actor_id: str | None = None,
+        actor_type: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            conditions: list[str] = []
+            params: list[Any] = []
+            if actor_id:
+                conditions.append("actor_id = ?")
+                params.append(actor_id)
+            if actor_type:
+                conditions.append("actor_type = ?")
+                params.append(actor_type)
+            if task_id:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            totals = conn.execute(
+                f"""
+                SELECT COUNT(*) AS event_count,
+                       COALESCE(SUM(points), 0) AS total_points,
+                       COALESCE(SUM(CASE WHEN points > 0 THEN points ELSE 0 END), 0) AS positive_points,
+                       COALESCE(SUM(CASE WHEN points < 0 THEN points ELSE 0 END), 0) AS negative_points
+                FROM score_events
+                {where_clause}
+                """,
+                params,
+            ).fetchone()
+            type_rows = conn.execute(
+                f"""
+                SELECT event_type, COUNT(*) AS count, COALESCE(SUM(points), 0) AS points
+                FROM score_events
+                {where_clause}
+                GROUP BY event_type
+                ORDER BY event_type ASC
+                """,
+                params,
+            ).fetchall()
+            summary = {
+                "actor_id": actor_id,
+                "actor_type": actor_type,
+                "task_id": task_id,
+                "event_count": int(totals["event_count"] or 0),
+                "total_points": int(totals["total_points"] or 0),
+                "positive_points": int(totals["positive_points"] or 0),
+                "negative_points": int(totals["negative_points"] or 0),
+                "by_event_type": [
+                    {
+                        "event_type": row["event_type"],
+                        "count": int(row["count"] or 0),
+                        "points": int(row["points"] or 0),
+                    }
+                    for row in type_rows
+                ],
+            }
+            if actor_id:
+                summary["reputation"] = self.get_actor_reputation(actor_id, actor_type=actor_type or "worker")
+            return summary
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _completion_score_event(
+        *,
+        task_id: str,
+        worker_id: str,
+        role: str,
+        kind: str,
+        workflow_id: str | None,
+        branch: str,
+        delivery_status: str,
+        required_capabilities: list[str],
+        result: dict[str, Any] | None,
+    ) -> tuple[str, int, dict[str, Any]]:
+        role_name = str(role or "worker").strip().lower() or "worker"
+        kind_name = str(kind or "generic").strip().lower() or "generic"
+        role_base = {
+            "worker": 10,
+            "reviewer": 8,
+            "planner": 6,
+            "aggregator": 9,
+        }.get(role_name, 5)
+        kind_bonus = {
+            "code": 2,
+            "review": 2,
+            "merge": 3,
+            "plan": 1,
+        }.get(kind_name, 0)
+        points = role_base + kind_bonus
+        if workflow_id:
+            points += 1
+        if required_capabilities:
+            points += min(3, len(required_capabilities))
+        approved = bool((result or {}).get("approved"))
+        merged = bool((result or {}).get("merged"))
+        if approved:
+            points += 2
+        if merged:
+            points += 1
+        event_type = "task-completed"
+        if kind_name == "review":
+            event_type = "review-approved" if approved else "review-completed"
+        elif kind_name == "merge":
+            event_type = "merge-completed"
+        return (
+            event_type,
+            points,
+            {
+                "worker_id": worker_id,
+                "role": role_name,
+                "kind": kind_name,
+                "workflow_id": workflow_id,
+                "branch": branch,
+                "delivery_status": delivery_status,
+                "required_capabilities": required_capabilities,
+                "result_keys": sorted((result or {}).keys()),
+                "approved": approved,
+                "merged": merged,
+            },
+        )
 
     @staticmethod
     def _reputation_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -724,6 +957,22 @@ class NodeStore:
                 json.dumps(payload, ensure_ascii=False),
                 now,
             ),
+        )
+        self._insert_score_event(
+            conn,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            task_id=task_id,
+            event_type="policy-violation",
+            points=-penalty,
+            payload={
+                "source": source,
+                "reason": reason,
+                "severity": severity_name,
+                "penalty": penalty,
+                **(payload or {}),
+            },
+            created_at=now,
         )
         existing = conn.execute(
             """
@@ -1882,7 +2131,8 @@ class NodeStore:
         try:
             row = conn.execute(
                 """
-                SELECT attempts, max_attempts, retry_backoff_seconds, delivery_status
+                SELECT attempts, max_attempts, retry_backoff_seconds, delivery_status,
+                       role, kind, workflow_id, branch, required_capabilities_json
                 FROM tasks
                 WHERE id = ? AND status = 'leased' AND locked_by = ? AND lease_token = ?
                 """,
@@ -1918,6 +2168,27 @@ class NodeStore:
                         event_type="ack",
                         status="completed",
                         payload={"success": True, "result": result or {}},
+                        created_at=now,
+                    )
+                    event_type, points, event_payload = self._completion_score_event(
+                        task_id=task_id,
+                        worker_id=worker_id,
+                        role=str(row["role"] or "worker"),
+                        kind=str(row["kind"] or "generic"),
+                        workflow_id=row["workflow_id"],
+                        branch=str(row["branch"] or "main"),
+                        delivery_status=str(row["delivery_status"] or "local"),
+                        required_capabilities=json.loads(row["required_capabilities_json"] or "[]"),
+                        result=result or {},
+                    )
+                    self._insert_score_event(
+                        conn,
+                        actor_id=worker_id,
+                        actor_type="worker",
+                        task_id=task_id,
+                        event_type=event_type,
+                        points=points,
+                        payload=event_payload,
                         created_at=now,
                     )
                     if policy_violation:

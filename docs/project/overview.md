@@ -20,6 +20,7 @@ The current repository contains:
 - live JSON-RPC planning and raw transaction relay for external signers and wallets
 - a first runtime-adapter layer for HTTP and CLI agent execution
 - a lightweight semantic layer for cards and task envelopes
+- a local PoAW score-event ledger for useful-work accounting
 
 ## Design Goals
 
@@ -74,6 +75,7 @@ The node is the main runtime process. It exposes HTTP endpoints for:
 - policy violations
 - quarantine records
 - governance action history
+- score-event ledger entries
 
 This is the durability backbone for offline-first behavior.
 
@@ -208,6 +210,17 @@ Execution governance now also has a first local enforcement layer:
 - operators can inspect reputation, violation history, and active quarantines over HTTP
 - operators can also set and release manual quarantines with a durable governance action log
 - if node signing is enabled, those governance actions also carry a signed governance receipt
+
+### Local PoAW Ledger
+
+The repository now also has a first local PoAW-style accounting layer:
+
+- successful task completion writes a positive score event
+- policy violations write a negative score event
+- score events can be listed by actor or task
+- score summaries can be aggregated without requiring any chain connection
+
+This is intentionally narrower than the whitepaper target. It is a local useful-work ledger, not a final settlement engine.
 
 ## Delivery and Failure States
 

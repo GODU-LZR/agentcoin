@@ -151,3 +151,23 @@ def capabilities_satisfy(required_capabilities: list[str] | None, available_capa
     required = expand_capabilities(required_capabilities)
     available = expand_capabilities(available_capabilities)
     return required.issubset(available)
+
+
+def capability_match_report(required_capabilities: list[str] | None, available_capabilities: list[str] | None) -> dict[str, Any]:
+    required_raw = [str(item or "").strip().lower() for item in list(required_capabilities or []) if str(item or "").strip()]
+    available_raw = [str(item or "").strip().lower() for item in list(available_capabilities or []) if str(item or "").strip()]
+    required_expanded = expand_capabilities(required_capabilities)
+    available_expanded = expand_capabilities(available_capabilities)
+    exact_matches = sorted(set(required_raw).intersection(set(available_raw)))
+    expanded_matches = sorted(required_expanded.intersection(available_expanded))
+    missing = sorted(required_expanded - available_expanded)
+    return {
+        "required_raw": required_raw,
+        "available_raw": available_raw,
+        "required_expanded": sorted(required_expanded),
+        "available_expanded": sorted(available_expanded),
+        "exact_matches": exact_matches,
+        "expanded_matches": expanded_matches,
+        "missing": missing,
+        "satisfied": not missing,
+    }

@@ -66,6 +66,8 @@ The outbound transport path is now centralized as well:
 - `GET /v1/schema/context`
 - `GET /v1/schema/capabilities`
 - `GET /v1/schema/examples`
+- `GET /v1/poaw/events`
+- `GET /v1/poaw/summary`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
@@ -176,6 +178,13 @@ The runtime now also persists execution audit trails:
 - each ACK writes an execution audit event
 - audit events can be queried by task
 - replay inspection can assemble the task, audit history, and bridge export preview in one response
+
+The runtime now also persists a first local PoAW ledger:
+
+- successful ACKs emit positive score events
+- policy violations emit negative score events
+- score events can be queried or summarized by actor / task
+- this is local accounting only, not final settlement
 
 The runtime now also has a first local governance loop:
 

@@ -17,7 +17,14 @@ from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.runtimes import RuntimeRegistry
-from agentcoin.semantics import capabilities_satisfy, capability_schema, context_document, semantic_examples, task_semantics
+from agentcoin.semantics import (
+    capabilities_satisfy,
+    capability_match_report,
+    capability_schema,
+    context_document,
+    semantic_examples,
+    task_semantics,
+)
 from agentcoin.security import (
     SignatureError,
     sign_document,
@@ -281,27 +288,64 @@ class AgentCoinNode:
             timeout=timeout,
         )
 
-    def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
-        if prefer_local and self._supports_capabilities(required_capabilities):
-            return {"target_type": "local", "target_ref": self.config.node_id}
+    def dispatch_candidates(self, required_capabilities: list[str], prefer_local: bool = False) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        if self._supports_capabilities(required_capabilities):
+            local_report = capability_match_report(required_capabilities, self.config.capabilities)
+            local_score = 100 + (len(local_report["exact_matches"]) * 100) + (len(local_report["expanded_matches"]) * 10)
+            if prefer_local:
+                local_score += 500
+            candidates.append(
+                {
+                    "target_type": "local",
+                    "target_ref": self.config.node_id,
+                    "capabilities": list(self.config.capabilities),
+                    "match": local_report,
+                    "reputation": {"score": 100, "quarantined": False},
+                    "score": local_score,
+                }
+            )
 
-        peer_cards = self.store.list_peer_cards()
-        candidates: list[tuple[int, str]] = []
-        for peer_card in peer_cards:
+        for peer_card in self.store.list_peer_cards():
             peer_id = peer_card["peer_id"]
             card = peer_card["card"]
             capabilities = list(card.get("capabilities", []))
-            if capabilities_satisfy(required_capabilities, capabilities):
-                candidates.append((len(capabilities), peer_id))
+            report = capability_match_report(required_capabilities, capabilities)
+            if not report["satisfied"]:
+                continue
+            reputation = self.store.get_actor_reputation(peer_id, actor_type="peer")
+            reputation_score = int(reputation.get("score", 100))
+            candidate_score = (
+                (len(report["exact_matches"]) * 100)
+                + (len(report["expanded_matches"]) * 10)
+                + reputation_score
+            )
+            candidates.append(
+                {
+                    "target_type": "peer",
+                    "target_ref": peer_id,
+                    "capabilities": capabilities,
+                    "match": report,
+                    "reputation": reputation,
+                    "score": candidate_score,
+                }
+            )
 
-        if candidates:
-            _, peer_id = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
-            return {"target_type": "peer", "target_ref": peer_id}
+        return sorted(
+            candidates,
+            key=lambda item: (
+                item["score"],
+                item["target_type"] == "local",
+                item["target_ref"],
+            ),
+            reverse=True,
+        )
 
-        if self._supports_capabilities(required_capabilities):
-            return {"target_type": "local", "target_ref": self.config.node_id}
-
-        return None
+    def select_dispatch_target(self, required_capabilities: list[str], prefer_local: bool = False) -> dict[str, str] | None:
+        candidates = self.dispatch_candidates(required_capabilities, prefer_local=prefer_local)
+        if not candidates:
+            return None
+        return {"target_type": candidates[0]["target_type"], "target_ref": candidates[0]["target_ref"]}
 
     @staticmethod
     def _normalize_task(task: TaskEnvelope, config: NodeConfig) -> TaskEnvelope:
@@ -415,6 +459,48 @@ class AgentCoinNode:
                             {"items": node.store.list_actor_reputations(actor_type=actor_type if actor_type else None, limit=limit)},
                         )
                     return
+                if path == "/v1/poaw/events":
+                    actor_id = (query.get("actor_id") or [None])[0]
+                    actor_type = (query.get("actor_type") or [None])[0]
+                    task_id = (query.get("task_id") or [None])[0]
+                    event_type = (query.get("event_type") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "items": node.store.list_score_events(
+                                actor_id=actor_id,
+                                actor_type=actor_type,
+                                task_id=task_id,
+                                event_type=event_type,
+                                limit=limit,
+                            )
+                        },
+                    )
+                    return
+                if path == "/v1/poaw/summary":
+                    actor_id = (query.get("actor_id") or [None])[0]
+                    actor_type = (query.get("actor_type") or [None])[0]
+                    task_id = (query.get("task_id") or [None])[0]
+                    self._json_response(
+                        HTTPStatus.OK,
+                        node.store.summarize_score_events(actor_id=actor_id, actor_type=actor_type, task_id=task_id),
+                    )
+                    return
+                if path == "/v1/tasks/dispatch/preview":
+                    required_capabilities = [
+                        str(item) for item in (query.get("required_capabilities") or []) if str(item).strip()
+                    ]
+                    prefer_local = (query.get("prefer_local") or ["0"])[0] in {"1", "true", "yes"}
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "required_capabilities": required_capabilities,
+                            "prefer_local": prefer_local,
+                            "candidates": node.dispatch_candidates(required_capabilities, prefer_local=prefer_local),
+                        },
+                    )
+                    return
                 if path == "/v1/violations":
                     actor_id = (query.get("actor_id") or [None])[0]
                     limit = int((query.get("limit") or ["200"])[0])
@@ -497,6 +583,8 @@ class AgentCoinNode:
                         {
                             "task": node._decorate_task(task),
                             "audits": node.store.list_execution_audits(task_id=task_id, limit=200),
+                            "poaw_events": node.store.list_score_events(task_id=task_id, limit=200),
+                            "poaw_summary": node.store.summarize_score_events(task_id=task_id),
                             "bridge_export_preview": export_preview,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,

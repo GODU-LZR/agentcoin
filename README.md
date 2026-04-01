@@ -143,8 +143,17 @@ The runtime now also has a first semantic layer:
 - `AgentCard` and `TaskEnvelope` now carry a lightweight JSON-LD style `semantics` object
 - `GET /v1/schema/context` exposes the shared context document
 - `GET /v1/schema/capabilities` exposes capability families, aliases, and implied roles
+- `GET /v1/tasks/dispatch/preview` exposes semantic dispatch candidates and scores
 - `GET /v1/schema/examples` exposes example semantic shapes for cards and tasks
 - this is intentionally lightweight, but it starts closing the ontology gap in the original blueprint
+
+The runtime now also has a first local `PoAW` ledger:
+
+- successful ACKs generate durable positive score events
+- policy violations generate durable negative score events
+- `GET /v1/poaw/events` exposes the raw event ledger
+- `GET /v1/poaw/summary` exposes aggregated points by actor or task
+- this is a local scoring skeleton for useful-work accounting, not a chain settlement engine yet
 
 ### Quick Start
 
@@ -170,7 +179,10 @@ Key endpoints:
 - `GET /v1/card`
 - `GET /v1/schema/context`
 - `GET /v1/schema/capabilities`
+- `GET /v1/tasks/dispatch/preview`
 - `GET /v1/schema/examples`
+- `GET /v1/poaw/events`
+- `GET /v1/poaw/summary`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`

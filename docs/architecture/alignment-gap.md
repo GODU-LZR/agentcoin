@@ -94,7 +94,7 @@ The blueprint expects:
 - native reward issuance
 - staking and slashing
 
-The repository currently has no real settlement engine, no token logic, no PoAW evaluator, and no staking/slashing contract integration.
+The repository now has a first local PoAW-style score-event ledger, but it still has no real settlement engine, no token logic, no chain-backed PoAW evaluator, and no staking/slashing contract integration in the live runtime path.
 
 ### 3. Decentralization is still MVP-grade, not full network-grade
 
