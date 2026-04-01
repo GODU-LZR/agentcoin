@@ -377,6 +377,13 @@ class AgentCoinNode:
         protocol = str(task.payload.get("_bridge", {}).get("protocol") or "").strip().lower()
         return protocol or None
 
+    def _task_dispatch_requirements(self, task: TaskEnvelope) -> dict[str, Any]:
+        return {
+            "required_capabilities": list(task.required_capabilities),
+            "runtime": self._runtime_requirement(task),
+            "bridge_protocol": self._bridge_requirement(task),
+        }
+
     @staticmethod
     def _supports_runtime(runtime_name: str | None, available_runtimes: list[str]) -> bool:
         if not runtime_name:
@@ -1133,6 +1140,7 @@ class AgentCoinNode:
                             {
                                 "task": task.to_dict(),
                                 "prefer_local": prefer_local,
+                                "requirements": node._task_dispatch_requirements(task),
                                 "candidates": node.dispatch_candidates_for_task(task, prefer_local=prefer_local),
                             },
                         )

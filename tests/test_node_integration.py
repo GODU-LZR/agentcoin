@@ -545,6 +545,8 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(evaluate_status, 200)
             self.assertEqual(len(evaluated["candidates"]), 1)
+            self.assertEqual(evaluated["requirements"]["runtime"], "openai-chat")
+            self.assertIsNone(evaluated["requirements"]["bridge_protocol"])
             self.assertEqual(evaluated["candidates"][0]["target_ref"], "runtime-peer-b")
             self.assertEqual(evaluated["candidates"][0]["runtime_match"]["required"], "openai-chat")
             self.assertTrue(evaluated["candidates"][0]["runtime_match"]["supported"])
@@ -568,6 +570,68 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(dispatch_status, 201)
             self.assertEqual(dispatched["target"]["target_ref"], "runtime-peer-b")
             self.assertEqual(dispatched["task"]["deliver_to"], "runtime-peer-b")
+        finally:
+            node_a.stop()
+            node_b.stop()
+            node_c.stop()
+
+    def test_dispatch_evaluate_prefers_peer_with_matching_bridge_support(self) -> None:
+        node_b = NodeHarness(
+            node_id="bridge-peer-b",
+            token="token-bridge-b",
+            db_path=str(Path(self.tempdir.name) / "bridge-peer-b.db"),
+            capabilities=["worker", "local-command"],
+            bridges=["mcp"],
+        )
+        node_c = NodeHarness(
+            node_id="bridge-peer-c",
+            token="token-bridge-c",
+            db_path=str(Path(self.tempdir.name) / "bridge-peer-c.db"),
+            capabilities=["worker", "local-command"],
+            bridges=["a2a"],
+        )
+        node_a = NodeHarness(
+            node_id="bridge-peer-a",
+            token="token-bridge-a",
+            db_path=str(Path(self.tempdir.name) / "bridge-peer-a.db"),
+            capabilities=["planner"],
+            bridges=["a2a"],
+            peers=[
+                PeerConfig(peer_id="bridge-peer-b", name="Bridge Peer B", url="", auth_token="token-bridge-b"),
+                PeerConfig(peer_id="bridge-peer-c", name="Bridge Peer C", url="", auth_token="token-bridge-c"),
+            ],
+        )
+        node_b.start()
+        node_c.start()
+        node_a.config.peers[0].url = node_b.base_url
+        node_a.config.peers[1].url = node_c.base_url
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-bridge-a", {})
+            self.assertEqual(sync_status, 200)
+
+            evaluate_status, evaluated = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-bridge-a",
+                {
+                    "id": "bridge-aware-task",
+                    "kind": "tool-call",
+                    "role": "worker",
+                    "required_capabilities": ["local-command"],
+                    "payload": {
+                        "_bridge": {
+                            "protocol": "mcp",
+                            "tool_name": "local-command",
+                        }
+                    },
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(evaluated["requirements"]["bridge_protocol"], "mcp")
+            self.assertEqual(len(evaluated["candidates"]), 1)
+            self.assertEqual(evaluated["candidates"][0]["target_ref"], "bridge-peer-b")
+            self.assertTrue(evaluated["candidates"][0]["bridge_match"]["supported"])
+            self.assertEqual(evaluated["candidates"][0]["bridge_match"]["required"], "mcp")
         finally:
             node_a.stop()
             node_b.stop()
