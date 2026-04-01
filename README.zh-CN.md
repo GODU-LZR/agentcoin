@@ -166,6 +166,7 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `GET /v1/onchain/settlement-preview?task_id=...` 可把已完成任务映射成推荐链上动作
 - 预览会综合本地 `PoAW` 汇总、任务级违规记录和 worker 信誉状态
 - 预览现在也会暴露带版本号的 settlement policy，以及可配置的 complete/slash threshold
+- 预览现在也会拆出 `local_score`、`review_score`、`network_trust_score`，并可按可配置 challenge threshold 切到 `challengeJob`
 - 开放中的 dispute 现在会把推荐动作切到 `challengeJob`
 - 这仍然只是签名预览，不会自动广播交易
 

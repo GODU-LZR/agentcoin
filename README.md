@@ -166,6 +166,7 @@ The runtime now also has a first on-chain settlement preview:
 - `GET /v1/onchain/settlement-preview?task_id=...` maps a completed task into recommended on-chain actions
 - the preview combines local `PoAW` summaries, task-specific violations, and worker reputation
 - the preview now also exposes a versioned settlement policy with configurable complete/slash thresholds
+- the preview now separates `local_score`, `review_score`, and `network_trust_score`, and can trigger `challengeJob` from configurable challenge thresholds
 - open disputes can now shift the recommendation toward `challengeJob`
 - resolved disputes now also feed back into local score events and reputation
 - the result is a signed operator preview, not an auto-broadcasted settlement

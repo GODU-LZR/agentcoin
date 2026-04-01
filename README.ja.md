@@ -159,6 +159,7 @@ runtime には最小の on-chain settlement preview も追加しました。
 - `GET /v1/onchain/settlement-preview?task_id=...` で completed task を推奨 on-chain action に変換できます
 - preview は local `PoAW` summary、task-specific violation、worker reputation を合わせて評価します
 - preview は versioned settlement policy と configurable な complete/slash threshold も返します
+- preview は `local_score`、`review_score`、`network_trust_score` も分離して返し、configurable な challenge threshold で `challengeJob` に切り替えられます
 - open dispute がある場合は recommendation を `challengeJob` に寄せます
 - これは signed preview であり、自動送信ではありません
 

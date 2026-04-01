@@ -26,6 +26,19 @@ DEFAULT_POAW_SCORE_WEIGHTS: dict[str, int] = {
     "merged_bonus": 1,
 }
 
+LOCAL_EVENT_TYPES = {"deterministic-pass", "deterministic-fail", "merge-completed", "task-completed"}
+REVIEW_EVENT_TYPES = {
+    "subjective-approve",
+    "subjective-reject",
+    "subjective-complete",
+    "challenge-open",
+    "challenge-upheld",
+    "challenge-dismissed",
+    "dispute-bond-awarded",
+    "dispute-bond-slashed",
+    "dispute-cleared",
+}
+
 
 class NodeStore:
     def __init__(
@@ -1369,6 +1382,16 @@ class NodeStore:
                 """,
                 params,
             ).fetchall()
+            by_event_type = [
+                {
+                    "event_type": row["event_type"],
+                    "count": int(row["count"] or 0),
+                    "points": int(row["points"] or 0),
+                }
+                for row in type_rows
+            ]
+            local_score = sum(item["points"] for item in by_event_type if item["event_type"] in LOCAL_EVENT_TYPES)
+            review_score = sum(item["points"] for item in by_event_type if item["event_type"] in REVIEW_EVENT_TYPES)
             summary = {
                 "actor_id": actor_id,
                 "actor_type": actor_type,
@@ -1379,14 +1402,12 @@ class NodeStore:
                 "total_points": int(totals["total_points"] or 0),
                 "positive_points": int(totals["positive_points"] or 0),
                 "negative_points": int(totals["negative_points"] or 0),
-                "by_event_type": [
-                    {
-                        "event_type": row["event_type"],
-                        "count": int(row["count"] or 0),
-                        "points": int(row["points"] or 0),
-                    }
-                    for row in type_rows
-                ],
+                "local_score": int(local_score),
+                "review_score": int(review_score),
+                "network_trust_score": int(self.get_actor_reputation(actor_id, actor_type=actor_type or "worker").get("score", 100))
+                if actor_id
+                else None,
+                "by_event_type": by_event_type,
             }
             if actor_id:
                 summary["reputation"] = self.get_actor_reputation(actor_id, actor_type=actor_type or "worker")

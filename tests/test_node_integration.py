@@ -3171,7 +3171,73 @@ class NodeIntegrationTests(unittest.TestCase):
             settlement = preview["settlement"]
             self.assertEqual(settlement["settlement_policy"]["version"], "0.2-test")
             self.assertEqual(settlement["settlement_policy"]["complete_threshold"], 75)
+            self.assertEqual(settlement["settlement_policy"]["challenge_negative_points_threshold"], 10)
+            self.assertEqual(settlement["settlement_policy"]["network_trust_threshold"], 60)
             self.assertEqual(settlement["settlement_policy"]["slash_negative_points_threshold"], 22)
+            self.assertEqual(settlement["score_breakdown"]["local_score"], 25)
+            self.assertEqual(settlement["score_breakdown"]["network_trust_score"], 100)
+        finally:
+            node.stop()
+
+    def test_settlement_preview_can_challenge_on_network_trust_threshold(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:trust-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+            settlement_policy_version="0.2-trust",
+            settlement_network_trust_threshold=120,
+        )
+        node = NodeHarness(
+            node_id="settlement-trust-node",
+            token="token-trust",
+            db_path=str(Path(self.tempdir.name) / "settlement-trust.db"),
+            capabilities=["worker"],
+            signing_secret="trust-secret",
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-trust",
+                {
+                    "id": "settlement-trust-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 98,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-trust",
+                {"worker_id": "worker-trust-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-trust",
+                {
+                    "task_id": "settlement-trust-task-1",
+                    "worker_id": "worker-trust-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-trust-1"},
+                },
+            )
+
+            _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=settlement-trust-task-1")
+            settlement = preview["settlement"]
+            self.assertEqual(settlement["recommended_resolution"], "challengeJob")
+            self.assertEqual(settlement["settlement_policy"]["network_trust_threshold"], 120)
+            self.assertEqual(settlement["score_breakdown"]["network_trust_score"], 100)
+            self.assertTrue(settlement["resolution_params"]["evidence_hash"].startswith("0x"))
         finally:
             node.stop()
 

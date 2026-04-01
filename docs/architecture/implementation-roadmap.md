@@ -57,11 +57,11 @@ Status legend:
 ## Phase 5
 
 - `[ ]` `PoAW settlement policy` config document
-- `[ ]` separate local score
-- `[ ]` separate review score
-- `[ ]` separate network trust score
+- `[x]` separate local score
+- `[x]` separate review score
+- `[x]` separate network trust score
 - `[x]` separate slash threshold
-- `[ ]` separate challenge threshold
+- `[x]` separate challenge threshold
 - `[x]` separate complete threshold
 - `[x]` settlement preview bound to policy version
 

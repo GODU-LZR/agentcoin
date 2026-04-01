@@ -57,6 +57,9 @@ class OnchainBindings:
     receipt_base_uri: str | None = None
     settlement_policy_version: str = "0.1"
     settlement_complete_threshold: int = 60
+    settlement_challenge_negative_points_threshold: int = 10
+    settlement_min_review_score: int = 0
+    settlement_network_trust_threshold: int = 60
     settlement_slash_negative_points_threshold: int = 30
     settlement_challenge_on_open_dispute: bool = True
     settlement_challenge_on_escalated_dispute: bool = True
@@ -433,6 +436,9 @@ class OnchainRuntime:
         adapter = dict(result.get("adapter") or {})
         adapter_rejected = str(adapter.get("status") or "").strip().lower() == "rejected"
         negative_points = int(poaw_summary.get("negative_points") or 0)
+        local_score = int(poaw_summary.get("local_score") or 0)
+        review_score = int(poaw_summary.get("review_score") or 0)
+        network_trust_score = int(reputation.get("score") or poaw_summary.get("network_trust_score") or 100)
         score = self.settlement_score(poaw_summary)
         slash_amount = self.slash_amount_wei(poaw_summary)
         severe_violation = any(str(item.get("severity") or "").strip().lower() in {"high", "critical"} for item in violations)
@@ -441,6 +447,7 @@ class OnchainRuntime:
         escalated_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "escalated"]
         upheld_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "upheld"]
         dismissed_disputes = [item for item in disputes if str(item.get("status") or "").strip().lower() == "dismissed"]
+        effective_review_score = review_score if not dismissed_disputes else max(0, review_score)
 
         recommended_resolution = "completeJob"
         resolution_params: dict[str, Any] = {"score": score}
@@ -470,6 +477,29 @@ class OnchainRuntime:
                 "recipient": self.bindings.local_controller_address or "0x0000000000000000000000000000000000000000",
                 "reason": "poaw policy violations",
             }
+        elif (
+            score < int(self.bindings.settlement_complete_threshold)
+            or negative_points <= -int(self.bindings.settlement_challenge_negative_points_threshold)
+            or effective_review_score < int(self.bindings.settlement_min_review_score)
+            or network_trust_score < int(self.bindings.settlement_network_trust_threshold)
+        ):
+            recommended_resolution = "challengeJob"
+            resolution_params = {
+                "evidence_hash": as_bytes32_hex(
+                    sha256_hex(
+                        {
+                            "task_id": task.get("id"),
+                            "score": score,
+                            "local_score": local_score,
+                            "review_score": review_score,
+                            "effective_review_score": effective_review_score,
+                            "network_trust_score": network_trust_score,
+                            "negative_points": negative_points,
+                            "policy_version": self.bindings.settlement_policy_version,
+                        }
+                    )
+                ),
+            }
 
         sequence = ["submitWork", recommended_resolution]
         intents: list[dict[str, Any]] = []
@@ -489,10 +519,19 @@ class OnchainRuntime:
             "recommended_resolution": recommended_resolution,
             "recommended_sequence": sequence,
             "score": score,
+            "score_breakdown": {
+                "local_score": local_score,
+                "review_score": review_score,
+                "effective_review_score": effective_review_score,
+                "network_trust_score": network_trust_score,
+            },
             "slash_amount_wei": str(slash_amount),
             "settlement_policy": {
                 "version": self.bindings.settlement_policy_version,
                 "complete_threshold": int(self.bindings.settlement_complete_threshold),
+                "challenge_negative_points_threshold": int(self.bindings.settlement_challenge_negative_points_threshold),
+                "min_review_score": int(self.bindings.settlement_min_review_score),
+                "network_trust_threshold": int(self.bindings.settlement_network_trust_threshold),
                 "slash_negative_points_threshold": int(self.bindings.settlement_slash_negative_points_threshold),
                 "challenge_on_open_dispute": bool(self.bindings.settlement_challenge_on_open_dispute),
                 "challenge_on_escalated_dispute": bool(self.bindings.settlement_challenge_on_escalated_dispute),

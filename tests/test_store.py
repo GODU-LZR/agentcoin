@@ -370,6 +370,8 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(summary["negative_points"], -15)
         self.assertEqual(summary["poaw_policy_version"], "0.2")
         self.assertIn("worker_base", summary["score_weights"])
+        self.assertEqual(summary["local_score"], 0)
+        self.assertEqual(summary["review_score"], 14)
         self.assertEqual(summary["reputation"]["violations"], 1)
 
     def test_policy_violations_update_reputation_and_block_claim(self) -> None:
