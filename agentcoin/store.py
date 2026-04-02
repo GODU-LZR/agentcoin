@@ -256,6 +256,20 @@ class NodeStore:
                     relay_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS settlement_relay_queue (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    next_attempt_at TEXT NOT NULL,
+                    last_error TEXT,
+                    last_relay_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    completed_at TEXT
+                );
                 """
             )
             self._ensure_column(conn, "tasks", "required_capabilities_json", "TEXT NOT NULL DEFAULT '[]'")
@@ -601,6 +615,8 @@ class NodeStore:
             disputes_open = conn.execute("SELECT COUNT(*) FROM disputes WHERE status = 'open'").fetchone()[0]
             score_events = conn.execute("SELECT COUNT(*) FROM score_events").fetchone()[0]
             settlement_relays = conn.execute("SELECT COUNT(*) FROM settlement_relays").fetchone()[0]
+            settlement_relay_queue = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue").fetchone()[0]
+            settlement_relay_queue_queued = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'queued'").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -625,6 +641,8 @@ class NodeStore:
                 "disputes_open": disputes_open,
                 "score_events": score_events,
                 "settlement_relays": settlement_relays,
+                "settlement_relay_queue": settlement_relay_queue,
+                "settlement_relay_queue_queued": settlement_relay_queue_queued,
             }
         finally:
             conn.close()
@@ -1909,6 +1927,136 @@ class NodeStore:
     def get_latest_settlement_relay(self, task_id: str) -> dict[str, Any] | None:
         items = self.list_settlement_relays(task_id=task_id, limit=1)
         return items[0] if items else None
+
+    def enqueue_settlement_relay(
+        self,
+        *,
+        task_id: str,
+        payload: dict[str, Any],
+        max_attempts: int = 3,
+        delay_seconds: int = 0,
+    ) -> dict[str, Any]:
+        queue_id = str(uuid4())
+        created_at = utc_now()
+        next_attempt_at = utc_after(max(0, int(delay_seconds)))
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO settlement_relay_queue
+                (
+                    id, task_id, status, attempts, max_attempts, next_attempt_at,
+                    last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                )
+                VALUES (?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, ?, ?, NULL)
+                """,
+                (
+                    queue_id,
+                    task_id,
+                    int(max_attempts or 3),
+                    next_attempt_at,
+                    json.dumps(payload, ensure_ascii=False),
+                    created_at,
+                    created_at,
+                ),
+            )
+            conn.commit()
+            return self.get_settlement_relay_queue_item(queue_id) or {
+                "id": queue_id,
+                "task_id": task_id,
+                "status": "queued",
+                "attempts": 0,
+                "max_attempts": int(max_attempts or 3),
+                "next_attempt_at": next_attempt_at,
+                "last_error": None,
+                "last_relay_id": None,
+                "payload": payload,
+                "created_at": created_at,
+                "updated_at": created_at,
+                "completed_at": None,
+            }
+        finally:
+            conn.close()
+
+    def list_settlement_relay_queue(
+        self,
+        *,
+        task_id: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            conditions: list[str] = []
+            params: list[Any] = []
+            if task_id:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+            if status:
+                conditions.append("status = ?")
+                params.append(status)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            rows = conn.execute(
+                f"""
+                SELECT id, task_id, status, attempts, max_attempts, next_attempt_at,
+                       last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                FROM settlement_relay_queue
+                {where_clause}
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "task_id": row["task_id"],
+                    "status": row["status"],
+                    "attempts": int(row["attempts"] or 0),
+                    "max_attempts": int(row["max_attempts"] or 0),
+                    "next_attempt_at": row["next_attempt_at"],
+                    "last_error": row["last_error"],
+                    "last_relay_id": row["last_relay_id"],
+                    "payload": json.loads(row["payload_json"] or "{}"),
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "completed_at": row["completed_at"],
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_settlement_relay_queue_item(self, queue_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, task_id, status, attempts, max_attempts, next_attempt_at,
+                       last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                FROM settlement_relay_queue
+                WHERE id = ?
+                """,
+                (queue_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "status": row["status"],
+                "attempts": int(row["attempts"] or 0),
+                "max_attempts": int(row["max_attempts"] or 0),
+                "next_attempt_at": row["next_attempt_at"],
+                "last_error": row["last_error"],
+                "last_relay_id": row["last_relay_id"],
+                "payload": json.loads(row["payload_json"] or "{}"),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "completed_at": row["completed_at"],
+            }
+        finally:
+            conn.close()
 
     def _completion_score_event(
         self,

@@ -24,6 +24,7 @@ The current test scope covers:
 - runtime adapter execution for LangGraph-style HTTP runtimes
 - runtime adapter execution for container-job skeletons
 - runtime adapter execution for Ollama chat and OpenAI-compatible gateways
+- settlement relay queue persistence and replay-inspect visibility
 - OpenAI-compatible structured output forwarding and parsed JSON normalization
 - semantic card and task shape exposure
 - receipt schema examples and subjective review / challenge evidence receipts

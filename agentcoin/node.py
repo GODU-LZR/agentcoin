@@ -375,19 +375,23 @@ class AgentCoinNode:
         worker_id = ""
         if audits:
             worker_id = str(audits[0].get("worker_id") or "")
+        task_result = dict(task.get("result") or {})
         if not worker_id:
-            worker_id = str(task.get("result", {}).get("worker_id") or "")
+            worker_id = str(task_result.get("worker_id") or "")
         reputation = self.store.get_actor_reputation(worker_id, actor_type="worker") if worker_id else {}
         violations = self.store.list_policy_violations(actor_id=worker_id, limit=200) if worker_id else []
         violations = [item for item in violations if item.get("task_id") == task.get("id")]
         disputes = self.store.list_disputes(task_id=str(task.get("id") or ""), limit=200)
-        preview = self.onchain.settlement_preview(
-            task,
-            poaw_summary=self.store.summarize_score_events(task_id=str(task.get("id") or "")),
-            reputation=reputation,
-            violations=violations,
-            disputes=disputes,
-        )
+        try:
+            preview = self.onchain.settlement_preview(
+                task,
+                poaw_summary=self.store.summarize_score_events(task_id=str(task.get("id") or "")),
+                reputation=reputation,
+                violations=violations,
+                disputes=disputes,
+            )
+        except ValueError:
+            return None
         return self._sign_document(
             preview,
             hmac_scope="onchain-settlement-preview",
@@ -1150,6 +1154,15 @@ class AgentCoinNode:
                         {"items": node.store.list_settlement_relays(task_id=task_id, limit=limit)},
                     )
                     return
+                if path == "/v1/onchain/settlement-relay-queue":
+                    task_id = (query.get("task_id") or [None])[0]
+                    status_name = (query.get("status") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": node.store.list_settlement_relay_queue(task_id=task_id, status=status_name, limit=limit)},
+                    )
+                    return
                 if path == "/v1/onchain/settlement-relays/latest":
                     task_id = (query.get("task_id") or [""])[0]
                     if not task_id:
@@ -1234,15 +1247,16 @@ class AgentCoinNode:
                         }
                     onchain_preview = None
                     if task.get("payload", {}).get("_onchain"):
+                        task_result = dict(task.get("result") or {})
                         onchain_preview = {
                             "submitWork": node.onchain.transaction_intent(task, action="submitWork")
-                            if task.get("result", {}).get("_onchain_receipt")
+                            if task_result.get("_onchain_receipt")
                             else None,
                             "completeJob": node.onchain.transaction_intent(task, action="completeJob")
-                            if task.get("result", {}).get("_onchain_receipt")
+                            if task_result.get("_onchain_receipt")
                             else None,
                             "estimateGas": node.onchain.rpc_payload(task, action="submitWork", rpc={"method": "eth_estimateGas"})
-                            if task.get("result", {}).get("_onchain_receipt")
+                            if task_result.get("_onchain_receipt")
                             else None,
                         }
                     self._json_response(
@@ -1254,11 +1268,12 @@ class AgentCoinNode:
                             "poaw_summary": node.store.summarize_score_events(task_id=task_id),
                             "disputes": node.store.list_disputes(task_id=task_id, limit=200),
                             "settlement_relays": node.store.list_settlement_relays(task_id=task_id, limit=200),
+                            "settlement_relay_queue": node.store.list_settlement_relay_queue(task_id=task_id, limit=200),
                             "latest_settlement_relay": node.store.get_latest_settlement_relay(task_id),
                             "bridge_export_preview": export_preview,
                             "git_proof_bundle": git_proof_bundle,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
-                            "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
+                            "onchain_receipt": dict(task.get("result") or {}).get("_onchain_receipt"),
                             "onchain_intent_preview": onchain_preview,
                             "onchain_settlement_preview": node._task_settlement_preview(task),
                         },
@@ -1606,6 +1621,35 @@ class AgentCoinNode:
                             identity_namespace="agentcoin-onchain-settlement-relay",
                         )
                         self._json_response(HTTPStatus.OK, {"relay": signed_relay})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        if not task.get("payload", {}).get("_onchain"):
+                            raise ValueError("task is not bound to onchain settlement")
+                        queue_payload = {
+                            "task_id": task_id,
+                            "raw_transactions": list(payload.get("raw_transactions") or []),
+                            "rpc": dict(payload.get("rpc") or {}),
+                            "rpc_url": str(payload.get("rpc_url") or "").strip() or None,
+                            "timeout_seconds": float(payload.get("timeout_seconds") or 10),
+                            "continue_on_error": bool(payload.get("continue_on_error")),
+                            "resume_from_index": int(payload.get("resume_from_index") or 0),
+                        }
+                        item = node.store.enqueue_settlement_relay(
+                            task_id=task_id,
+                            payload=queue_payload,
+                            max_attempts=int(payload.get("max_attempts") or 3),
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                        )
+                        self._json_response(HTTPStatus.CREATED, {"item": item})
                         return
                     if self.path == "/v1/onchain/settlement-relays/replay":
                         if not self._require_auth():

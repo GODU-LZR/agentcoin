@@ -720,7 +720,8 @@ class OnchainRuntime:
 
     def _submit_work_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
-        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        task_result = dict(task.get("result") or {})
+        receipt = dict(params.get("receipt") or task_result.get("_onchain_receipt") or {})
         job_id = onchain.get("job_id") or receipt.get("job_id")
         if job_id is None:
             raise ValueError("task is not bound to an onchain job_id")
@@ -767,7 +768,8 @@ class OnchainRuntime:
 
     def _complete_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
-        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        task_result = dict(task.get("result") or {})
+        receipt = dict(params.get("receipt") or task_result.get("_onchain_receipt") or {})
         job_id = onchain.get("job_id") or receipt.get("job_id")
         if job_id is None:
             raise ValueError("task is not bound to an onchain job_id")
@@ -788,7 +790,8 @@ class OnchainRuntime:
 
     def _reject_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
-        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        task_result = dict(task.get("result") or {})
+        receipt = dict(params.get("receipt") or task_result.get("_onchain_receipt") or {})
         job_id = onchain.get("job_id") or receipt.get("job_id")
         if job_id is None:
             raise ValueError("task is not bound to an onchain job_id")
@@ -808,7 +811,8 @@ class OnchainRuntime:
 
     def _slash_job_intent(self, task: dict[str, Any], *, params: dict[str, Any]) -> dict[str, Any]:
         onchain = dict(task.get("payload", {}).get("_onchain") or {})
-        receipt = dict(params.get("receipt") or task.get("result", {}).get("_onchain_receipt") or {})
+        task_result = dict(task.get("result") or {})
+        receipt = dict(params.get("receipt") or task_result.get("_onchain_receipt") or {})
         job_id = onchain.get("job_id") or receipt.get("job_id")
         if job_id is None:
             raise ValueError("task is not bound to an onchain job_id")

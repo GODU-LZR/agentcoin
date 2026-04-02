@@ -106,7 +106,7 @@ Status legend:
 
 ## Phase 10
 
-- `[ ]` relay queue persistence
+- `[x]` relay queue persistence
 - `[ ]` background settlement relay worker
 - `[ ]` relay queue pause / resume
 - `[ ]` relay queue max in-flight

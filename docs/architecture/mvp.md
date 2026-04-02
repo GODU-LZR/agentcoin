@@ -107,6 +107,8 @@ The outbound transport path is now centralized as well:
 - `POST /v1/git/branch`
 - `POST /v1/git/task-context`
 - `POST /v1/inbox`
+- `GET /v1/onchain/settlement-relay-queue`
+- `POST /v1/onchain/settlement-relay-queue`
 - `POST /v1/outbox/flush`
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/rpc-payload`

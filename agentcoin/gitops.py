@@ -41,6 +41,24 @@ class GitWorkspace:
     def _sha256_text(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _changed_files_from_diff_output(output: str) -> list[str]:
+        files: list[str] = []
+        seen: set[str] = set()
+        for line in output.splitlines():
+            if not line.startswith("diff --git "):
+                continue
+            parts = line.split(" ")
+            if len(parts) < 4:
+                continue
+            right = parts[3]
+            if right.startswith("b/"):
+                right = right[2:]
+            if right not in seen:
+                files.append(right)
+                seen.add(right)
+        return files
+
     def ref_sha(self, ref: str | None) -> str | None:
         if not ref:
             return None
@@ -123,10 +141,18 @@ class GitWorkspace:
         diff = self.diff(base_ref=base_ref, target_ref=target_ref, name_only=False)
         return self._sha256_text(str(diff["output"] or ""))
 
-    def mergeability_snapshot(self, base_ref: str, target_ref: str) -> dict[str, Any]:
-        base_sha = self.ref_sha(base_ref)
-        target_sha = self.ref_sha(target_ref)
-        merge_base_sha = self.merge_base(base_ref, target_ref)
+    def mergeability_snapshot(
+        self,
+        base_ref: str,
+        target_ref: str,
+        *,
+        base_sha: str | None = None,
+        target_sha: str | None = None,
+        merge_base_sha: str | None = None,
+    ) -> dict[str, Any]:
+        base_sha = base_sha or self.ref_sha(base_ref)
+        target_sha = target_sha or self.ref_sha(target_ref)
+        merge_base_sha = merge_base_sha or self.merge_base(base_ref, target_ref)
         base_is_ancestor = self._is_ancestor(base_ref, target_ref)
         target_is_ancestor = self._is_ancestor(target_ref, base_ref)
         mergeable = None
@@ -146,17 +172,47 @@ class GitWorkspace:
         }
 
     def task_context(self, base_ref: str = "HEAD", target_ref: str | None = None) -> dict[str, Any]:
-        status = self.status()
-        diff_files = self.diff(base_ref=base_ref, target_ref=target_ref, name_only=True)
-        head_ref = status["branch"]
-        head_sha = status["head"]
-        base_sha = self.ref_sha(base_ref)
+        head_ref = self._git("symbolic-ref", "--short", "HEAD")
+        refs = self._git_result(
+            "rev-parse",
+            "HEAD",
+            f"{base_ref}^{{commit}}",
+            *( [f"{target_ref}^{{commit}}"] if target_ref else [] ),
+        )
+        if refs.returncode != 0:
+            stderr = refs.stderr.strip() or refs.stdout.strip() or "git command failed"
+            raise ValueError(stderr)
+        ref_lines = [line.strip() for line in refs.stdout.splitlines() if line.strip()]
+        if len(ref_lines) < 2:
+            raise ValueError("unable to resolve git refs")
+
+        head_sha = ref_lines[0]
+        base_sha = ref_lines[1]
         effective_target_ref = target_ref or head_ref
-        target_sha = self.ref_sha(target_ref) if target_ref else head_sha
+        target_sha = ref_lines[2] if target_ref and len(ref_lines) > 2 else head_sha
+
+        porcelain = self._git("status", "--porcelain=1")
+        staged: list[str] = []
+        unstaged: list[str] = []
+        untracked: list[str] = []
+        for line in [item for item in porcelain.splitlines() if item.strip()]:
+            code = line[:2]
+            path = line[2:].strip()
+            if code == "??":
+                untracked.append(path)
+                continue
+            if code[0] != " ":
+                staged.append(path)
+            if code[1] != " ":
+                unstaged.append(path)
+
+        diff_output = self.diff(base_ref=base_ref, target_ref=target_ref, name_only=False)["output"]
+        changed_files = self._changed_files_from_diff_output(diff_output)
+        merge_base_sha = self.merge_base(base_ref, target_ref) if target_ref else None
         return {
-            "repo_root": status["root"],
-            "branch": status["branch"],
-            "head": status["head"],
+            "repo_root": str(self.root),
+            "branch": head_ref,
+            "head": head_sha,
             "head_ref": head_ref,
             "head_sha": head_sha,
             "commit_sha": head_sha,
@@ -164,11 +220,21 @@ class GitWorkspace:
             "base_sha": base_sha,
             "target_ref": effective_target_ref,
             "target_sha": target_sha,
-            "merge_base_sha": self.merge_base(base_ref, target_ref) if target_ref else None,
-            "is_dirty": status["is_dirty"],
-            "changed_files": diff_files["files"],
-            "diff_hash": self.diff_hash(base_ref=base_ref, target_ref=target_ref),
-            "mergeability": self.mergeability_snapshot(base_ref, target_ref) if target_ref else None,
+            "merge_base_sha": merge_base_sha,
+            "is_dirty": bool(staged or unstaged or untracked),
+            "changed_files": changed_files,
+            "diff_hash": self._sha256_text(str(diff_output or "")),
+            "mergeability": (
+                self.mergeability_snapshot(
+                    base_ref,
+                    target_ref,
+                    base_sha=base_sha,
+                    target_sha=target_sha,
+                    merge_base_sha=merge_base_sha,
+                )
+                if target_ref
+                else None
+            ),
         }
 
     def merge_proof_context(

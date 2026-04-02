@@ -3126,6 +3126,74 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_onchain_settlement_relay_queue_persists_items(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-queue-node",
+            token="token-settlement-queue",
+            db_path=str(Path(self.tempdir.name) / "settlement-queue.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-queue",
+                {
+                    "id": "settlement-queue-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 99,
+                },
+            )
+            status, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-queue",
+                {
+                    "task_id": "settlement-queue-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": "https://bsc-testnet.example/rpc",
+                    "max_attempts": 5,
+                },
+            )
+            self.assertEqual(status, 201)
+            item = queued["item"]
+            self.assertEqual(item["task_id"], "settlement-queue-task-1")
+            self.assertEqual(item["status"], "queued")
+            self.assertEqual(item["max_attempts"], 5)
+            self.assertEqual(item["payload"]["rpc_url"], "https://bsc-testnet.example/rpc")
+            self.assertEqual(item["payload"]["raw_transactions"][0]["action"], "submitWork")
+
+            _, queue_items = self._get(f"{node.base_url}/v1/onchain/settlement-relay-queue?task_id=settlement-queue-task-1")
+            self.assertEqual(len(queue_items["items"]), 1)
+            self.assertEqual(queue_items["items"][0]["id"], item["id"])
+
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["stats"]["settlement_relay_queue"], 1)
+            self.assertEqual(health["stats"]["settlement_relay_queue_queued"], 1)
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-queue-task-1")
+            self.assertEqual(len(replay["settlement_relay_queue"]), 1)
+            self.assertEqual(replay["settlement_relay_queue"][0]["id"], item["id"])
+        finally:
+            node.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",
