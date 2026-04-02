@@ -11,14 +11,15 @@ import unittest
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib import error, request
 
 from agentcoin.adapters import AdapterPolicy
-from agentcoin.config import NodeConfig, PeerConfig
+from agentcoin.config import NodeConfig, OperatorIdentityConfig, PeerConfig
 from agentcoin.net import OutboundNetworkConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.onchain import OnchainBindings
-from agentcoin.security import sign_document_with_ssh, verify_document
+from agentcoin.security import sign_document_with_ssh, sign_operator_request_headers, verify_document
 from agentcoin.worker import WorkerLoop
 
 
@@ -35,6 +36,10 @@ class NodeHarness:
                  identity_principal: str | None = None, identity_private_key_path: str | None = None,
                  identity_public_key: str | None = None, identity_public_keys: list[str] | None = None,
                  identity_revoked_public_keys: list[str] | None = None,
+                 operator_identities: list[OperatorIdentityConfig] | None = None,
+                 operator_allow_loopback_bearer_fallback: bool = False,
+                 operator_auth_timestamp_skew_seconds: int = 300,
+                 operator_auth_nonce_ttl_seconds: int = 900,
                  config_path: str | None = None,
                  onchain: OnchainBindings | None = None,
                  network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
@@ -56,6 +61,10 @@ class NodeHarness:
             identity_public_key=identity_public_key,
             identity_public_keys=identity_public_keys or [],
             identity_revoked_public_keys=identity_revoked_public_keys or [],
+            operator_identities=operator_identities or [],
+            operator_allow_loopback_bearer_fallback=operator_allow_loopback_bearer_fallback,
+            operator_auth_timestamp_skew_seconds=operator_auth_timestamp_skew_seconds,
+            operator_auth_nonce_ttl_seconds=operator_auth_nonce_ttl_seconds,
             config_path=config_path,
             host="127.0.0.1",
             port=self.port,
@@ -394,6 +403,46 @@ class NodeIntegrationTests(unittest.TestCase):
             },
             method="POST",
         )
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _signed_post(
+        self,
+        url: str,
+        token: str,
+        payload: dict,
+        *,
+        key_id: str,
+        shared_secret: str | None = None,
+        private_key_path: str | None = None,
+        principal: str | None = None,
+        public_key: str | None = None,
+        timestamp: str | None = None,
+        nonce: str | None = None,
+    ) -> tuple[int, dict]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        parsed = urlparse(url)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            **sign_operator_request_headers(
+                method="POST",
+                path=parsed.path,
+                query=parsed.query,
+                body=body,
+                key_id=key_id,
+                shared_secret=shared_secret,
+                private_key_path=private_key_path,
+                principal=principal,
+                public_key=public_key,
+                timestamp=timestamp,
+                nonce=nonce,
+            ),
+        }
+        req = request.Request(url, data=body, headers=headers, method="POST")
         try:
             with request.urlopen(req, timeout=10) as resp:
                 return resp.status, json.loads(resp.read().decode("utf-8"))
@@ -1594,6 +1643,128 @@ class NodeIntegrationTests(unittest.TestCase):
             _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
             self.assertEqual(actions["items"][0]["action_type"], "peer-identity-trust-apply")
             self.assertEqual(actions["items"][0]["operator_id"], "admin-1")
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_signed_operator_request_is_required_for_trust_admin_endpoints(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_signed_apply", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_signed_apply", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-signed-apply-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-signed-apply-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="trust-admin:ops-1",
+                    shared_secret="trust-operator-secret",
+                    scopes=["trust-admin"],
+                )
+            ],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+
+            bearer_status, bearer_denied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "trust-admin:ops-1",
+                    "reason": "approve rotated peer key",
+                    "actions": ["apply-pending-trust"],
+                },
+            )
+            self.assertEqual(bearer_status, 401)
+            self.assertEqual(bearer_denied["policy_receipt"]["decision"], "rejected")
+            self.assertEqual(bearer_denied["policy_receipt"]["reason_code"], "signed-request-required")
+            denial_verification = verify_document(
+                bearer_denied["policy_receipt"],
+                secret="governance-secret",
+                expected_scope="operator-auth-receipt",
+                expected_key_id="node-a",
+            )
+            self.assertTrue(denial_verification["verified"])
+
+            signed_timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            signed_nonce = "trust-auth-nonce-1"
+            signed_status, signed_applied = self._signed_post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "trust-admin:ops-1",
+                    "reason": "approve rotated peer key",
+                    "actions": ["apply-pending-trust"],
+                    "payload": {"ticket": "TRUST-SIGNED-1"},
+                },
+                key_id="trust-admin:ops-1",
+                shared_secret="trust-operator-secret",
+                timestamp=signed_timestamp,
+                nonce=signed_nonce,
+            )
+            self.assertEqual(signed_status, 200)
+            self.assertEqual(signed_applied["action"]["operator_id"], "trust-admin:ops-1")
+            self.assertEqual(signed_applied["action"]["receipt"]["auth_context"]["mode"], "signed-hmac")
+            self.assertEqual(signed_applied["action"]["receipt"]["auth_context"]["key_id"], "trust-admin:ops-1")
+            self.assertEqual(signed_applied["action"]["receipt"]["auth_context"]["policy_tier"], "trust-admin")
+            self.assertEqual(signed_applied["action"]["receipt"]["auth_context"]["operator_id"], "trust-admin:ops-1")
+
+            replay_status, replay_denied = self._signed_post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "trust-admin:ops-1",
+                    "reason": "approve rotated peer key",
+                    "actions": ["apply-pending-trust"],
+                    "payload": {"ticket": "TRUST-SIGNED-1"},
+                },
+                key_id="trust-admin:ops-1",
+                shared_secret="trust-operator-secret",
+                timestamp=signed_timestamp,
+                nonce=signed_nonce,
+            )
+            self.assertEqual(replay_status, 401)
+            self.assertEqual(replay_denied["policy_receipt"]["reason_code"], "nonce-reused")
+
+            audits = node_a.node.store.list_operator_auth_audits(
+                endpoint="/v1/peers/identity-trust/apply",
+                limit=10,
+            )
+            self.assertEqual([item["decision"] for item in audits[:3]], ["denied", "allowed", "denied"])
+            self.assertEqual(audits[0]["payload"]["policy_receipt"]["reason_code"], "nonce-reused")
+            self.assertEqual(audits[1]["key_id"], "trust-admin:ops-1")
+            self.assertEqual(audits[1]["auth_mode"], "signed-hmac")
+            self.assertEqual(audits[2]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
         finally:
             node_a.stop()
             node_b.stop()
@@ -4290,6 +4461,122 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(replay["settlement_relays"]), 1)
             self.assertEqual(replay["settlement_relays"][0]["relay"]["completed_steps"], 2)
             self.assertEqual(replay["latest_settlement_relay"]["id"], relay["relay_record_id"])
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_signed_operator_request_is_required_for_settlement_relay(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0xsettlementauth{call_count['raw']}"
+
+        rpc = RpcHarness({"eth_sendRawTransaction": raw_tx_response})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-auth-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-relay-node",
+            token="token-settlement-relay",
+            db_path=str(Path(self.tempdir.name) / "settlement-relay-auth.db"),
+            capabilities=["worker"],
+            signing_secret="settlement-relay-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="settlement-admin:ops-1",
+                    shared_secret="settlement-operator-secret",
+                    scopes=["settlement-admin"],
+                )
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-relay",
+                {
+                    "id": "settlement-relay-auth-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 941,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-settlement-relay",
+                {"worker_id": "worker-relay-auth-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-settlement-relay",
+                {
+                    "task_id": "settlement-relay-auth-task-1",
+                    "worker_id": "worker-relay-auth-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-relay-auth-1"},
+                },
+            )
+
+            denied_status, denied = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-relay",
+                {
+                    "task_id": "settlement-relay-auth-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaabbbb"},
+                        {"action": "completeJob", "raw_transaction": "0xccccdddd"},
+                    ],
+                },
+            )
+            self.assertEqual(denied_status, 401)
+            self.assertEqual(denied["policy_receipt"]["reason_code"], "signed-request-required")
+
+            signed_status, relay_payload = self._signed_post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-relay",
+                {
+                    "task_id": "settlement-relay-auth-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaabbbb"},
+                        {"action": "completeJob", "raw_transaction": "0xccccdddd"},
+                    ],
+                },
+                key_id="settlement-admin:ops-1",
+                shared_secret="settlement-operator-secret",
+            )
+            self.assertEqual(signed_status, 200)
+            relay = relay_payload["relay"]
+            self.assertEqual(relay["operator_id"], "settlement-admin:ops-1")
+            self.assertEqual(relay["auth_context"]["mode"], "signed-hmac")
+            self.assertEqual(relay["auth_context"]["policy_tier"], "settlement-admin")
+            self.assertEqual(relay["auth_context"]["key_id"], "settlement-admin:ops-1")
+            verification = verify_document(
+                relay,
+                secret="settlement-relay-secret",
+                expected_scope="onchain-settlement-relay",
+                expected_key_id="settlement-relay-node",
+            )
+            self.assertTrue(verification["verified"])
+
+            audits = node.node.store.list_operator_auth_audits(endpoint="/v1/onchain/settlement-relay", limit=10)
+            self.assertEqual([item["decision"] for item in audits[:2]], ["allowed", "denied"])
+            self.assertEqual(audits[0]["key_id"], "settlement-admin:ops-1")
+            self.assertEqual(audits[0]["auth_mode"], "signed-hmac")
+            self.assertEqual(audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
         finally:
             node.stop()
             rpc.stop()

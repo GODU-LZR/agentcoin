@@ -209,6 +209,30 @@ class NodeStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS operator_auth_audits (
+                    id TEXT PRIMARY KEY,
+                    endpoint TEXT NOT NULL,
+                    method TEXT NOT NULL,
+                    policy_tier TEXT NOT NULL,
+                    policy_level INTEGER NOT NULL DEFAULT 0,
+                    decision TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    key_id TEXT,
+                    auth_mode TEXT NOT NULL,
+                    remote_address TEXT,
+                    remote_port INTEGER,
+                    nonce TEXT,
+                    body_digest TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS operator_auth_nonces (
+                    key_id TEXT NOT NULL,
+                    nonce TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    PRIMARY KEY (key_id, nonce)
+                );
                 CREATE TABLE IF NOT EXISTS disputes (
                     id TEXT PRIMARY KEY,
                     task_id TEXT NOT NULL,
@@ -620,6 +644,7 @@ class NodeStore:
             policy_violations = conn.execute("SELECT COUNT(*) FROM policy_violations").fetchone()[0]
             active_quarantines = conn.execute("SELECT COUNT(*) FROM quarantines WHERE active = 1").fetchone()[0]
             governance_actions = conn.execute("SELECT COUNT(*) FROM governance_actions").fetchone()[0]
+            operator_auth_audits = conn.execute("SELECT COUNT(*) FROM operator_auth_audits").fetchone()[0]
             disputes_open = conn.execute("SELECT COUNT(*) FROM disputes WHERE status = 'open'").fetchone()[0]
             score_events = conn.execute("SELECT COUNT(*) FROM score_events").fetchone()[0]
             settlement_relays = conn.execute("SELECT COUNT(*) FROM settlement_relays").fetchone()[0]
@@ -651,6 +676,7 @@ class NodeStore:
                 "policy_violations": policy_violations,
                 "quarantines_active": active_quarantines,
                 "governance_actions": governance_actions,
+                "operator_auth_audits": operator_auth_audits,
                 "disputes_open": disputes_open,
                 "score_events": score_events,
                 "settlement_relays": settlement_relays,
@@ -1616,6 +1642,7 @@ class NodeStore:
         decision: str,
         note: str | None = None,
         payload: dict[str, Any] | None = None,
+        operator_id: str | None = None,
         resolution_receipt_factory: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     ) -> dict[str, Any] | None:
         now = utc_now()
@@ -1678,6 +1705,7 @@ class NodeStore:
                     "dispute_id": dispute_id,
                     "task_id": row["task_id"],
                     "decision": normalized_decision,
+                    "operator_id": operator_id,
                     "committee_quorum": committee_quorum,
                     "committee_tally": tally,
                 },
@@ -1715,13 +1743,13 @@ class NodeStore:
                 "committee_tally": tally,
                 "resolution_status": resolution_status,
                 "resolution_reason": resolution_reason,
-                "operator_id": f"committee:{voter_id}",
+                "operator_id": operator_id or f"committee:{voter_id}",
             }
             return self.resolve_dispute(
                 dispute_id=dispute_id,
                 resolution_status=resolution_status,
                 reason=resolution_reason or "committee resolution",
-                operator_id=f"committee:{voter_id}",
+                operator_id=operator_id or f"committee:{voter_id}",
                 payload={
                     "committee_votes": filtered_votes,
                     "committee_tally": tally,
@@ -3046,6 +3074,157 @@ class NodeStore:
             )
             conn.commit()
             return action
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _operator_auth_audit_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        payload = json.loads(row["payload_json"] or "{}")
+        return {
+            "id": row["id"],
+            "endpoint": row["endpoint"],
+            "method": row["method"],
+            "policy_tier": row["policy_tier"],
+            "policy_level": int(row["policy_level"] or 0),
+            "decision": row["decision"],
+            "reason": row["reason"],
+            "key_id": row["key_id"],
+            "auth_mode": row["auth_mode"],
+            "remote_address": row["remote_address"],
+            "remote_port": row["remote_port"],
+            "nonce": row["nonce"],
+            "body_digest": row["body_digest"],
+            "payload": payload,
+            "created_at": row["created_at"],
+        }
+
+    def record_operator_auth_audit(
+        self,
+        *,
+        endpoint: str,
+        method: str,
+        policy_tier: str,
+        policy_level: int,
+        decision: str,
+        reason: str,
+        auth_mode: str,
+        key_id: str | None = None,
+        remote_address: str | None = None,
+        remote_port: int | None = None,
+        nonce: str | None = None,
+        body_digest: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        audit_id = str(uuid4())
+        created_at = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO operator_auth_audits
+                (id, endpoint, method, policy_tier, policy_level, decision, reason, key_id, auth_mode,
+                 remote_address, remote_port, nonce, body_digest, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_id,
+                    endpoint,
+                    method,
+                    policy_tier,
+                    int(policy_level),
+                    decision,
+                    reason,
+                    key_id,
+                    auth_mode,
+                    remote_address,
+                    remote_port,
+                    nonce,
+                    body_digest,
+                    json.dumps(payload or {}, ensure_ascii=False),
+                    created_at,
+                ),
+            )
+            conn.commit()
+            return {
+                "id": audit_id,
+                "endpoint": endpoint,
+                "method": method,
+                "policy_tier": policy_tier,
+                "policy_level": int(policy_level),
+                "decision": decision,
+                "reason": reason,
+                "key_id": key_id,
+                "auth_mode": auth_mode,
+                "remote_address": remote_address,
+                "remote_port": remote_port,
+                "nonce": nonce,
+                "body_digest": body_digest,
+                "payload": payload or {},
+                "created_at": created_at,
+            }
+        finally:
+            conn.close()
+
+    def list_operator_auth_audits(
+        self,
+        *,
+        endpoint: str | None = None,
+        decision: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            conditions: list[str] = []
+            params: list[Any] = []
+            if endpoint:
+                conditions.append("endpoint = ?")
+                params.append(endpoint)
+            if decision:
+                conditions.append("decision = ?")
+                params.append(decision)
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            rows = conn.execute(
+                f"""
+                SELECT id, endpoint, method, policy_tier, policy_level, decision, reason, key_id,
+                       auth_mode, remote_address, remote_port, nonce, body_digest, payload_json, created_at
+                FROM operator_auth_audits
+                {where_clause}
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+            return [self._operator_auth_audit_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def reserve_operator_auth_nonce(self, *, key_id: str, nonce: str, ttl_seconds: int) -> bool:
+        normalized_key_id = str(key_id or "").strip()
+        normalized_nonce = str(nonce or "").strip()
+        if not normalized_key_id or not normalized_nonce:
+            raise ValueError("key_id and nonce are required")
+        now = utc_now()
+        expires_at = utc_after(max(1, int(ttl_seconds)))
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM operator_auth_nonces WHERE expires_at <= ?",
+                (now,),
+            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO operator_auth_nonces (key_id, nonce, first_seen_at, expires_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (normalized_key_id, normalized_nonce, now, expires_at),
+                )
+            except sqlite3.IntegrityError:
+                conn.commit()
+                return False
+            conn.commit()
+            return True
         finally:
             conn.close()
 

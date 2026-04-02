@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -8,6 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
+from uuid import uuid4
 
 from agentcoin.models import utc_now
 
@@ -15,6 +18,7 @@ SIGNATURE_FIELD = "_signature"
 IDENTITY_SIGNATURE_FIELD = "_identity_signature"
 SIGNATURE_ALGORITHM = "hmac-sha256"
 IDENTITY_ALGORITHM = "ssh-ed25519"
+OPERATOR_REQUEST_NAMESPACE = "agentcoin-operator-request"
 
 
 class SignatureError(ValueError):
@@ -235,3 +239,99 @@ def verify_document_with_ssh(
             last_error = exc
 
     raise last_error or SignatureError("identity signature verification failed")
+
+
+def canonicalize_query_string(query: str | None) -> str:
+    pairs = parse_qsl(str(query or ""), keep_blank_values=True)
+    pairs.sort(key=lambda item: (item[0], item[1]))
+    return urlencode(pairs, doseq=True)
+
+
+def operator_request_body_digest(body: bytes | str | None) -> str:
+    raw: bytes
+    if isinstance(body, bytes):
+        raw = body
+    elif isinstance(body, str):
+        raw = body.encode("utf-8")
+    else:
+        raw = b""
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def build_operator_request_envelope(
+    *,
+    method: str,
+    path: str,
+    canonical_query: str,
+    timestamp: str,
+    nonce: str,
+    body_digest: str,
+    key_id: str,
+) -> dict[str, Any]:
+    return {
+        "method": str(method or "").strip().upper(),
+        "path": str(path or "").strip() or "/",
+        "query": str(canonical_query or "").strip(),
+        "timestamp": str(timestamp or "").strip(),
+        "nonce": str(nonce or "").strip(),
+        "body_digest": str(body_digest or "").strip(),
+        "key_id": str(key_id or "").strip(),
+    }
+
+
+def sign_operator_request_hmac_value(envelope: dict[str, Any], *, shared_secret: str) -> str:
+    return hmac.new(
+        shared_secret.encode("utf-8"),
+        _canonical_json(envelope).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def sign_operator_request_headers(
+    *,
+    method: str,
+    path: str,
+    query: str | None,
+    body: bytes | str | None,
+    key_id: str,
+    shared_secret: str | None = None,
+    private_key_path: str | None = None,
+    principal: str | None = None,
+    public_key: str | None = None,
+    timestamp: str | None = None,
+    nonce: str | None = None,
+) -> dict[str, str]:
+    resolved_timestamp = str(timestamp or utc_now()).strip()
+    resolved_nonce = str(nonce or uuid4()).strip()
+    digest = operator_request_body_digest(body)
+    envelope = build_operator_request_envelope(
+        method=method,
+        path=path,
+        canonical_query=canonicalize_query_string(query),
+        timestamp=resolved_timestamp,
+        nonce=resolved_nonce,
+        body_digest=digest,
+        key_id=key_id,
+    )
+    if shared_secret:
+        signature = sign_operator_request_hmac_value(envelope, shared_secret=shared_secret)
+    elif private_key_path and principal:
+        signed = sign_document_with_ssh(
+            envelope,
+            private_key_path=private_key_path,
+            principal=principal,
+            namespace=OPERATOR_REQUEST_NAMESPACE,
+            public_key=public_key,
+        )
+        signature = base64.b64encode(
+            str(signed[IDENTITY_SIGNATURE_FIELD]["value"] or "").encode("utf-8")
+        ).decode("ascii")
+    else:
+        raise SignatureError("operator request signing requires either shared_secret or SSH identity material")
+    return {
+        "X-Agentcoin-Key-Id": str(key_id or "").strip(),
+        "X-Agentcoin-Timestamp": resolved_timestamp,
+        "X-Agentcoin-Nonce": resolved_nonce,
+        "X-Agentcoin-Body-Digest": digest,
+        "X-Agentcoin-Signature": signature,
+    }

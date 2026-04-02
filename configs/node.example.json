@@ -10,6 +10,47 @@
   "require_signed_inbox": true,
   "identity_principal": "agentcoin-local",
   "identity_private_key_path": "./var/identity/id_ed25519",
+  "operator_allow_loopback_bearer_fallback": false,
+  "operator_auth_timestamp_skew_seconds": 300,
+  "operator_auth_nonce_ttl_seconds": 900,
+  "operator_identities": [
+    {
+      "key_id": "trust-admin:ops-1",
+      "name": "Local Trust Admin",
+      "shared_secret": "replace-with-trust-admin-request-secret",
+      "scopes": [
+        "trust-admin"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    },
+    {
+      "key_id": "settlement-admin:ops-1",
+      "name": "Local Settlement Admin",
+      "shared_secret": "replace-with-settlement-admin-request-secret",
+      "scopes": [
+        "settlement-admin"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    },
+    {
+      "key_id": "committee:reviewer-a",
+      "name": "Committee Reviewer A",
+      "shared_secret": "replace-with-committee-request-secret",
+      "scopes": [
+        "committee-member"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    }
+  ],
   "database_path": "./var/agentcoin.db",
   "git_root": ".",
   "bridges": [

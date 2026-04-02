@@ -258,6 +258,8 @@ def build_settlement_relay_receipt(
     relay: dict[str, Any],
     *,
     node_id: str,
+    operator_id: str | None = None,
+    auth_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     receipt = _base_receipt(
         "agentcoin:SettlementRelayReceipt",
@@ -269,6 +271,7 @@ def build_settlement_relay_receipt(
             "kind": "evm-settlement-relay",
             "node_id": node_id,
             "relay_record_id": relay.get("relay_record_id"),
+            "operator_id": operator_id,
             "recommended_resolution": relay.get("recommended_resolution"),
             "step_count": _int_or(relay.get("step_count"), 0),
             "completed_steps": _int_or(relay.get("completed_steps"), 0),
@@ -285,6 +288,7 @@ def build_settlement_relay_receipt(
             "failures": list(relay.get("failures") or []),
             "settlement_ledger": dict(relay.get("settlement_ledger") or {}),
             "transport": dict(relay.get("transport") or {}),
+            "auth_context": dict(auth_context or {}),
         }
     )
     return receipt
@@ -431,6 +435,8 @@ def receipt_examples() -> dict[str, Any]:
                 "transport": {"profile": "direct"},
             },
             node_id="agentcoin-local",
+            operator_id="settlement-admin:ops-1",
+            auth_context={"mode": "signed-hmac", "policy_tier": "settlement-admin"},
         ),
         "onchain_result_receipt": build_onchain_result_receipt(
             chain_id=97,

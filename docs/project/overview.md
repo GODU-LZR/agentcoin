@@ -373,7 +373,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 - no plugin adapter marketplace yet
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade
-- no production-grade authN/authZ model yet, although the operator hardening rollout is now documented
+- operator auth is still not production-complete, but Tier 3 and Tier 4 write paths now support signed operator requests, nonce replay rejection, denial policy receipts, and durable auth audit records; scoped bearer tokens, workflow-admin coverage, and broader deployment hardening remain unfinished
 
 ## Current Verification
 
@@ -389,7 +389,7 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 
 1. Add stronger trust bootstrap and richer trust-chain management on top of the current staged SSH key rotation, explicit revocation, sync-time trust-drift visibility, and operator apply / config reconciliation flow
 2. Expand MCP / A2A bridge coverage and add more production-grade runtime adapters
-3. Harden authN/authZ, secret handling, and outbound ACL policy
+3. Extend the new Tier 3 / Tier 4 signed operator auth path into workflow-admin scopes, scoped bearer tokens, stronger secret handling, and outbound ACL policy
 4. Move local challenge, PoAW, reputation, and settlement control loops toward chain-backed authority
 5. Add automated Docker smoke coverage for the local multi-node demo and related deployment paths
 

@@ -68,6 +68,70 @@ class PeerConfig:
 
 
 @dataclass(slots=True)
+class OperatorIdentityConfig:
+    key_id: str
+    name: str | None = None
+    shared_secret: str | None = None
+    identity_principal: str | None = None
+    identity_public_key: str | None = None
+    identity_public_keys: list[str] = field(default_factory=list)
+    identity_revoked_public_keys: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
+    source_restrictions: list[str] = field(default_factory=list)
+    enabled: bool = True
+
+    @property
+    def revoked_identity_public_keys(self) -> list[str]:
+        keys: list[str] = []
+        for candidate in self.identity_revoked_public_keys:
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in keys:
+                keys.append(normalized)
+        return keys
+
+    @property
+    def trusted_identity_public_keys(self) -> list[str]:
+        revoked = set(self.revoked_identity_public_keys)
+        keys: list[str] = []
+        for candidate in [self.identity_public_key, *self.identity_public_keys]:
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in revoked and normalized not in keys:
+                keys.append(normalized)
+        return keys
+
+    @property
+    def normalized_scopes(self) -> list[str]:
+        scopes: list[str] = []
+        for candidate in self.scopes:
+            normalized = str(candidate or "").strip().lower()
+            if normalized and normalized not in scopes:
+                scopes.append(normalized)
+        return scopes
+
+    @property
+    def normalized_source_restrictions(self) -> list[str]:
+        restrictions: list[str] = []
+        for candidate in self.source_restrictions:
+            normalized = str(candidate or "").strip().lower()
+            if normalized and normalized not in restrictions:
+                restrictions.append(normalized)
+        return restrictions
+
+    @property
+    def supports_signed_requests(self) -> bool:
+        return bool(
+            str(self.shared_secret or "").strip()
+            or (
+                str(self.identity_principal or "").strip()
+                and self.trusted_identity_public_keys
+            )
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class NodeConfig:
     node_id: str = "agentcoin-local"
     name: str = "AgentCoin Reference Node"
@@ -83,6 +147,10 @@ class NodeConfig:
     identity_public_key: str | None = None
     identity_public_keys: list[str] = field(default_factory=list)
     identity_revoked_public_keys: list[str] = field(default_factory=list)
+    operator_identities: list[OperatorIdentityConfig] = field(default_factory=list)
+    operator_allow_loopback_bearer_fallback: bool = False
+    operator_auth_timestamp_skew_seconds: int = 300
+    operator_auth_nonce_ttl_seconds: int = 900
     config_path: str | None = field(default=None, repr=False, compare=False)
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
@@ -224,8 +292,18 @@ class NodeConfig:
                 return peer
         raise KeyError(peer_id)
 
+    def resolve_operator_identity(self, key_id: str) -> OperatorIdentityConfig:
+        normalized_key_id = str(key_id or "").strip()
+        for operator in self.operator_identities:
+            if operator.enabled and operator.key_id == normalized_key_id:
+                return operator
+        raise KeyError(normalized_key_id)
+
     def peers_view(self) -> list[dict[str, Any]]:
         return [peer.to_dict() for peer in self.peers]
+
+    def operator_identities_view(self) -> list[dict[str, Any]]:
+        return [operator.to_dict() for operator in self.operator_identities]
 
 
 def load_config(path: str | None) -> NodeConfig:
@@ -235,6 +313,9 @@ def load_config(path: str | None) -> NodeConfig:
     resolved_path = str(Path(path).resolve())
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     data["peers"] = [PeerConfig(**peer) for peer in data.get("peers", [])]
+    data["operator_identities"] = [
+        OperatorIdentityConfig(**operator) for operator in data.get("operator_identities", [])
+    ]
     data["network"] = OutboundNetworkConfig(**data.get("network", {}))
     data["onchain"] = OnchainBindings(**data.get("onchain", {}))
     return NodeConfig(config_path=resolved_path, **data)

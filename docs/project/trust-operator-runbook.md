@@ -227,7 +227,7 @@ Action:
 
 ## Known Limits
 
-- Operator protection is still bearer-token-based today. The phased hardening plan now lives in `docs/project/operator-auth-hardening-plan.md`, but signed operator requests and scoped auth tiers are not enforced yet.
+- Tier 3 and Tier 4 operator mutations now accept signed operator requests with nonce replay rejection, denial receipts, and durable auth audit records when `operator_identities` are configured. The phased hardening plan still lives in `docs/project/operator-auth-hardening-plan.md`, and scoped bearer tokens plus broader role coverage are not complete yet.
 - There is no persisted trust history export yet for external audit pipelines.
 - The node surfaces critical revoked-key conflicts, but local automatic rejection policy is not implemented yet.
 - `persist_to_config=true` requires a node config file loaded via `--config`.

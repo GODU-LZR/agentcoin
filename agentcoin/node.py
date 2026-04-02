@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import ipaddress
 import json
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -20,6 +23,7 @@ from agentcoin.onchain import OnchainRuntime
 from agentcoin.receipts import (
     build_deterministic_execution_receipt,
     build_governance_action_receipt,
+    build_policy_receipt,
     build_settlement_relay_receipt,
     build_subjective_review_receipt,
 )
@@ -33,9 +37,16 @@ from agentcoin.semantics import (
     task_semantics,
 )
 from agentcoin.security import (
+    IDENTITY_ALGORITHM,
+    IDENTITY_SIGNATURE_FIELD,
+    OPERATOR_REQUEST_NAMESPACE,
     SignatureError,
+    build_operator_request_envelope,
+    canonicalize_query_string,
+    operator_request_body_digest,
     sign_document,
     sign_document_with_ssh,
+    sign_operator_request_hmac_value,
     verify_document,
     verify_document_with_ssh,
 )
@@ -1854,6 +1865,78 @@ class AgentCoinNode:
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
+        operator_endpoint_policies: dict[str, dict[str, Any]] = {
+            "/v1/peers/identity-trust/apply": {
+                "policy_tier": "trust-admin",
+                "policy_level": 3,
+                "required_scopes": ["trust-admin"],
+            },
+            "/v1/quarantines": {
+                "policy_tier": "trust-admin",
+                "policy_level": 3,
+                "required_scopes": ["trust-admin"],
+            },
+            "/v1/quarantines/release": {
+                "policy_tier": "trust-admin",
+                "policy_level": 3,
+                "required_scopes": ["trust-admin"],
+            },
+            "/v1/disputes": {
+                "policy_tier": "trust-admin",
+                "policy_level": 3,
+                "required_scopes": ["trust-admin"],
+            },
+            "/v1/disputes/resolve": {
+                "policy_tier": "trust-admin",
+                "policy_level": 3,
+                "required_scopes": ["trust-admin"],
+            },
+            "/v1/disputes/vote": {
+                "policy_tier": "committee-member",
+                "policy_level": 3,
+                "required_scopes": ["committee-member", "trust-admin"],
+            },
+            "/v1/onchain/rpc/send-raw": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relay": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relay-queue": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relay-queue/pause": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relay-queue/resume": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relay-queue/requeue": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relays/reconcile": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relays/replay": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+        }
 
         class Handler(BaseHTTPRequestHandler):
             server_version = "AgentCoin/0.1"
@@ -1866,41 +1949,546 @@ class AgentCoinNode:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _read_json(self) -> dict:
-                length = int(self.headers.get("Content-Length", "0"))
+            def _read_body_bytes(self) -> bytes:
+                if hasattr(self, "_cached_body_bytes"):
+                    return self._cached_body_bytes
+                length = int(self.headers.get("Content-Length", "0") or "0")
                 if length <= 0:
-                    return {}
+                    self._cached_body_bytes = b""
+                    return self._cached_body_bytes
                 if length > node.config.max_body_bytes:
                     raise ValueError("request body too large")
-                raw = self.rfile.read(length)
-                if not raw:
-                    return {}
-                return json.loads(raw.decode("utf-8"))
+                self._cached_body_bytes = self.rfile.read(length)
+                return self._cached_body_bytes
 
-            def _require_auth(self) -> bool:
+            def _read_json(self) -> dict:
+                if hasattr(self, "_cached_json_payload"):
+                    return self._cached_json_payload
+                raw = self._read_body_bytes()
+                if not raw:
+                    self._cached_json_payload = {}
+                    return self._cached_json_payload
+                payload = json.loads(raw.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("json body must be an object")
+                self._cached_json_payload = payload
+                return self._cached_json_payload
+
+            def _request_remote(self) -> tuple[str | None, int | None]:
+                remote_address = None
+                remote_port = None
+                if isinstance(self.client_address, tuple) and self.client_address:
+                    remote_address = str(self.client_address[0] or "").strip() or None
+                    if len(self.client_address) > 1:
+                        try:
+                            remote_port = int(self.client_address[1])
+                        except (TypeError, ValueError):
+                            remote_port = None
+                return remote_address, remote_port
+
+            def _is_loopback_request(self) -> bool:
+                remote_address, _ = self._request_remote()
+                if not remote_address:
+                    return False
+                try:
+                    return ipaddress.ip_address(remote_address).is_loopback
+                except ValueError:
+                    return remote_address.lower() == "localhost"
+
+            def _has_valid_bearer_auth(self) -> bool:
                 configured = node.config.auth_token.strip()
                 if not configured:
                     return True
                 header = self.headers.get("Authorization", "")
-                if header == f"Bearer {configured}":
-                    return True
-                self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
-                return False
+                return header == f"Bearer {configured}"
 
-            def _auth_context(self, *, policy_tier: str) -> dict[str, Any]:
-                remote_address = None
-                remote_port = None
-                if isinstance(self.client_address, tuple) and self.client_address:
-                    remote_address = self.client_address[0]
-                    if len(self.client_address) > 1:
-                        remote_port = self.client_address[1]
+            @staticmethod
+            def _parse_signed_timestamp(value: str) -> datetime:
+                normalized = str(value or "").strip()
+                if not normalized:
+                    raise ValueError("timestamp is required")
+                if normalized.endswith("Z"):
+                    normalized = normalized[:-1] + "+00:00"
+                parsed = datetime.fromisoformat(normalized)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.astimezone(timezone.utc)
+
+            def _auth_context(
+                self,
+                *,
+                policy_tier: str,
+                policy_level: int = 0,
+                required_scopes: list[str] | None = None,
+                mode: str | None = None,
+                key_id: str | None = None,
+                operator_id: str | None = None,
+                granted_scopes: list[str] | None = None,
+                nonce: str | None = None,
+                timestamp: str | None = None,
+                body_digest: str | None = None,
+                verification: dict[str, Any] | None = None,
+                downgraded: bool = False,
+            ) -> dict[str, Any]:
+                remote_address, remote_port = self._request_remote()
                 return {
-                    "mode": "bearer-token" if node.config.auth_token.strip() else "none",
+                    "mode": mode or ("bearer-token" if node.config.auth_token.strip() else "none"),
                     "endpoint": urlparse(self.path).path,
                     "policy_tier": policy_tier,
+                    "policy_level": int(policy_level or 0),
+                    "required_scopes": list(required_scopes or []),
+                    "granted_scopes": list(granted_scopes or []),
+                    "key_id": key_id,
+                    "operator_id": operator_id,
+                    "nonce": nonce,
+                    "timestamp": timestamp,
+                    "body_digest": body_digest,
+                    "verification": dict(verification or {}),
+                    "downgraded": bool(downgraded),
                     "remote_address": remote_address,
                     "remote_port": remote_port,
                 }
+
+            def _policy_receipt(
+                self,
+                *,
+                decision: str,
+                reason: str,
+                auth_context: dict[str, Any],
+                reason_code: str,
+                extra: dict[str, Any] | None = None,
+            ) -> dict[str, Any]:
+                receipt = build_policy_receipt(
+                    protocol="agentcoin/operator-auth",
+                    decision=decision,
+                    reason=reason,
+                    mode=str(auth_context.get("mode") or "operator-auth"),
+                    endpoint=auth_context.get("endpoint"),
+                    policy_tier=auth_context.get("policy_tier"),
+                    policy_level=auth_context.get("policy_level"),
+                    required_scopes=list(auth_context.get("required_scopes") or []),
+                    granted_scopes=list(auth_context.get("granted_scopes") or []),
+                    key_id=auth_context.get("key_id"),
+                    operator_id=auth_context.get("operator_id"),
+                    nonce=auth_context.get("nonce"),
+                    timestamp=auth_context.get("timestamp"),
+                    body_digest=auth_context.get("body_digest"),
+                    remote_address=auth_context.get("remote_address"),
+                    remote_port=auth_context.get("remote_port"),
+                    reason_code=reason_code,
+                    downgraded=bool(auth_context.get("downgraded")),
+                    verification=dict(auth_context.get("verification") or {}),
+                    **dict(extra or {}),
+                )
+                return node._sign_document(
+                    receipt,
+                    hmac_scope="operator-auth-receipt",
+                    identity_namespace="agentcoin-operator-auth",
+                )
+
+            def _record_operator_auth_audit(
+                self,
+                *,
+                decision: str,
+                reason: str,
+                auth_context: dict[str, Any],
+                policy_receipt: dict[str, Any] | None = None,
+                payload: dict[str, Any] | None = None,
+            ) -> dict[str, Any]:
+                audit_payload = {
+                    "required_scopes": list(auth_context.get("required_scopes") or []),
+                    "granted_scopes": list(auth_context.get("granted_scopes") or []),
+                    "operator_id": auth_context.get("operator_id"),
+                    "downgraded": bool(auth_context.get("downgraded")),
+                    "verification": dict(auth_context.get("verification") or {}),
+                }
+                audit_payload.update(dict(payload or {}))
+                if policy_receipt is not None:
+                    audit_payload["policy_receipt"] = policy_receipt
+                return node.store.record_operator_auth_audit(
+                    endpoint=str(auth_context.get("endpoint") or urlparse(self.path).path),
+                    method=self.command,
+                    policy_tier=str(auth_context.get("policy_tier") or ""),
+                    policy_level=int(auth_context.get("policy_level") or 0),
+                    decision=decision,
+                    reason=reason,
+                    key_id=str(auth_context.get("key_id") or "").strip() or None,
+                    auth_mode=str(auth_context.get("mode") or "none"),
+                    remote_address=str(auth_context.get("remote_address") or "").strip() or None,
+                    remote_port=auth_context.get("remote_port"),
+                    nonce=str(auth_context.get("nonce") or "").strip() or None,
+                    body_digest=str(auth_context.get("body_digest") or "").strip() or None,
+                    payload=audit_payload,
+                )
+
+            def _deny_operator_auth(
+                self,
+                *,
+                status: HTTPStatus,
+                error_message: str,
+                reason: str,
+                reason_code: str,
+                auth_context: dict[str, Any],
+                payload: dict[str, Any] | None = None,
+            ) -> None:
+                policy_receipt = self._policy_receipt(
+                    decision="rejected",
+                    reason=reason,
+                    auth_context=auth_context,
+                    reason_code=reason_code,
+                    extra=payload,
+                )
+                self._record_operator_auth_audit(
+                    decision="denied",
+                    reason=reason,
+                    auth_context=auth_context,
+                    policy_receipt=policy_receipt,
+                    payload=payload,
+                )
+                self._json_response(status, {"error": error_message, "policy_receipt": policy_receipt})
+
+            def _effective_operator_id(
+                self,
+                requested_operator_id: str | None,
+                auth_context: dict[str, Any] | None,
+            ) -> str | None:
+                normalized_requested = str(requested_operator_id or "").strip() or None
+                if not auth_context:
+                    return normalized_requested
+                authenticated_operator_id = str(auth_context.get("operator_id") or "").strip() or None
+                if authenticated_operator_id:
+                    if normalized_requested and normalized_requested != authenticated_operator_id:
+                        auth_context["requested_operator_id"] = normalized_requested
+                    return authenticated_operator_id
+                if normalized_requested:
+                    auth_context.setdefault("requested_operator_id", normalized_requested)
+                return normalized_requested
+
+            def _require_auth(
+                self,
+                *,
+                policy_tier: str | None = None,
+                policy_level: int = 0,
+                required_scopes: list[str] | None = None,
+            ) -> dict[str, Any] | None:
+                normalized_scopes = [
+                    str(scope or "").strip().lower()
+                    for scope in list(required_scopes or [])
+                    if str(scope or "").strip()
+                ]
+                if not policy_tier:
+                    default_policy = operator_endpoint_policies.get(urlparse(self.path).path)
+                    if default_policy:
+                        return self._require_auth(
+                            policy_tier=str(default_policy.get("policy_tier") or ""),
+                            policy_level=int(default_policy.get("policy_level") or 0),
+                            required_scopes=list(default_policy.get("required_scopes") or []),
+                        )
+                    if self._has_valid_bearer_auth():
+                        return self._auth_context(policy_tier="local-admin")
+                    self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                    return None
+
+                base_auth_context = self._auth_context(
+                    policy_tier=policy_tier,
+                    policy_level=policy_level,
+                    required_scopes=normalized_scopes,
+                )
+                if not self._has_valid_bearer_auth():
+                    self._deny_operator_auth(
+                        status=HTTPStatus.UNAUTHORIZED,
+                        error_message="unauthorized",
+                        reason="shared bearer token is missing or invalid",
+                        reason_code="bearer-unauthorized",
+                        auth_context=base_auth_context,
+                    )
+                    return None
+
+                key_id = str(self.headers.get("X-Agentcoin-Key-Id") or "").strip()
+                timestamp = str(self.headers.get("X-Agentcoin-Timestamp") or "").strip()
+                nonce = str(self.headers.get("X-Agentcoin-Nonce") or "").strip()
+                header_body_digest = str(self.headers.get("X-Agentcoin-Body-Digest") or "").strip()
+                signature = str(self.headers.get("X-Agentcoin-Signature") or "").strip()
+                signed_headers_present = any([key_id, timestamp, nonce, header_body_digest, signature])
+                operators_configured = bool(node.config.operator_identities)
+
+                if signed_headers_present:
+                    auth_context = self._auth_context(
+                        policy_tier=policy_tier,
+                        policy_level=policy_level,
+                        required_scopes=normalized_scopes,
+                        mode="signed-request",
+                        key_id=key_id or None,
+                        operator_id=key_id or None,
+                        nonce=nonce or None,
+                        timestamp=timestamp or None,
+                        body_digest=header_body_digest or None,
+                    )
+                    missing_headers = [
+                        header_name
+                        for header_name, value in {
+                            "X-Agentcoin-Key-Id": key_id,
+                            "X-Agentcoin-Timestamp": timestamp,
+                            "X-Agentcoin-Nonce": nonce,
+                            "X-Agentcoin-Body-Digest": header_body_digest,
+                            "X-Agentcoin-Signature": signature,
+                        }.items()
+                        if not value
+                    ]
+                    if missing_headers:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="operator request signature is incomplete",
+                            reason="signed operator request is incomplete",
+                            reason_code="signed-request-incomplete",
+                            auth_context=auth_context,
+                            payload={"missing_headers": missing_headers},
+                        )
+                        return None
+                    if not operators_configured:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="signed operator request cannot be verified",
+                            reason="operator signing keys are not configured",
+                            reason_code="signed-request-unconfigured",
+                            auth_context=auth_context,
+                        )
+                        return None
+                    try:
+                        operator = node.config.resolve_operator_identity(key_id)
+                    except KeyError:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="unknown operator key",
+                            reason="operator key_id is not configured",
+                            reason_code="unknown-key-id",
+                            auth_context=auth_context,
+                        )
+                        return None
+
+                    granted_scopes = operator.normalized_scopes
+                    auth_context = self._auth_context(
+                        policy_tier=policy_tier,
+                        policy_level=policy_level,
+                        required_scopes=normalized_scopes,
+                        mode="signed-request",
+                        key_id=operator.key_id,
+                        operator_id=operator.key_id,
+                        granted_scopes=granted_scopes,
+                        nonce=nonce,
+                        timestamp=timestamp,
+                        body_digest=header_body_digest,
+                    )
+                    if not operator.supports_signed_requests:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="operator key cannot authorize requests",
+                            reason="configured operator identity does not expose verification material",
+                            reason_code="operator-verification-unavailable",
+                            auth_context=auth_context,
+                        )
+                        return None
+
+                    computed_body_digest = operator_request_body_digest(self._read_body_bytes())
+                    auth_context["body_digest"] = computed_body_digest
+                    if computed_body_digest != header_body_digest:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="operator request body digest mismatch",
+                            reason="operator request body digest does not match payload",
+                            reason_code="body-digest-mismatch",
+                            auth_context=auth_context,
+                            payload={"expected_body_digest": computed_body_digest},
+                        )
+                        return None
+
+                    try:
+                        parsed_timestamp = self._parse_signed_timestamp(timestamp)
+                    except ValueError:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="invalid operator request timestamp",
+                            reason="operator request timestamp is invalid",
+                            reason_code="invalid-timestamp",
+                            auth_context=auth_context,
+                        )
+                        return None
+
+                    skew_seconds = abs((datetime.now(timezone.utc) - parsed_timestamp).total_seconds())
+                    if skew_seconds > int(node.config.operator_auth_timestamp_skew_seconds or 300):
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="operator request timestamp outside allowed skew",
+                            reason="operator request timestamp exceeded skew window",
+                            reason_code="timestamp-skew",
+                            auth_context=auth_context,
+                            payload={
+                                "observed_skew_seconds": int(skew_seconds),
+                                "allowed_skew_seconds": int(node.config.operator_auth_timestamp_skew_seconds or 300),
+                            },
+                        )
+                        return None
+
+                    parsed_request = urlparse(self.path)
+                    envelope = build_operator_request_envelope(
+                        method=self.command,
+                        path=parsed_request.path,
+                        canonical_query=canonicalize_query_string(parsed_request.query),
+                        timestamp=timestamp,
+                        nonce=nonce,
+                        body_digest=header_body_digest,
+                        key_id=operator.key_id,
+                    )
+
+                    verification: dict[str, Any]
+                    if str(operator.shared_secret or "").strip():
+                        expected_signature = sign_operator_request_hmac_value(
+                            envelope,
+                            shared_secret=str(operator.shared_secret or "").strip(),
+                        )
+                        if signature != expected_signature:
+                            self._deny_operator_auth(
+                                status=HTTPStatus.UNAUTHORIZED,
+                                error_message="operator request signature verification failed",
+                                reason="operator request signature did not verify",
+                                reason_code="signature-verification-failed",
+                                auth_context=auth_context,
+                            )
+                            return None
+                        verification = {"verified": True, "alg": "hmac-sha256", "key_id": operator.key_id}
+                        auth_context["mode"] = "signed-hmac"
+                    else:
+                        try:
+                            signature_value = base64.b64decode(signature.encode("ascii"), validate=True).decode("utf-8")
+                        except Exception:
+                            self._deny_operator_auth(
+                                status=HTTPStatus.UNAUTHORIZED,
+                                error_message="operator request signature is malformed",
+                                reason="operator request signature header is not valid base64 SSH signature material",
+                                reason_code="signature-malformed",
+                                auth_context=auth_context,
+                            )
+                            return None
+                        signed_envelope = dict(envelope)
+                        signed_envelope[IDENTITY_SIGNATURE_FIELD] = {
+                            "alg": IDENTITY_ALGORITHM,
+                            "principal": str(operator.identity_principal or "").strip(),
+                            "namespace": OPERATOR_REQUEST_NAMESPACE,
+                            "public_key": "",
+                            "value": signature_value,
+                        }
+                        try:
+                            verification = verify_document_with_ssh(
+                                signed_envelope,
+                                public_keys=operator.trusted_identity_public_keys,
+                                revoked_public_keys=operator.revoked_identity_public_keys,
+                                principal=str(operator.identity_principal or "").strip(),
+                                expected_namespace=OPERATOR_REQUEST_NAMESPACE,
+                            )
+                        except SignatureError:
+                            self._deny_operator_auth(
+                                status=HTTPStatus.UNAUTHORIZED,
+                                error_message="operator request signature verification failed",
+                                reason="operator SSH request signature did not verify",
+                                reason_code="signature-verification-failed",
+                                auth_context=auth_context,
+                            )
+                            return None
+                        auth_context["mode"] = "signed-ssh"
+                    auth_context["verification"] = verification
+
+                    if normalized_scopes and not set(normalized_scopes).intersection(granted_scopes):
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="operator scope is not allowed for this endpoint",
+                            reason="operator scopes do not authorize this endpoint",
+                            reason_code="scope-denied",
+                            auth_context=auth_context,
+                        )
+                        return None
+
+                    source_restrictions = operator.normalized_source_restrictions
+                    if "loopback-only" in source_restrictions and not self._is_loopback_request():
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="operator source restriction denied request",
+                            reason="operator identity is restricted to loopback sources",
+                            reason_code="source-restriction-denied",
+                            auth_context=auth_context,
+                        )
+                        return None
+
+                    if not node.store.reserve_operator_auth_nonce(
+                        key_id=operator.key_id,
+                        nonce=nonce,
+                        ttl_seconds=int(node.config.operator_auth_nonce_ttl_seconds or 900),
+                    ):
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="operator request nonce has already been used",
+                            reason="operator request nonce was already observed for this key",
+                            reason_code="nonce-reused",
+                            auth_context=auth_context,
+                        )
+                        return None
+
+                    self._record_operator_auth_audit(
+                        decision="allowed",
+                        reason="signed operator request verified",
+                        auth_context=auth_context,
+                        payload={"signed_headers_present": True},
+                    )
+                    return auth_context
+
+                if operators_configured:
+                    fallback_allowed = self._is_loopback_request() and bool(node.config.operator_allow_loopback_bearer_fallback)
+                    auth_context = self._auth_context(
+                        policy_tier=policy_tier,
+                        policy_level=policy_level,
+                        required_scopes=normalized_scopes,
+                        mode="bearer-downgrade" if fallback_allowed else "bearer-token",
+                        downgraded=fallback_allowed,
+                    )
+                    if not fallback_allowed:
+                        self._deny_operator_auth(
+                            status=HTTPStatus.UNAUTHORIZED,
+                            error_message="signed operator request required",
+                            reason="configured operator identities require a signed operator request for this endpoint",
+                            reason_code="signed-request-required",
+                            auth_context=auth_context,
+                        )
+                        return None
+                    self._record_operator_auth_audit(
+                        decision="allowed",
+                        reason="loopback bearer fallback accepted",
+                        auth_context=auth_context,
+                        payload={"fallback": True},
+                    )
+                    return auth_context
+
+                auth_context = self._auth_context(
+                    policy_tier=policy_tier,
+                    policy_level=policy_level,
+                    required_scopes=normalized_scopes,
+                    mode="bearer-downgrade",
+                    downgraded=True,
+                )
+                if not self._is_loopback_request():
+                    self._deny_operator_auth(
+                        status=HTTPStatus.FORBIDDEN,
+                        error_message="signed operator requests are required for non-loopback access",
+                        reason="tiered operator auth downgrade is only allowed from loopback when no operator identities are configured",
+                        reason_code="non-loopback-downgrade-denied",
+                        auth_context=auth_context,
+                    )
+                    return None
+                self._record_operator_auth_audit(
+                    decision="allowed",
+                    reason="local bearer downgrade accepted",
+                    auth_context=auth_context,
+                    payload={"fallback": True, "operators_configured": False},
+                )
+                return auth_context
 
             def do_GET(self) -> None:
                 parsed_request = urlparse(self.path)
@@ -2581,7 +3169,8 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, {"bundle": signed_bundle})
                         return
                     if self.path == "/v1/onchain/settlement-relay":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         task_id = str(payload.get("task_id") or "").strip()
@@ -2596,7 +3185,12 @@ class AgentCoinNode:
                             continue_on_error=bool(payload.get("continue_on_error")),
                             resume_from_index=int(payload.get("resume_from_index") or 0),
                         )
-                        relay = build_settlement_relay_receipt(relay, node_id=node.config.node_id)
+                        relay = build_settlement_relay_receipt(
+                            relay,
+                            node_id=node.config.node_id,
+                            operator_id=self._effective_operator_id(None, auth_context),
+                            auth_context=auth_context,
+                        )
                         signed_relay = node._sign_document(
                             relay,
                             hmac_scope="onchain-settlement-relay",
@@ -2730,7 +3324,8 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, {"item": item})
                         return
                     if self.path == "/v1/onchain/settlement-relays/replay":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         relay_id = str(payload.get("relay_id") or "").strip()
@@ -2758,7 +3353,12 @@ class AgentCoinNode:
                             retry_count=int(relay_record.get("retry_count") or 0) + 1,
                             resumed_from_relay_id=str(relay_record.get("id") or ""),
                         )
-                        relay = build_settlement_relay_receipt(relay, node_id=node.config.node_id)
+                        relay = build_settlement_relay_receipt(
+                            relay,
+                            node_id=node.config.node_id,
+                            operator_id=self._effective_operator_id(None, auth_context),
+                            auth_context=auth_context,
+                        )
                         signed_relay = node._sign_document(
                             relay,
                             hmac_scope="onchain-settlement-relay",
@@ -2989,21 +3589,26 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, state)
                         return
                     if self.path == "/v1/peers/identity-trust/apply":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         peer_id = str(payload.get("peer_id") or "").strip()
                         if not peer_id:
                             raise ValueError("peer_id is required")
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         result = node.apply_peer_identity_trust_update(
                             peer_id=peer_id,
                             actions=list(payload.get("actions") or []),
-                            operator_id=str(payload.get("operator_id") or "").strip() or None,
+                            operator_id=operator_id,
                             reason=str(payload.get("reason") or "manual peer identity trust update"),
                             persist_to_config=bool(payload.get("persist_to_config")),
                             preview_only=bool(payload.get("preview_only")),
                             context=dict(payload.get("payload") or {}),
-                            auth_context=self._auth_context(policy_tier="trust-admin"),
+                            auth_context=auth_context,
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return
@@ -3095,7 +3700,8 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, {"ok": ok})
                         return
                     if self.path == "/v1/quarantines":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         actor_id = str(payload.get("actor_id") or "").strip()
@@ -3104,7 +3710,10 @@ class AgentCoinNode:
                         actor_type = str(payload.get("actor_type") or "worker")
                         scope = str(payload.get("scope") or "task-claim")
                         reason = str(payload.get("reason") or "manual quarantine")
-                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         context = dict(payload.get("payload") or {})
                         current_reputation = node.store.get_actor_reputation(actor_id, actor_type=actor_type)
                         result = node.store.set_actor_quarantine(
@@ -3128,14 +3737,15 @@ class AgentCoinNode:
                                     "quarantined": True,
                                     "previously_quarantined": bool(current_reputation.get("quarantined")),
                                 },
-                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                auth_context=auth_context,
                                 before_state=current_reputation,
                             ),
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return
                     if self.path == "/v1/quarantines/release":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         actor_id = str(payload.get("actor_id") or "").strip()
@@ -3143,7 +3753,10 @@ class AgentCoinNode:
                             raise ValueError("actor_id is required")
                         actor_type = str(payload.get("actor_type") or "worker")
                         reason = str(payload.get("reason") or "manual release")
-                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         context = dict(payload.get("payload") or {})
                         current_reputation = node.store.get_actor_reputation(actor_id, actor_type=actor_type)
                         result = node.store.release_actor_quarantine(
@@ -3165,14 +3778,15 @@ class AgentCoinNode:
                                     "quarantined": False,
                                     "previously_quarantined": bool(current_reputation.get("quarantined")),
                                 },
-                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                auth_context=auth_context,
                                 before_state=current_reputation,
                             ),
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return
                     if self.path == "/v1/disputes":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         task_id = str(payload.get("task_id") or "").strip()
@@ -3181,7 +3795,10 @@ class AgentCoinNode:
                         if not task_id or not challenger_id or not reason:
                             raise ValueError("task_id, challenger_id, and reason are required")
                         dispute_payload = dict(payload.get("payload") or {})
-                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         dispute_id = str(uuid4())
                         task = node.store.get_task(task_id)
                         if task and task.get("payload", {}).get("_git"):
@@ -3246,7 +3863,7 @@ class AgentCoinNode:
                                     "committee_quorum": committee_quorum,
                                     "committee_deadline": committee_deadline,
                                 },
-                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                auth_context=auth_context,
                                 evidence={"evidence_hash": str(payload.get("evidence_hash") or "").strip() or None},
                             ),
                         )
@@ -3256,7 +3873,8 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.CREATED, response_payload)
                         return
                     if self.path == "/v1/disputes/vote":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         dispute_id = str(payload.get("dispute_id") or "").strip()
@@ -3264,17 +3882,19 @@ class AgentCoinNode:
                         decision = str(payload.get("decision") or "").strip()
                         if not dispute_id or not voter_id or not decision:
                             raise ValueError("dispute_id, voter_id, and decision are required")
+                        operator_id = self._effective_operator_id(None, auth_context)
                         result = node.store.vote_dispute(
                             dispute_id=dispute_id,
                             voter_id=voter_id,
                             decision=decision,
                             note=str(payload.get("note") or "").strip() or None,
                             payload=dict(payload.get("payload") or {}),
+                            operator_id=operator_id,
                             resolution_receipt_factory=lambda details: node._governance_receipt(
                                 action_type="dispute-resolved",
                                 actor_id=str(details.get("actor_id") or details.get("challenger_id") or voter_id),
                                 actor_type=str(details.get("actor_type") or "worker"),
-                                operator_id=str(details.get("operator_id") or "").strip() or None,
+                                operator_id=operator_id or str(details.get("operator_id") or "").strip() or None,
                                 reason=str(details.get("resolution_reason") or "committee resolution"),
                                 payload={
                                     "dispute_id": dispute_id,
@@ -3303,7 +3923,7 @@ class AgentCoinNode:
                                     "committee_quorum": details.get("committee_quorum"),
                                     "committee_votes_recorded": len(list(details.get("committee_votes") or [])),
                                 },
-                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                auth_context=auth_context,
                                 evidence={"evidence_hash": details.get("evidence_hash")},
                                 before_state={
                                     "status": "open",
@@ -3318,7 +3938,8 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, {"ok": True, "dispute": node._decorate_dispute(result)})
                         return
                     if self.path == "/v1/disputes/resolve":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         dispute_id = str(payload.get("dispute_id") or "").strip()
@@ -3330,7 +3951,10 @@ class AgentCoinNode:
                         if not current_dispute:
                             self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
                             return
-                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         result = node.store.resolve_dispute(
                             dispute_id=dispute_id,
                             resolution_status=resolution_status,
@@ -3368,7 +3992,7 @@ class AgentCoinNode:
                                     "committee_quorum": current_dispute.get("committee_quorum"),
                                     "bond_amount_wei": current_dispute.get("bond_amount_wei"),
                                 },
-                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                auth_context=auth_context,
                                 evidence={"evidence_hash": current_dispute.get("evidence_hash")},
                                 before_state=current_dispute,
                             ),

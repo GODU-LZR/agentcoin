@@ -432,6 +432,33 @@ class NodeStoreTests(unittest.TestCase):
         self.assertIsNotNone(claim)
         self.assertEqual(claim["id"], "queued-manual")
 
+    def test_operator_auth_audits_and_nonces_are_persisted(self) -> None:
+        audit = self.store.record_operator_auth_audit(
+            endpoint="/v1/disputes",
+            method="POST",
+            policy_tier="trust-admin",
+            policy_level=3,
+            decision="denied",
+            reason="operator request nonce was already observed for this key",
+            key_id="trust-admin:ops-1",
+            auth_mode="signed-hmac",
+            remote_address="127.0.0.1",
+            remote_port=8080,
+            nonce="nonce-1",
+            body_digest="sha256:deadbeef",
+            payload={"reason_code": "nonce-reused"},
+        )
+        self.assertEqual(audit["decision"], "denied")
+
+        audits = self.store.list_operator_auth_audits(endpoint="/v1/disputes")
+        self.assertEqual(len(audits), 1)
+        self.assertEqual(audits[0]["key_id"], "trust-admin:ops-1")
+        self.assertEqual(audits[0]["payload"]["reason_code"], "nonce-reused")
+
+        self.assertTrue(self.store.reserve_operator_auth_nonce(key_id="trust-admin:ops-1", nonce="nonce-2", ttl_seconds=60))
+        self.assertFalse(self.store.reserve_operator_auth_nonce(key_id="trust-admin:ops-1", nonce="nonce-2", ttl_seconds=60))
+        self.assertEqual(self.store.stats()["operator_auth_audits"], 1)
+
     def test_open_and_resolve_dispute_records_governance_history(self) -> None:
         self.store.add_task(TaskEnvelope(id="dispute-task", kind="exec", payload={}, role="worker"))
         opened = self.store.open_dispute(

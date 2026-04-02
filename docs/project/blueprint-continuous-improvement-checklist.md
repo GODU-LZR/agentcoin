@@ -182,9 +182,9 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 
 ## Track 7: Security, AuthN, AuthZ, And Policy Controls
 
-- [ ] Move beyond bearer-token-only write protection.
-- [ ] Add request signing for operator endpoints.
-- [ ] Add per-endpoint auth policy tiers.
+- [~] Move beyond bearer-token-only write protection.
+- [~] Add request signing for operator endpoints.
+- [~] Add per-endpoint auth policy tiers.
 - [ ] Add per-peer auth scopes and least-privilege token model.
 - [ ] Add encrypted local secret storage.
 - [ ] Add secret rotation guidance and tooling.
@@ -192,9 +192,9 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [ ] Add policy for local-command subprocess restrictions by task and adapter.
 - [ ] Add policy for dangerous file operations and path traversal defense.
 - [ ] Add inbound payload size policy by endpoint group.
-- [ ] Add policy receipts for denied operator mutations.
+- [x] Add policy receipts for denied operator mutations.
 - [ ] Add operator role model for read-only, trust-admin, workflow-admin, and settlement-admin.
-- [ ] Add auth failure audit trail.
+- [x] Add auth failure audit trail.
 - [ ] Add secure defaults for overlay-exposed deployments.
 - [ ] Add formal threat model document for the reference node.
 - [ ] Add attack simulation cases for forged peer cards, replay, and trust poisoning.
