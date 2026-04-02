@@ -81,6 +81,7 @@ flowchart TB
 ## 项目文档入口
 
 - 项目说明：[docs/project/overview.md](docs/project/overview.md)
+- Copilot 交接文档：[docs/project/copilot-handoff.md](docs/project/copilot-handoff.md)
 - 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
 - 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)
 - 执行路线图：[docs/architecture/implementation-roadmap.md](docs/architecture/implementation-roadmap.md)
