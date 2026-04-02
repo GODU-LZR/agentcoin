@@ -331,7 +331,7 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [x] Add trust-update dry-run preview with structured before and after config diff.
 - [x] Add principal-adoption tests and stale-trusted-key removal tests.
 - [x] Add config reconciliation export endpoint or CLI helper.
-- [ ] Add richer operator runbook for trust update and recovery.
+- [x] Add richer operator runbook for trust update and recovery.
 - [ ] Add auth hardening plan for operator endpoints.
 - [ ] Add stronger receipt semantics for governance and trust changes.
 - [ ] Add first task-state transition refinement beyond current queue status set.

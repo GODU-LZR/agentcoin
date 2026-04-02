@@ -74,7 +74,7 @@ flowchart TB
 ## 追加ドキュメント
 
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
-- Copilot handoff: [docs/project/copilot-handoff.md](docs/project/copilot-handoff.md)
+- Trust operator runbook: [docs/project/trust-operator-runbook.md](docs/project/trust-operator-runbook.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)
 - Execution roadmap: [docs/architecture/implementation-roadmap.md](docs/architecture/implementation-roadmap.md)

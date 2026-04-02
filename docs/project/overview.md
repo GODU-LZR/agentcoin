@@ -394,6 +394,7 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 ## Document Map
 
 - Architecture: [docs/architecture/mvp.md](../architecture/mvp.md)
+- Trust operator runbook: [docs/project/trust-operator-runbook.md](trust-operator-runbook.md)
 - Connectivity: [docs/architecture/e2ee-connectivity.md](../architecture/e2ee-connectivity.md)
 - Testing: [docs/testing/strategy.md](../testing/strategy.md)
 - License notice: [docs/legal/gpl-notice.md](../legal/gpl-notice.md)
