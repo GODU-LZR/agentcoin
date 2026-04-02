@@ -165,9 +165,20 @@ class AgentCoinNode:
             or stale_trusted_public_keys
             or revoked_still_advertised_public_keys
         )
+        severity, severity_rank, severity_reasons = self._identity_trust_severity(
+            requires_review=requires_review,
+            principal_match=principal_match,
+            pending_trust_public_keys=pending_trust_public_keys,
+            pending_revocation_public_keys=pending_revocation_public_keys,
+            stale_trusted_public_keys=stale_trusted_public_keys,
+            revoked_still_advertised_public_keys=revoked_still_advertised_public_keys,
+        )
         return {
             "aligned": not requires_review,
             "requires_review": requires_review,
+            "severity": severity,
+            "severity_rank": severity_rank,
+            "severity_reasons": severity_reasons,
             "configured_principal": configured_principal,
             "advertised_principal": advertised_principal,
             "principal_match": principal_match,
@@ -192,6 +203,46 @@ class AgentCoinNode:
         if peer:
             payload["identity_trust"] = self._identity_trust_report(peer, payload.get("card") or {})
         return payload
+
+    @staticmethod
+    def _identity_trust_severity(
+        *,
+        requires_review: bool,
+        principal_match: bool,
+        pending_trust_public_keys: list[str],
+        pending_revocation_public_keys: list[str],
+        stale_trusted_public_keys: list[str],
+        revoked_still_advertised_public_keys: list[str],
+    ) -> tuple[str, int, list[str]]:
+        if not requires_review:
+            return "none", 0, []
+
+        severity_rank = 0
+        reasons: list[str] = []
+        if pending_trust_public_keys:
+            severity_rank = max(severity_rank, 2)
+            reasons.append("pending-trust-key")
+        if stale_trusted_public_keys:
+            severity_rank = max(severity_rank, 2)
+            reasons.append("stale-trusted-key")
+        if not principal_match:
+            severity_rank = max(severity_rank, 3)
+            reasons.append("principal-mismatch")
+        if pending_revocation_public_keys:
+            severity_rank = max(severity_rank, 3)
+            reasons.append("pending-revocation")
+        if revoked_still_advertised_public_keys:
+            severity_rank = max(severity_rank, 4)
+            reasons.append("revoked-key-still-advertised")
+
+        severity = {
+            0: "none",
+            1: "low",
+            2: "medium",
+            3: "high",
+            4: "critical",
+        }.get(severity_rank, "unknown")
+        return severity, severity_rank, reasons
 
     def _stored_peer_card(self, peer_id: str) -> dict[str, Any] | None:
         for item in self.store.list_peer_cards():
@@ -277,12 +328,18 @@ class AgentCoinNode:
             suggested_actions = self._suggested_peer_identity_trust_actions(report)
             requested_actions = [str(item or "").strip().lower() for item in (actions or []) if str(item or "").strip()]
             preview_actions = requested_actions or suggested_actions
+            severity = str(report.get("severity") or "unknown") if report else "unknown"
+            severity_rank = int(report.get("severity_rank") or 0) if report else -1
+            severity_reasons = list(report.get("severity_reasons") or []) if report else []
 
             item: dict[str, Any] = {
                 "peer_id": peer.peer_id,
                 "peer": self._sanitize_peer(peer),
                 "has_peer_card": bool(stored_card),
                 "card_source_url": str(stored_card.get("source_url") or "") if stored_card else "",
+                "severity": severity,
+                "severity_rank": severity_rank,
+                "severity_reasons": severity_reasons,
                 "identity_trust": report,
                 "suggested_actions": suggested_actions,
                 "requested_actions": requested_actions,
@@ -302,6 +359,8 @@ class AgentCoinNode:
                 )
 
             items.append(item)
+
+        items.sort(key=lambda item: (-int(item.get("severity_rank", -1)), str(item.get("peer_id") or "")))
 
         return {
             "ok": True,

@@ -2121,6 +2121,10 @@ class NodeIntegrationTests(unittest.TestCase):
             item = exported["items"][0]
             self.assertTrue(item["has_peer_card"])
             self.assertTrue(item["actionable"])
+            self.assertEqual(item["severity"], "medium")
+            self.assertEqual(item["severity_rank"], 2)
+            self.assertEqual(item["severity_reasons"], ["pending-trust-key"])
+            self.assertEqual(item["identity_trust"]["severity"], "medium")
             self.assertEqual(item["suggested_actions"], ["apply-pending-trust"])
             self.assertEqual(item["preview"]["applied_actions"], ["apply-pending-trust"])
             self.assertTrue(item["preview"]["would_persist_to_config"])
@@ -2179,6 +2183,8 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(export_status, 200)
             item = exported["items"][0]
             self.assertIsNone(exported["config_path"])
+            self.assertEqual(item["severity"], "medium")
+            self.assertEqual(item["severity_reasons"], ["pending-trust-key"])
             self.assertEqual(item["suggested_actions"], ["apply-pending-trust"])
             self.assertFalse(item["preview"]["would_persist_to_config"])
             self.assertIsNone(item["preview"]["config_path"])
@@ -2187,6 +2193,89 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old])
         finally:
             node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_export_peer_identity_trust_reconciliation_sorted_by_severity(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_export_severity", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_export_severity", "node-b")
+        key_c_old, pub_c_old = self._generate_identity(Path(self.tempdir.name) / "id_c_old_export_severity", "node-c")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-severity-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_c = NodeHarness(
+            node_id="node-c",
+            token="token-c",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-severity-c.db"),
+            capabilities=["worker"],
+            identity_principal="node-c",
+            identity_private_key_path=key_c_old,
+            identity_public_key=pub_c_old,
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-severity-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                ),
+                PeerConfig(
+                    peer_id="node-c",
+                    name="Node C",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-c",
+                    identity_principal="node-c",
+                    identity_public_key=pub_c_old,
+                    identity_revoked_public_keys=[pub_c_old],
+                ),
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_a.config.peers[1].url = node_c.base_url
+        node_b.start()
+        node_c.start()
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+
+            export_status, exported = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/export",
+                "token-a",
+                {"include_preview": False},
+            )
+            self.assertEqual(export_status, 200)
+            self.assertEqual([item["peer_id"] for item in exported["items"]], ["node-c", "node-b"])
+
+            critical = exported["items"][0]
+            medium = exported["items"][1]
+            self.assertEqual(critical["severity"], "critical")
+            self.assertEqual(critical["severity_rank"], 4)
+            self.assertEqual(critical["severity_reasons"], ["revoked-key-still-advertised"])
+            self.assertEqual(critical["identity_trust"]["revoked_still_advertised_public_keys"], [pub_c_old])
+            self.assertFalse(critical["actionable"])
+            self.assertIsNone(critical["preview"])
+
+            self.assertEqual(medium["severity"], "medium")
+            self.assertEqual(medium["severity_rank"], 2)
+            self.assertEqual(medium["severity_reasons"], ["pending-trust-key"])
+        finally:
+            node_a.stop()
+            node_c.stop()
             node_b.stop()
 
     def test_remote_dispatch_falls_back_or_dead_letters(self) -> None:

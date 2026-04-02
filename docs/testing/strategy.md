@@ -21,6 +21,7 @@ The current test scope covers:
 - operator-applied peer identity trust updates with governance-action audit receipts and optional config persistence
 - trust-update preview and config diff generation without runtime mutation or governance audit writes
 - trust reconciliation export with suggested actions and previewed runtime or config diffs
+- trust drift severity ranking and export ordering so operators can prioritize urgent peer identity mismatches
 - outbound proxy bypass and explicit proxy selection rules
 - bridge registry plus MCP / A2A import-export flow
 - MCP tool-call and tool-result schema normalization

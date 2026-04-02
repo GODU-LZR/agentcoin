@@ -71,7 +71,7 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [ ] Add reason codes for every trust mutation.
 - [ ] Add trust chain replay view in replay-inspect or a dedicated peer-trust endpoint.
 - [ ] Add peer identity timeline endpoint with before and after snapshots.
-- [ ] Add trust drift severity ranking so operators can prioritize urgent mismatches.
+- [x] Add trust drift severity ranking so operators can prioritize urgent mismatches.
 - [ ] Add local policy for rejecting peers that advertise keys conflicting with explicit revocation.
 - [ ] Add trust policy for principal mismatch severity and default action.
 - [ ] Add trust policy for stale trusted keys retained too long after rotation.

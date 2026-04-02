@@ -107,7 +107,7 @@ The repository now includes a minimal cross-platform reference node built with P
 - `Offline-first`: uses SQLite-backed local task, inbox, and outbox persistence.
 - `Secure-by-default`: binds to `127.0.0.1` and protects write endpoints with a bearer token.
 - `Signed transport`: capability cards and task envelopes can carry HMAC signatures for peer verification.
-- `Asymmetric identity`: nodes can also sign cards, task envelopes, and delivery receipts with `ssh-keygen` compatible Ed25519 keys, peers can trust staged replacement keys during rotation, and operators can export trust reconciliation with suggested actions plus runtime or config diff previews.
+- `Asymmetric identity`: nodes can also sign cards, task envelopes, and delivery receipts with `ssh-keygen` compatible Ed25519 keys, peers can trust staged replacement keys during rotation, and operators can export severity-ranked trust reconciliation with suggested actions plus runtime or config diff previews.
 - `Agent-friendly`: exposes generic task envelopes and capability-card endpoints that can front different agent runtimes.
 
 The repository now also includes a first on-chain scaffold for the BNB Chain track:

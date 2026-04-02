@@ -367,7 +367,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 
 ## Current Limitations
 
-- SSH identity rotation now supports staged multi-key trust plus explicit revoked-key lists, peer sync surfaces trust drift for operator review, operators can export trust reconciliation with suggested actions and previewed runtime or config diffs, and operators can apply trust updates with governance receipts and optionally persist them back to the loaded JSON config, but stronger trust bootstrap and richer trust-chain management are not implemented yet
+- SSH identity rotation now supports staged multi-key trust plus explicit revoked-key lists, peer sync surfaces trust drift with severity ranking for operator review, operators can export trust reconciliation with suggested actions and previewed runtime or config diffs, and operators can apply trust updates with governance receipts and optionally persist them back to the loaded JSON config, but stronger trust bootstrap and richer trust-chain management are not implemented yet
 - no plugin adapter marketplace yet
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade
