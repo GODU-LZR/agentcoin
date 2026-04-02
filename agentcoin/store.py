@@ -253,6 +253,10 @@ class NodeStore:
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     failure_category TEXT,
                     resumed_from_relay_id TEXT,
+                    reconciliation_status TEXT NOT NULL DEFAULT 'unknown',
+                    reconciliation_checked_at TEXT,
+                    confirmed_at TEXT,
+                    chain_receipts_json TEXT NOT NULL DEFAULT '[]',
                     relay_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -306,6 +310,10 @@ class NodeStore:
             self._ensure_column(conn, "settlement_relays", "retry_count", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "settlement_relays", "failure_category", "TEXT")
             self._ensure_column(conn, "settlement_relays", "resumed_from_relay_id", "TEXT")
+            self._ensure_column(conn, "settlement_relays", "reconciliation_status", "TEXT NOT NULL DEFAULT 'unknown'")
+            self._ensure_column(conn, "settlement_relays", "reconciliation_checked_at", "TEXT")
+            self._ensure_column(conn, "settlement_relays", "confirmed_at", "TEXT")
+            self._ensure_column(conn, "settlement_relays", "chain_receipts_json", "TEXT NOT NULL DEFAULT '[]'")
             self._ensure_column(conn, "peer_health", "sync_successes", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "peer_health", "sync_failures", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "peer_health", "delivery_successes", "INTEGER NOT NULL DEFAULT 0")
@@ -617,6 +625,11 @@ class NodeStore:
             settlement_relays = conn.execute("SELECT COUNT(*) FROM settlement_relays").fetchone()[0]
             settlement_relay_queue = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue").fetchone()[0]
             settlement_relay_queue_queued = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'queued'").fetchone()[0]
+            settlement_relay_queue_paused = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'paused'").fetchone()[0]
+            settlement_relay_queue_running = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'running'").fetchone()[0]
+            settlement_relay_queue_retrying = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'retrying'").fetchone()[0]
+            settlement_relay_queue_completed = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'completed'").fetchone()[0]
+            settlement_relay_queue_dead_letter = conn.execute("SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'dead-letter'").fetchone()[0]
             return {
                 "tasks": task_count,
                 "tasks_queued": queued_tasks,
@@ -643,6 +656,11 @@ class NodeStore:
                 "settlement_relays": settlement_relays,
                 "settlement_relay_queue": settlement_relay_queue,
                 "settlement_relay_queue_queued": settlement_relay_queue_queued,
+                "settlement_relay_queue_paused": settlement_relay_queue_paused,
+                "settlement_relay_queue_running": settlement_relay_queue_running,
+                "settlement_relay_queue_retrying": settlement_relay_queue_retrying,
+                "settlement_relay_queue_completed": settlement_relay_queue_completed,
+                "settlement_relay_queue_dead_letter": settlement_relay_queue_dead_letter,
             }
         finally:
             conn.close()
@@ -1799,9 +1817,10 @@ class NodeStore:
                 (
                     id, task_id, recommended_resolution, completed_steps, step_count, stopped_on_error,
                     final_status, last_successful_index, next_index, retry_count, failure_category,
-                    resumed_from_relay_id, relay_json, created_at
+                    resumed_from_relay_id, reconciliation_status, reconciliation_checked_at,
+                    confirmed_at, chain_receipts_json, relay_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown', NULL, NULL, '[]', ?, ?)
                 """,
                 (
                     relay_id,
@@ -1834,11 +1853,38 @@ class NodeStore:
                 "retry_count": retry_count,
                 "failure_category": failure_category,
                 "resumed_from_relay_id": resumed_from_relay_id,
+                "reconciliation_status": "unknown",
+                "reconciliation_checked_at": None,
+                "confirmed_at": None,
+                "chain_receipts": [],
                 "relay": relay,
                 "created_at": created_at,
             }
         finally:
             conn.close()
+
+    @staticmethod
+    def _settlement_relay_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "task_id": row["task_id"],
+            "recommended_resolution": row["recommended_resolution"],
+            "completed_steps": int(row["completed_steps"] or 0),
+            "step_count": int(row["step_count"] or 0),
+            "stopped_on_error": bool(row["stopped_on_error"]),
+            "final_status": row["final_status"],
+            "last_successful_index": int(row["last_successful_index"] or -1),
+            "next_index": int(row["next_index"] or 0),
+            "retry_count": int(row["retry_count"] or 0),
+            "failure_category": row["failure_category"],
+            "resumed_from_relay_id": row["resumed_from_relay_id"],
+            "reconciliation_status": row["reconciliation_status"],
+            "reconciliation_checked_at": row["reconciliation_checked_at"],
+            "confirmed_at": row["confirmed_at"],
+            "chain_receipts": json.loads(row["chain_receipts_json"] or "[]"),
+            "relay": json.loads(row["relay_json"] or "{}"),
+            "created_at": row["created_at"],
+        }
 
     def list_settlement_relays(self, task_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
         conn = self._connect()
@@ -1848,7 +1894,8 @@ class NodeStore:
                     """
                     SELECT id, task_id, recommended_resolution, completed_steps, step_count,
                            stopped_on_error, final_status, last_successful_index, next_index, retry_count,
-                           failure_category, resumed_from_relay_id, relay_json, created_at
+                           failure_category, resumed_from_relay_id, reconciliation_status,
+                           reconciliation_checked_at, confirmed_at, chain_receipts_json, relay_json, created_at
                     FROM settlement_relays
                     WHERE task_id = ?
                     ORDER BY created_at DESC, rowid DESC
@@ -1861,32 +1908,15 @@ class NodeStore:
                     """
                     SELECT id, task_id, recommended_resolution, completed_steps, step_count,
                            stopped_on_error, final_status, last_successful_index, next_index, retry_count,
-                           failure_category, resumed_from_relay_id, relay_json, created_at
+                           failure_category, resumed_from_relay_id, reconciliation_status,
+                           reconciliation_checked_at, confirmed_at, chain_receipts_json, relay_json, created_at
                     FROM settlement_relays
                     ORDER BY created_at DESC, rowid DESC
                     LIMIT ?
                     """,
                     (limit,),
                 ).fetchall()
-            return [
-                {
-                    "id": row["id"],
-                    "task_id": row["task_id"],
-                    "recommended_resolution": row["recommended_resolution"],
-                    "completed_steps": int(row["completed_steps"] or 0),
-                    "step_count": int(row["step_count"] or 0),
-                    "stopped_on_error": bool(row["stopped_on_error"]),
-                    "final_status": row["final_status"],
-                    "last_successful_index": int(row["last_successful_index"] or -1),
-                    "next_index": int(row["next_index"] or 0),
-                    "retry_count": int(row["retry_count"] or 0),
-                    "failure_category": row["failure_category"],
-                    "resumed_from_relay_id": row["resumed_from_relay_id"],
-                    "relay": json.loads(row["relay_json"] or "{}"),
-                    "created_at": row["created_at"],
-                }
-                for row in rows
-            ]
+            return [self._settlement_relay_from_row(row) for row in rows]
         finally:
             conn.close()
 
@@ -1897,7 +1927,8 @@ class NodeStore:
                 """
                 SELECT id, task_id, recommended_resolution, completed_steps, step_count,
                        stopped_on_error, final_status, last_successful_index, next_index, retry_count,
-                       failure_category, resumed_from_relay_id, relay_json, created_at
+                       failure_category, resumed_from_relay_id, reconciliation_status,
+                       reconciliation_checked_at, confirmed_at, chain_receipts_json, relay_json, created_at
                 FROM settlement_relays
                 WHERE id = ?
                 """,
@@ -1905,28 +1936,66 @@ class NodeStore:
             ).fetchone()
             if not row:
                 return None
-            return {
-                "id": row["id"],
-                "task_id": row["task_id"],
-                "recommended_resolution": row["recommended_resolution"],
-                "completed_steps": int(row["completed_steps"] or 0),
-                "step_count": int(row["step_count"] or 0),
-                "stopped_on_error": bool(row["stopped_on_error"]),
-                "final_status": row["final_status"],
-                "last_successful_index": int(row["last_successful_index"] or -1),
-                "next_index": int(row["next_index"] or 0),
-                "retry_count": int(row["retry_count"] or 0),
-                "failure_category": row["failure_category"],
-                "resumed_from_relay_id": row["resumed_from_relay_id"],
-                "relay": json.loads(row["relay_json"] or "{}"),
-                "created_at": row["created_at"],
-            }
+            return self._settlement_relay_from_row(row)
         finally:
             conn.close()
 
     def get_latest_settlement_relay(self, task_id: str) -> dict[str, Any] | None:
         items = self.list_settlement_relays(task_id=task_id, limit=1)
         return items[0] if items else None
+
+    def update_settlement_relay_reconciliation(
+        self,
+        relay_id: str,
+        *,
+        reconciliation_status: str,
+        reconciliation_checked_at: str,
+        confirmed_at: str | None,
+        chain_receipts: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT relay_json
+                FROM settlement_relays
+                WHERE id = ?
+                """,
+                (relay_id,),
+            ).fetchone()
+            if not row:
+                return None
+
+            relay_payload = json.loads(row["relay_json"] or "{}")
+            relay_payload["reconciliation"] = {
+                "status": reconciliation_status,
+                "checked_at": reconciliation_checked_at,
+                "confirmed_at": confirmed_at,
+                "receipts": list(chain_receipts or []),
+            }
+            conn.execute(
+                """
+                UPDATE settlement_relays
+                SET reconciliation_status = ?,
+                    reconciliation_checked_at = ?,
+                    confirmed_at = ?,
+                    chain_receipts_json = ?,
+                    relay_json = ?
+                WHERE id = ?
+                """,
+                (
+                    reconciliation_status,
+                    reconciliation_checked_at,
+                    confirmed_at,
+                    json.dumps(list(chain_receipts or []), ensure_ascii=False),
+                    json.dumps(relay_payload, ensure_ascii=False),
+                    relay_id,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay(relay_id)
 
     def enqueue_settlement_relay(
         self,
@@ -2057,6 +2126,234 @@ class NodeStore:
             }
         finally:
             conn.close()
+
+    def recover_running_settlement_relay_queue_items(self, *, delay_seconds: int = 0) -> int:
+        now = utc_now()
+        next_attempt_at = utc_after(max(0, int(delay_seconds)))
+        conn = self._connect()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'retrying',
+                    next_attempt_at = ?,
+                    updated_at = ?,
+                    completed_at = NULL
+                WHERE status = 'running'
+                """,
+                (next_attempt_at, now),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0)
+        finally:
+            conn.close()
+
+    def claim_next_settlement_relay_queue_item(self) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, task_id, status, attempts, max_attempts, next_attempt_at,
+                       last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                FROM settlement_relay_queue
+                WHERE status IN ('queued', 'retrying')
+                  AND next_attempt_at <= ?
+                ORDER BY next_attempt_at ASC, created_at ASC, rowid ASC
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return None
+
+            attempts = int(row["attempts"] or 0) + 1
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'running',
+                    attempts = ?,
+                    last_error = NULL,
+                    updated_at = ?,
+                    completed_at = NULL
+                WHERE id = ?
+                """,
+                (attempts, now, row["id"]),
+            )
+            conn.commit()
+            return {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "status": "running",
+                "attempts": attempts,
+                "max_attempts": int(row["max_attempts"] or 0),
+                "next_attempt_at": row["next_attempt_at"],
+                "last_error": None,
+                "last_relay_id": row["last_relay_id"],
+                "payload": json.loads(row["payload_json"] or "{}"),
+                "created_at": row["created_at"],
+                "updated_at": now,
+                "completed_at": None,
+            }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def complete_settlement_relay_queue_item(self, queue_id: str, *, last_relay_id: str | None = None) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'completed',
+                    last_relay_id = ?,
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE id = ?
+                """,
+                (last_relay_id, now, now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay_queue_item(queue_id)
+
+    def fail_settlement_relay_queue_item(
+        self,
+        queue_id: str,
+        *,
+        error: str,
+        last_relay_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT attempts, max_attempts, payload_json
+                FROM settlement_relay_queue
+                WHERE id = ?
+                """,
+                (queue_id,),
+            ).fetchone()
+            if not row:
+                return None
+
+            attempts = int(row["attempts"] or 0)
+            max_attempts = int(row["max_attempts"] or 0)
+            status = "dead-letter" if attempts >= max_attempts else "retrying"
+            delay_seconds = 0 if status == "dead-letter" else min(2 ** min(attempts, 6), 60)
+            next_attempt_at = utc_after(delay_seconds)
+            payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else str(row["payload_json"] or "{}")
+            completed_at = now if status == "dead-letter" else None
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = ?,
+                    last_error = ?,
+                    last_relay_id = ?,
+                    payload_json = ?,
+                    next_attempt_at = ?,
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE id = ?
+                """,
+                (status, str(error or "")[:500], last_relay_id, payload_json, next_attempt_at, now, completed_at, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay_queue_item(queue_id)
+
+    def pause_settlement_relay_queue_item(self, queue_id: str) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'paused',
+                    updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'retrying')
+                """,
+                (now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay_queue_item(queue_id)
+
+    def resume_settlement_relay_queue_item(self, queue_id: str, *, delay_seconds: int = 0) -> dict[str, Any] | None:
+        now = utc_now()
+        next_attempt_at = utc_after(max(0, int(delay_seconds)))
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'queued',
+                    next_attempt_at = ?,
+                    updated_at = ?,
+                    completed_at = NULL
+                WHERE id = ? AND status = 'paused'
+                """,
+                (next_attempt_at, now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay_queue_item(queue_id)
+
+    def requeue_settlement_relay_queue_item(
+        self,
+        queue_id: str,
+        *,
+        delay_seconds: int = 0,
+        payload: dict[str, Any] | None = None,
+        max_attempts: int | None = None,
+    ) -> dict[str, Any] | None:
+        now = utc_now()
+        next_attempt_at = utc_after(max(0, int(delay_seconds)))
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT payload_json, max_attempts
+                FROM settlement_relay_queue
+                WHERE id = ? AND status = 'dead-letter'
+                """,
+                (queue_id,),
+            ).fetchone()
+            if not row:
+                return self.get_settlement_relay_queue_item(queue_id)
+
+            payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else str(row["payload_json"] or "{}")
+            effective_max_attempts = int(max_attempts or row["max_attempts"] or 3)
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'queued',
+                    attempts = 0,
+                    max_attempts = ?,
+                    next_attempt_at = ?,
+                    last_error = NULL,
+                    payload_json = ?,
+                    updated_at = ?,
+                    completed_at = NULL
+                WHERE id = ? AND status = 'dead-letter'
+                """,
+                (effective_max_attempts, next_attempt_at, payload_json, now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay_queue_item(queue_id)
 
     def _completion_score_event(
         self,

@@ -61,6 +61,7 @@ class NodeConfig:
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
     sync_interval_seconds: int = 15
+    settlement_relay_poll_seconds: float = 2.0
     max_body_bytes: int = 262144
     outbox_max_attempts: int = 5
     task_retry_limit: int = 3

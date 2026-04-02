@@ -189,9 +189,13 @@ on-chain settlement relay も復旧可能な記録として扱えるようにな
 - `GET /v1/onchain/settlement-relays` は永続化された relay history を返します
 - `POST /v1/onchain/settlement-relay-queue` は relay job を後続実行用に永続キューへ保存します
 - `GET /v1/onchain/settlement-relay-queue` は永続化された relay queue item を返します
+- background worker が queued relay job を自動で処理し、`queued`、`running`、`retrying`、`completed`、`dead-letter` を遷移させます
+- operator は queued relay job を pause / resume でき、dead-letter item を更新済み relay parameter 付きで requeue できます
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` は task ごとの最新 relay state を返します
+- `POST /v1/onchain/settlement-relays/reconcile` は送信済み tx hash に対して `eth_getTransactionReceipt` を取得し、永続 relay history を `confirmed`、`reverted`、`unknown` に更新します
+- replay-inspect は task の最新 settlement reconciliation state と各 step の receipt snapshot を返します
 - `POST /v1/onchain/settlement-relays/replay` は記録済み failure index から relay を再開できます
-- 永続化 record には `final_status`、`last_successful_index`、`next_index`、`retry_count`、failure category が残ります
+- 永続化 record には `final_status`、`last_successful_index`、`next_index`、`retry_count`、failure category、reconciliation status、`confirmed_at` が残ります
 
 ### Quick Start
 
@@ -284,6 +288,10 @@ GitHub Actions CI は現在 macOS / Linux / Windows で syntax check と `unitte
 - `POST /v1/onchain/rpc-plan`
 - `POST /v1/onchain/rpc/send-raw`
 - `POST /v1/onchain/settlement-relay-queue`
+- `POST /v1/onchain/settlement-relay-queue/pause`
+- `POST /v1/onchain/settlement-relay-queue/resume`
+- `POST /v1/onchain/settlement-relay-queue/requeue`
+- `POST /v1/onchain/settlement-relays/reconcile`
 - `POST /v1/onchain/settlement-relays/replay`
 - `POST /v1/quarantines`
 - `POST /v1/quarantines/release`

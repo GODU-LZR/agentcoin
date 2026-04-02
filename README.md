@@ -208,9 +208,13 @@ It can now also relay that bundle sequentially:
 - relay receipts are now persisted and exposed for replay / audit
 - `POST /v1/onchain/settlement-relay-queue` persists relay jobs for later execution
 - `GET /v1/onchain/settlement-relay-queue` lists persisted relay queue items
+- a background worker now drains queued relay jobs and moves them through `queued`, `running`, `retrying`, `completed`, and `dead-letter`
+- operators can now pause queued relay jobs, resume them later, and requeue dead-lettered jobs with updated relay parameters
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` returns the latest persisted relay state for a task
+- `POST /v1/onchain/settlement-relays/reconcile` now fetches `eth_getTransactionReceipt` for submitted tx hashes and marks persisted relay history as `confirmed`, `reverted`, or `unknown`
+- replay-inspect now includes the latest settlement reconciliation state plus per-step receipt snapshots
 - `POST /v1/onchain/settlement-relays/replay` can resume a failed settlement relay from the stored failure index
-- persisted relay records now track `final_status`, `last_successful_index`, `next_index`, `retry_count`, and failure category
+- persisted relay records now track `final_status`, `last_successful_index`, `next_index`, `retry_count`, failure category, reconciliation status, and `confirmed_at`
 
 ### Quick Start
 
@@ -249,6 +253,10 @@ Key endpoints:
 - `POST /v1/onchain/settlement-raw-bundle`
 - `POST /v1/onchain/settlement-relay`
 - `POST /v1/onchain/settlement-relay-queue`
+- `POST /v1/onchain/settlement-relay-queue/pause`
+- `POST /v1/onchain/settlement-relay-queue/resume`
+- `POST /v1/onchain/settlement-relay-queue/requeue`
+- `POST /v1/onchain/settlement-relays/reconcile`
 - `POST /v1/onchain/settlement-relays/replay`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`

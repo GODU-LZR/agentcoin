@@ -25,6 +25,9 @@ The current test scope covers:
 - runtime adapter execution for container-job skeletons
 - runtime adapter execution for Ollama chat and OpenAI-compatible gateways
 - settlement relay queue persistence and replay-inspect visibility
+- background settlement relay queue execution, delayed scheduling, and retry/dead-letter transitions
+- operator pause / resume and dead-letter requeue for settlement relay queue items
+- settlement relay reconciliation via transaction receipt fetch and replay-inspect state exposure
 - OpenAI-compatible structured output forwarding and parsed JSON normalization
 - semantic card and task shape exposure
 - receipt schema examples and subjective review / challenge evidence receipts
@@ -99,6 +102,11 @@ The following behaviors are now covered either by automated tests or previously 
 - remote dispatch fallback to local execution after outbox dead-letter
 - remote dispatch dead-letter when no valid local fallback exists
 - delayed retry and task dead-letter after retry exhaustion
+- queued settlement relay jobs run in the background and persist completed relay ids
+- settlement relay queue respects initial delay and retries failed jobs before dead-lettering them
+- operators can pause queued settlement relay jobs, resume them later, and requeue dead-lettered jobs with updated relay parameters
+- persisted settlement relay history can now reconcile chain receipts into `confirmed`, `reverted`, or `unknown`
+- replay-inspect now exposes the latest settlement reconciliation status and receipt count for a task
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

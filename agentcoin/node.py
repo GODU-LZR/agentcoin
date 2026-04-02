@@ -59,6 +59,11 @@ class AgentCoinNode:
         self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
+        self._settlement_relay_thread = threading.Thread(
+            target=self._settlement_relay_loop,
+            name="agentcoin-settlement-relay",
+            daemon=True,
+        )
 
     def _resolve_delivery(self, target: str) -> tuple[str, str | None, str]:
         parsed = urlparse(target)
@@ -580,6 +585,191 @@ class AgentCoinNode:
         relay["relay_record_id"] = persisted["id"]
         return relay
 
+    def process_settlement_relay_queue(self, *, max_items: int | None = None) -> list[dict[str, Any]]:
+        processed: list[dict[str, Any]] = []
+        while max_items is None or len(processed) < max_items:
+            item = self.store.claim_next_settlement_relay_queue_item()
+            if not item:
+                break
+
+            payload = dict(item.get("payload") or {})
+            try:
+                relay = self._execute_settlement_relay(
+                    task_id=str(payload.get("task_id") or item.get("task_id") or "").strip(),
+                    raw_transactions=list(payload.get("raw_transactions") or []),
+                    rpc_options=dict(payload.get("rpc") or {}),
+                    rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                    timeout=float(payload.get("timeout_seconds") or 10),
+                    continue_on_error=bool(payload.get("continue_on_error")),
+                    resume_from_index=int(payload.get("resume_from_index") or 0),
+                    retry_count=max(0, int(item.get("attempts") or 1) - 1),
+                    resumed_from_relay_id=str(item.get("last_relay_id") or "").strip() or None,
+                )
+                last_relay_id = str(relay.get("relay_record_id") or "").strip() or None
+                if relay.get("final_status") == "completed":
+                    queue_item = self.store.complete_settlement_relay_queue_item(item["id"], last_relay_id=last_relay_id)
+                else:
+                    updated_payload = dict(payload)
+                    updated_payload["resume_from_index"] = int(
+                        relay.get("next_index") or updated_payload.get("resume_from_index") or 0
+                    )
+                    failure_message = str(relay.get("final_status") or "settlement relay incomplete")
+                    if relay.get("failures"):
+                        failure_message = str(relay["failures"][0].get("error") or failure_message)
+                    queue_item = self.store.fail_settlement_relay_queue_item(
+                        item["id"],
+                        error=failure_message,
+                        last_relay_id=last_relay_id,
+                        payload=updated_payload,
+                    )
+                processed.append({"item": queue_item, "relay": relay})
+            except Exception as exc:
+                LOG.warning(
+                    "settlement relay queue execution failed queue_id=%s task_id=%s error=%s",
+                    item.get("id"),
+                    item.get("task_id"),
+                    exc,
+                )
+                queue_item = self.store.fail_settlement_relay_queue_item(
+                    item["id"],
+                    error=str(exc),
+                    last_relay_id=str(item.get("last_relay_id") or "").strip() or None,
+                    payload=payload,
+                )
+                processed.append({"item": queue_item, "error": str(exc)})
+        return processed
+
+    @staticmethod
+    def _merge_settlement_relay_queue_payload(
+        current_payload: dict[str, Any],
+        overrides: dict[str, Any],
+        *,
+        task_id: str,
+    ) -> dict[str, Any]:
+        merged = dict(current_payload or {})
+        merged["task_id"] = task_id
+        if "raw_transactions" in overrides:
+            merged["raw_transactions"] = list(overrides.get("raw_transactions") or [])
+        if "rpc" in overrides:
+            merged["rpc"] = dict(overrides.get("rpc") or {})
+        if "rpc_url" in overrides:
+            merged["rpc_url"] = str(overrides.get("rpc_url") or "").strip() or None
+        if "timeout_seconds" in overrides:
+            merged["timeout_seconds"] = float(overrides.get("timeout_seconds") or 10)
+        if "continue_on_error" in overrides:
+            merged["continue_on_error"] = bool(overrides.get("continue_on_error"))
+        if "resume_from_index" in overrides:
+            merged["resume_from_index"] = int(overrides.get("resume_from_index") or 0)
+        return merged
+
+    @staticmethod
+    def _receipt_reconciliation_status(receipt: dict[str, Any] | None) -> str:
+        if not isinstance(receipt, dict):
+            return "unknown"
+        status = receipt.get("status")
+        if isinstance(status, str):
+            lowered = status.strip().lower()
+            if lowered in {"0x1", "0x01", "1"}:
+                return "confirmed"
+            if lowered in {"0x0", "0x00", "0"}:
+                return "reverted"
+            return "unknown"
+        if status == 1:
+            return "confirmed"
+        if status == 0:
+            return "reverted"
+        return "unknown"
+
+    def reconcile_settlement_relay(
+        self,
+        relay_id: str,
+        *,
+        rpc_url: str | None = None,
+        timeout: float = 10,
+    ) -> dict[str, Any]:
+        relay_record = self.store.get_settlement_relay(relay_id)
+        if not relay_record:
+            raise ValueError("settlement relay not found")
+
+        relay_payload = dict(relay_record.get("relay") or {})
+        submitted_steps = list(relay_payload.get("submitted_steps") or [])
+        checked_at = utc_now()
+        chain_receipts: list[dict[str, Any]] = []
+
+        for step in submitted_steps:
+            step_index = int(step.get("index") or 0)
+            raw_payload = dict(step.get("raw_relay_payload") or {})
+            step_rpc_url = str(rpc_url or raw_payload.get("rpc_url") or "").strip() or None
+            tx_hash = str(step.get("tx_hash") or step.get("response", {}).get("result") or "").strip() or None
+            receipt_payload: dict[str, Any] | None = None
+            error_message: str | None = None
+
+            if tx_hash and step_rpc_url:
+                request_payload = self.onchain.rpc_request(
+                    "eth_getTransactionReceipt",
+                    [tx_hash],
+                    request_id=f"agentcoin-{relay_id}-{step_index}-receipt",
+                )
+                try:
+                    response = self._chain_rpc_call(step_rpc_url, request_payload, timeout=timeout)
+                    if "error" in response:
+                        error_message = f"rpc error: {response.get('error')}"
+                    else:
+                        raw_receipt = response.get("result")
+                        if isinstance(raw_receipt, dict):
+                            receipt_payload = raw_receipt
+                except Exception as exc:
+                    error_message = str(exc)
+            elif not tx_hash:
+                error_message = "tx_hash is missing"
+            else:
+                error_message = "rpc_url is missing"
+
+            chain_receipts.append(
+                {
+                    "index": step_index,
+                    "action": step.get("action"),
+                    "tx_hash": tx_hash,
+                    "rpc_url": step_rpc_url,
+                    "status": self._receipt_reconciliation_status(receipt_payload),
+                    "receipt": receipt_payload,
+                    "error": error_message,
+                    "checked_at": checked_at,
+                }
+            )
+
+        if chain_receipts and all(item.get("status") == "confirmed" for item in chain_receipts):
+            reconciliation_status = "confirmed"
+        elif any(item.get("status") == "reverted" for item in chain_receipts):
+            reconciliation_status = "reverted"
+        else:
+            reconciliation_status = "unknown"
+        confirmed_at = checked_at if reconciliation_status == "confirmed" and chain_receipts else None
+
+        updated = self.store.update_settlement_relay_reconciliation(
+            relay_id,
+            reconciliation_status=reconciliation_status,
+            reconciliation_checked_at=checked_at,
+            confirmed_at=confirmed_at,
+            chain_receipts=chain_receipts,
+        )
+        if not updated:
+            raise ValueError("settlement relay not found")
+        return updated
+
+    def _task_settlement_reconciliation(self, task_id: str) -> dict[str, Any] | None:
+        latest = self.store.get_latest_settlement_relay(task_id)
+        if not latest:
+            return None
+        return {
+            "relay_id": latest.get("id"),
+            "task_id": latest.get("task_id"),
+            "status": latest.get("reconciliation_status") or "unknown",
+            "checked_at": latest.get("reconciliation_checked_at"),
+            "confirmed_at": latest.get("confirmed_at"),
+            "receipt_count": len(latest.get("chain_receipts") or []),
+        }
+
     def _peer_dispatch_snapshot(self, peer_id: str) -> dict[str, Any]:
         peer = self.config.resolve_peer(peer_id)
         target_url = self._peer_target_url(peer)
@@ -1028,6 +1218,12 @@ class AgentCoinNode:
                         {"error": "use POST /v1/onchain/settlement-relay with task_id and raw_transactions"},
                     )
                     return
+                if path == "/v1/onchain/settlement-relays/reconcile":
+                    self._json_response(
+                        HTTPStatus.METHOD_NOT_ALLOWED,
+                        {"error": "use POST /v1/onchain/settlement-relays/reconcile with relay_id or task_id"},
+                    )
+                    return
                 if path == "/v1/tasks":
                     self._json_response(HTTPStatus.OK, {"items": [node._decorate_task(item) for item in node.store.list_tasks()]})
                     return
@@ -1270,6 +1466,7 @@ class AgentCoinNode:
                             "settlement_relays": node.store.list_settlement_relays(task_id=task_id, limit=200),
                             "settlement_relay_queue": node.store.list_settlement_relay_queue(task_id=task_id, limit=200),
                             "latest_settlement_relay": node.store.get_latest_settlement_relay(task_id),
+                            "settlement_reconciliation": node._task_settlement_reconciliation(task_id),
                             "bridge_export_preview": export_preview,
                             "git_proof_bundle": git_proof_bundle,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
@@ -1634,6 +1831,9 @@ class AgentCoinNode:
                             raise ValueError("task not found")
                         if not task.get("payload", {}).get("_onchain"):
                             raise ValueError("task is not bound to onchain settlement")
+                        settlement = node._task_settlement_preview(task)
+                        if not settlement:
+                            raise ValueError("task is not ready for onchain settlement")
                         queue_payload = {
                             "task_id": task_id,
                             "raw_transactions": list(payload.get("raw_transactions") or []),
@@ -1650,6 +1850,99 @@ class AgentCoinNode:
                             delay_seconds=int(payload.get("delay_seconds") or 0),
                         )
                         self._json_response(HTTPStatus.CREATED, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue/pause":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_settlement_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("settlement relay queue item not found")
+                        item = node.store.pause_settlement_relay_queue_item(queue_id)
+                        if not item or item.get("status") != "paused":
+                            raise ValueError("queue item cannot be paused")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue/resume":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_settlement_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("settlement relay queue item not found")
+                        task = node.store.get_task(str(existing.get("task_id") or ""))
+                        if not task:
+                            raise ValueError("task not found")
+                        settlement = node._task_settlement_preview(task)
+                        if not settlement:
+                            raise ValueError("task is not ready for onchain settlement")
+                        item = node.store.resume_settlement_relay_queue_item(
+                            queue_id,
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                        )
+                        if not item or item.get("status") != "queued":
+                            raise ValueError("queue item cannot be resumed")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue/requeue":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_settlement_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("settlement relay queue item not found")
+                        task_id = str(existing.get("task_id") or "").strip()
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        settlement = node._task_settlement_preview(task)
+                        if not settlement:
+                            raise ValueError("task is not ready for onchain settlement")
+                        queue_payload = node._merge_settlement_relay_queue_payload(
+                            dict(existing.get("payload") or {}),
+                            payload,
+                            task_id=task_id,
+                        )
+                        item = node.store.requeue_settlement_relay_queue_item(
+                            queue_id,
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                            payload=queue_payload,
+                            max_attempts=int(payload.get("max_attempts")) if payload.get("max_attempts") is not None else None,
+                        )
+                        if not item or item.get("status") != "queued":
+                            raise ValueError("queue item cannot be requeued")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relays/reconcile":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        relay_id = str(payload.get("relay_id") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        relay_record = None
+                        if relay_id:
+                            relay_record = node.store.get_settlement_relay(relay_id)
+                        elif task_id:
+                            relay_record = node.store.get_latest_settlement_relay(task_id)
+                        else:
+                            raise ValueError("relay_id or task_id is required")
+                        if not relay_record:
+                            raise ValueError("settlement relay not found")
+                        item = node.reconcile_settlement_relay(
+                            str(relay_record.get("id") or relay_id),
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                            timeout=float(payload.get("timeout_seconds") or 10),
+                        )
+                        self._json_response(HTTPStatus.OK, {"item": item})
                         return
                     if self.path == "/v1/onchain/settlement-relays/replay":
                         if not self._require_auth():
@@ -2286,9 +2579,26 @@ class AgentCoinNode:
             self.sync_peer_cards()
             self.flush_outbox()
 
+    def _settlement_relay_loop(self) -> None:
+        poll_seconds = float(self.config.settlement_relay_poll_seconds or 0)
+        if poll_seconds <= 0:
+            return
+        while not self._sync_stop.is_set():
+            try:
+                self.process_settlement_relay_queue()
+            except Exception:
+                LOG.exception("settlement relay queue loop failed")
+            if self._sync_stop.wait(poll_seconds):
+                break
+
     def serve_forever(self) -> None:
         LOG.info("starting AgentCoin node on %s:%s", self.config.host, self.config.port)
+        recovered = self.store.recover_running_settlement_relay_queue_items()
+        if recovered:
+            LOG.info("recovered %s running settlement relay queue item(s)", recovered)
         self._sync_thread.start()
+        if float(self.config.settlement_relay_poll_seconds or 0) > 0:
+            self._settlement_relay_thread.start()
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
@@ -2296,6 +2606,10 @@ class AgentCoinNode:
         finally:
             self._sync_stop.set()
             self._server.server_close()
+            if self._sync_thread.is_alive():
+                self._sync_thread.join(timeout=2)
+            if self._settlement_relay_thread.is_alive():
+                self._settlement_relay_thread.join(timeout=2)
 
     def shutdown(self) -> None:
         self._sync_stop.set()

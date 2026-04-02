@@ -38,7 +38,8 @@ class NodeHarness:
                  challenge_bond_required_wei: int = 0,
                  poaw_policy_version: str = "0.2",
                  poaw_score_weights: dict[str, int] | None = None,
-                 bridges: list[str] | None = None) -> None:
+                 bridges: list[str] | None = None,
+                 settlement_relay_poll_seconds: float = 2.0) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -53,6 +54,7 @@ class NodeHarness:
             database_path=db_path,
             git_root=git_root,
             sync_interval_seconds=3600,
+            settlement_relay_poll_seconds=settlement_relay_poll_seconds,
             capabilities=capabilities,
             runtimes=runtimes or ["python"],
             bridges=bridges or ["mcp", "a2a"],
@@ -392,6 +394,41 @@ class NodeIntegrationTests(unittest.TestCase):
     def _get(self, url: str) -> tuple[int, dict]:
         with request.urlopen(url, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def _wait_for_queue_item_status(
+        self,
+        node: NodeHarness,
+        queue_id: str,
+        *,
+        status: str,
+        timeout: float = 5.0,
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+        last_item = None
+        while time.monotonic() < deadline:
+            last_item = node.node.store.get_settlement_relay_queue_item(queue_id)
+            if last_item and last_item["status"] == status:
+                return last_item
+            time.sleep(0.05)
+        raise AssertionError(f"queue item {queue_id} did not reach status {status!r}; last_item={last_item!r}")
+
+    def _complete_onchain_task(self, node: NodeHarness, token: str, task_id: str, worker_id: str) -> None:
+        _, claim = self._post(
+            f"{node.base_url}/v1/tasks/claim",
+            token,
+            {"worker_id": worker_id, "worker_capabilities": ["worker"], "lease_seconds": 30},
+        )
+        self._post(
+            f"{node.base_url}/v1/tasks/ack",
+            token,
+            {
+                "task_id": task_id,
+                "worker_id": worker_id,
+                "lease_token": claim["task"]["lease_token"],
+                "success": True,
+                "result": {"done": True, "worker_id": worker_id},
+            },
+        )
 
     def _init_git_repo(self, repo_path: Path) -> None:
         repo_path.mkdir(parents=True, exist_ok=True)
@@ -3126,6 +3163,273 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_onchain_settlement_relay_reconciliation_marks_confirmed_receipts(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        def receipt_response(payload: dict[str, object]) -> dict[str, object]:
+            params = list(payload.get("params") or [])
+            tx_hash = str(params[0] if params else "")
+            return {"transactionHash": tx_hash, "status": "0x1", "blockNumber": "0x10"}
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": receipt_response,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-confirmed",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-confirmed-node",
+            token="token-settlement-confirmed",
+            db_path=str(Path(self.tempdir.name) / "settlement-confirmed.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-confirmed",
+                {
+                    "id": "settlement-confirmed-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 101,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-confirmed",
+                "settlement-confirmed-task-1",
+                "worker-settlement-confirmed",
+            )
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-confirmed",
+                {
+                    "task_id": "settlement-confirmed-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+
+            _, reconciled_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relays/reconcile",
+                "token-settlement-confirmed",
+                {"relay_id": relay["relay_record_id"]},
+            )
+            reconciled = reconciled_payload["item"]
+            self.assertEqual(reconciled["reconciliation_status"], "confirmed")
+            self.assertIsNotNone(reconciled["reconciliation_checked_at"])
+            self.assertIsNotNone(reconciled["confirmed_at"])
+            self.assertEqual(len(reconciled["chain_receipts"]), 2)
+            self.assertTrue(all(item["status"] == "confirmed" for item in reconciled["chain_receipts"]))
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-confirmed-task-1")
+            self.assertEqual(replay["settlement_reconciliation"]["status"], "confirmed")
+            self.assertEqual(replay["latest_settlement_relay"]["reconciliation_status"], "confirmed")
+            self.assertEqual(len(replay["latest_settlement_relay"]["chain_receipts"]), 2)
+
+            receipt_calls = [item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]
+            self.assertEqual(len(receipt_calls), 2)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_onchain_settlement_relay_reconciliation_marks_reverted_receipts(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        def receipt_response(payload: dict[str, object]) -> dict[str, object]:
+            params = list(payload.get("params") or [])
+            tx_hash = str(params[0] if params else "")
+            status = "0x1" if tx_hash.endswith("1") else "0x0"
+            return {"transactionHash": tx_hash, "status": status, "blockNumber": "0x11"}
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": receipt_response,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-reverted",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-reverted-node",
+            token="token-settlement-reverted",
+            db_path=str(Path(self.tempdir.name) / "settlement-reverted.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-reverted",
+                {
+                    "id": "settlement-reverted-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 102,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-reverted",
+                "settlement-reverted-task-1",
+                "worker-settlement-reverted",
+            )
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-reverted",
+                {
+                    "task_id": "settlement-reverted-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+
+            _, reconciled_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relays/reconcile",
+                "token-settlement-reverted",
+                {"task_id": relay["task_id"]},
+            )
+            reconciled = reconciled_payload["item"]
+            self.assertEqual(reconciled["id"], relay["relay_record_id"])
+            self.assertEqual(reconciled["reconciliation_status"], "reverted")
+            self.assertIsNotNone(reconciled["reconciliation_checked_at"])
+            self.assertIsNone(reconciled["confirmed_at"])
+            self.assertEqual(reconciled["chain_receipts"][1]["status"], "reverted")
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-reverted-task-1")
+            self.assertEqual(replay["settlement_reconciliation"]["status"], "reverted")
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_onchain_settlement_relay_reconciliation_marks_unknown_receipts(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": None,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-unknown",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-unknown-node",
+            token="token-settlement-unknown",
+            db_path=str(Path(self.tempdir.name) / "settlement-unknown.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-unknown",
+                {
+                    "id": "settlement-unknown-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 103,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-unknown",
+                "settlement-unknown-task-1",
+                "worker-settlement-unknown",
+            )
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-unknown",
+                {
+                    "task_id": "settlement-unknown-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+
+            _, reconciled_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relays/reconcile",
+                "token-settlement-unknown",
+                {"relay_id": relay["relay_record_id"]},
+            )
+            reconciled = reconciled_payload["item"]
+            self.assertEqual(reconciled["reconciliation_status"], "unknown")
+            self.assertIsNotNone(reconciled["reconciliation_checked_at"])
+            self.assertIsNone(reconciled["confirmed_at"])
+            self.assertTrue(all(item["status"] == "unknown" for item in reconciled["chain_receipts"]))
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-unknown-task-1")
+            self.assertEqual(replay["settlement_reconciliation"]["status"], "unknown")
+        finally:
+            node.stop()
+            rpc.stop()
+
     def test_onchain_settlement_relay_queue_persists_items(self) -> None:
         onchain = OnchainBindings(
             enabled=True,
@@ -3159,6 +3463,7 @@ class NodeIntegrationTests(unittest.TestCase):
                     "onchain_job_id": 99,
                 },
             )
+            self._complete_onchain_task(node, "token-settlement-queue", "settlement-queue-task-1", "worker-settlement-queue")
             status, queued = self._post(
                 f"{node.base_url}/v1/onchain/settlement-relay-queue",
                 "token-settlement-queue",
@@ -3193,6 +3498,376 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(replay["settlement_relay_queue"][0]["id"], item["id"])
         finally:
             node.stop()
+
+    def test_background_settlement_relay_worker_processes_queued_items(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-worker-bg",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-worker-node",
+            token="token-settlement-worker",
+            db_path=str(Path(self.tempdir.name) / "settlement-worker.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-worker",
+                {
+                    "id": "settlement-worker-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 42,
+                },
+            )
+            self._complete_onchain_task(node, "token-settlement-worker", "settlement-worker-task-1", "worker-settlement-bg")
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-worker",
+                {
+                    "task_id": "settlement-worker-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                },
+            )
+            item = queued["item"]
+
+            completed = self._wait_for_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertIsNotNone(completed["last_relay_id"])
+            self.assertIsNotNone(completed["completed_at"])
+            self.assertEqual(len(rpc.calls), 2)
+
+            _, relay_history = self._get(f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-worker-task-1")
+            self.assertEqual(len(relay_history["items"]), 1)
+            self.assertEqual(relay_history["items"][0]["id"], completed["last_relay_id"])
+            self.assertEqual(relay_history["items"][0]["final_status"], "completed")
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_background_settlement_relay_worker_respects_next_attempt_at(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-delay",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-delay-node",
+            token="token-settlement-delay",
+            db_path=str(Path(self.tempdir.name) / "settlement-delay.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-delay",
+                {
+                    "id": "settlement-delay-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 43,
+                },
+            )
+            self._complete_onchain_task(node, "token-settlement-delay", "settlement-delay-task-1", "worker-settlement-delay")
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-delay",
+                {
+                    "task_id": "settlement-delay-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                    "delay_seconds": 2,
+                },
+            )
+            item = queued["item"]
+
+            time.sleep(0.3)
+            pending = node.node.store.get_settlement_relay_queue_item(item["id"])
+            assert pending is not None
+            self.assertEqual(pending["status"], "queued")
+            self.assertEqual(len(rpc.calls), 0)
+
+            completed = self._wait_for_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertEqual(len(rpc.calls), 2)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_background_settlement_relay_worker_retries_then_dead_letters(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="http://127.0.0.1:1",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-retry",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-retry-node",
+            token="token-settlement-retry",
+            db_path=str(Path(self.tempdir.name) / "settlement-retry.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-retry",
+                {
+                    "id": "settlement-retry-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 44,
+                },
+            )
+            self._complete_onchain_task(node, "token-settlement-retry", "settlement-retry-task-1", "worker-settlement-retry")
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-retry",
+                {
+                    "task_id": "settlement-retry-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": "http://127.0.0.1:1",
+                    "timeout_seconds": 0.2,
+                    "max_attempts": 2,
+                },
+            )
+            item = queued["item"]
+
+            retrying = self._wait_for_queue_item_status(node, item["id"], status="retrying", timeout=3.0)
+            self.assertEqual(retrying["attempts"], 1)
+            self.assertIsNotNone(retrying["last_relay_id"])
+            self.assertIn("resume_from_index", retrying["payload"])
+
+            dead_letter = self._wait_for_queue_item_status(node, item["id"], status="dead-letter", timeout=4.5)
+            self.assertEqual(dead_letter["attempts"], 2)
+            self.assertIsNotNone(dead_letter["completed_at"])
+            self.assertIsNotNone(dead_letter["last_relay_id"])
+
+            _, relay_history = self._get(f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-retry-task-1")
+            self.assertEqual(len(relay_history["items"]), 2)
+            self.assertEqual(relay_history["items"][0]["retry_count"], 1)
+        finally:
+            node.stop()
+
+    def test_operator_can_pause_and_resume_settlement_relay_queue_item(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpausequeue"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-pause",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-pause-node",
+            token="token-settlement-pause",
+            db_path=str(Path(self.tempdir.name) / "settlement-pause.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-pause",
+                {
+                    "id": "settlement-pause-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 45,
+                },
+            )
+            self._complete_onchain_task(node, "token-settlement-pause", "settlement-pause-task-1", "worker-settlement-pause")
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-pause",
+                {
+                    "task_id": "settlement-pause-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                    "delay_seconds": 2,
+                },
+            )
+            item = queued["item"]
+
+            _, paused_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue/pause",
+                "token-settlement-pause",
+                {"queue_id": item["id"]},
+            )
+            self.assertEqual(paused_payload["item"]["status"], "paused")
+
+            time.sleep(0.6)
+            paused = node.node.store.get_settlement_relay_queue_item(item["id"])
+            assert paused is not None
+            self.assertEqual(paused["status"], "paused")
+            self.assertEqual(len(rpc.calls), 0)
+
+            _, paused_list = self._get(f"{node.base_url}/v1/onchain/settlement-relay-queue?status=paused")
+            self.assertEqual(len(paused_list["items"]), 1)
+            self.assertEqual(paused_list["items"][0]["id"], item["id"])
+
+            _, resumed_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue/resume",
+                "token-settlement-pause",
+                {"queue_id": item["id"], "delay_seconds": 0},
+            )
+            self.assertEqual(resumed_payload["item"]["status"], "queued")
+
+            completed = self._wait_for_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertEqual(len(rpc.calls), 2)
+
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["stats"]["settlement_relay_queue_paused"], 0)
+            self.assertEqual(health["stats"]["settlement_relay_queue_completed"], 1)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_operator_can_requeue_dead_letter_settlement_relay_item(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xrequeuequeue"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="http://127.0.0.1:1",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-requeue",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-requeue-node",
+            token="token-settlement-requeue",
+            db_path=str(Path(self.tempdir.name) / "settlement-requeue.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-requeue",
+                {
+                    "id": "settlement-requeue-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 46,
+                },
+            )
+            self._complete_onchain_task(node, "token-settlement-requeue", "settlement-requeue-task-1", "worker-settlement-requeue")
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-requeue",
+                {
+                    "task_id": "settlement-requeue-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": "http://127.0.0.1:1",
+                    "timeout_seconds": 0.2,
+                    "max_attempts": 1,
+                },
+            )
+            item = queued["item"]
+
+            dead_letter = self._wait_for_queue_item_status(node, item["id"], status="dead-letter", timeout=3.0)
+            self.assertEqual(dead_letter["attempts"], 1)
+            self.assertIsNotNone(dead_letter["last_relay_id"])
+
+            _, requeued_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue/requeue",
+                "token-settlement-requeue",
+                {
+                    "queue_id": item["id"],
+                    "rpc_url": rpc.url,
+                    "timeout_seconds": 10,
+                    "max_attempts": 2,
+                    "delay_seconds": 0,
+                },
+            )
+            self.assertEqual(requeued_payload["item"]["status"], "queued")
+            self.assertEqual(requeued_payload["item"]["attempts"], 0)
+            self.assertEqual(requeued_payload["item"]["max_attempts"], 2)
+            self.assertEqual(requeued_payload["item"]["payload"]["rpc_url"], rpc.url)
+
+            completed = self._wait_for_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertIsNotNone(completed["last_relay_id"])
+            self.assertEqual(len(rpc.calls), 2)
+
+            _, relay_history = self._get(f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-requeue-task-1")
+            self.assertEqual(len(relay_history["items"]), 2)
+            self.assertEqual(relay_history["items"][0]["final_status"], "completed")
+            self.assertEqual(relay_history["items"][1]["final_status"], "failed")
+        finally:
+            node.stop()
+            rpc.stop()
 
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(

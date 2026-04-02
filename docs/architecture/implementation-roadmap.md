@@ -107,20 +107,20 @@ Status legend:
 ## Phase 10
 
 - `[x]` relay queue persistence
-- `[ ]` background settlement relay worker
-- `[ ]` relay queue pause / resume
+- `[x]` background settlement relay worker
+- `[x]` relay queue pause / resume
 - `[ ]` relay queue max in-flight
-- `[ ]` relay queue dead-letter
-- `[ ]` operator relay requeue
+- `[x]` relay queue dead-letter
+- `[x]` operator relay requeue
 
 ## Phase 11
 
-- `[ ]` on-chain event reconciliation skeleton
-- `[ ]` local relay vs chain tx comparison
-- `[ ]` tx receipt fetch
-- `[ ]` confirmed / reverted / unknown
-- `[ ]` replay-inspect reconciliation state
-- `[ ]` relay history `confirmed_at`
+- `[x]` on-chain event reconciliation skeleton
+- `[x]` local relay vs chain tx comparison
+- `[x]` tx receipt fetch
+- `[x]` confirmed / reverted / unknown
+- `[x]` replay-inspect reconciliation state
+- `[x]` relay history `confirmed_at`
 
 ## Phase 12
 

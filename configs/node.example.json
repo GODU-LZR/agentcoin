@@ -41,6 +41,7 @@
     "receipt_base_uri": "ipfs://agentcoin-receipts"
   },
   "sync_interval_seconds": 15,
+  "settlement_relay_poll_seconds": 2,
   "max_body_bytes": 262144,
   "outbox_max_attempts": 5,
   "task_retry_limit": 3,
