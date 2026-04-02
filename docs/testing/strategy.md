@@ -19,6 +19,7 @@ The current test scope covers:
 - bridge registry plus MCP / A2A import-export flow
 - bridge-aware worker execution normalization
 - runtime adapter execution for HTTP JSON and CLI JSON agents
+- runtime adapter execution for LangGraph-style HTTP runtimes
 - runtime adapter execution for Ollama chat and OpenAI-compatible gateways
 - OpenAI-compatible structured output forwarding and parsed JSON normalization
 - semantic card and task shape exposure

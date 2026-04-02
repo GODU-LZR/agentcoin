@@ -98,7 +98,7 @@ Status legend:
 ## Phase 9
 
 - `[x]` structured output for OpenClaw / OpenAI runtime
-- `[ ]` LangGraph HTTP adapter
+- `[x]` LangGraph HTTP adapter
 - `[ ]` container-job adapter skeleton
 - `[ ]` MCP tool schema normalization
 - `[ ]` A2A message schema normalization

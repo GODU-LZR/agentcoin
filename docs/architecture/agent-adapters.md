@@ -25,6 +25,7 @@ They write protocol context into `payload._bridge`.
 These decide how a worker actually invokes an agent runtime.
 
 - `http-json`
+- `langgraph-http`
 - `openai-chat`
 - `ollama-chat`
 - `cli-json`
@@ -87,7 +88,48 @@ Task binding shape:
 
 The worker sends JSON over `stdin` and expects JSON on `stdout`.
 
-### 3. Ollama Chat Agent
+### 3. LangGraph HTTP Agent
+
+Best for:
+
+- LangGraph services already exposed over HTTP
+- graph-based agents with thread and run state
+- remote orchestrators that should stay behind a simple JSON boundary
+
+Task binding shape:
+
+```json
+{
+  "_runtime": {
+    "runtime": "langgraph-http",
+    "endpoint": "http://127.0.0.1:8123/runs/wait",
+    "assistant_id": "assistant-graph-1",
+    "config": {
+      "recursion_limit": 5
+    },
+    "timeout_seconds": 60
+  }
+}
+```
+
+The worker sends:
+
+- `thread_id`
+- `input`
+- `task_id`
+- `workflow_id`
+- `worker_id`
+- optional `assistant_id`, `config`, and `checkpoint`
+
+The response is normalized into:
+
+- `run_id`
+- `thread_id`
+- `state`
+- `assistant_message`
+- raw `response`
+
+### 4. Ollama Chat Agent
 
 Best for:
 
@@ -115,7 +157,7 @@ Task binding shape:
 
 The worker sends a non-streaming Ollama-style chat request and normalizes the assistant message into the task result.
 
-### 4. OpenAI-Compatible Chat Agent
+### 5. OpenAI-Compatible Chat Agent
 
 Best for:
 
@@ -147,6 +189,7 @@ The worker sends an OpenAI-compatible chat completions request and normalizes th
 
 - wrap as `http-json` if you want networked execution
 - wrap as `cli-json` if you want local offline execution
+- use `langgraph-http` if you already have an HTTP graph runner with thread/run semantics
 
 ### MCP-compatible agents
 

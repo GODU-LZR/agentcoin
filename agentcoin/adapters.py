@@ -183,6 +183,8 @@ class ExecutionAdapterRegistry:
             )
         if runtime_kind == "http-json":
             return self._execute_http_runtime(task, runtime=runtime, worker_id=worker_id)
+        if runtime_kind == "langgraph-http":
+            return self._execute_langgraph_http_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "openai-chat":
             return self._execute_openai_chat_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "ollama-chat":
@@ -361,6 +363,132 @@ class ExecutionAdapterRegistry:
             status="completed",
             outcome="runtime-call",
             artifacts={"endpoint": endpoint, "method": method},
+        )
+        return result
+
+    @staticmethod
+    def _langgraph_input(task: dict[str, Any], runtime: dict[str, Any]) -> Any:
+        if "input" in runtime:
+            return runtime.get("input")
+        if "input" in task.get("payload", {}):
+            return task.get("payload", {}).get("input")
+        return dict(task.get("payload", {}))
+
+    @staticmethod
+    def _langgraph_thread_id(task: dict[str, Any], runtime: dict[str, Any]) -> str:
+        return (
+            str(runtime.get("thread_id") or "").strip()
+            or str(task.get("workflow_id") or "").strip()
+            or str(task.get("id") or "").strip()
+        )
+
+    @staticmethod
+    def _extract_langgraph_assistant_message(response: dict[str, Any]) -> dict[str, Any] | None:
+        messages = response.get("messages")
+        if isinstance(messages, list):
+            for item in reversed(messages):
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or item.get("type") or "").strip().lower()
+                if role in {"assistant", "ai"}:
+                    return dict(item)
+        output = response.get("output")
+        if isinstance(output, dict):
+            return dict(output)
+        return None
+
+    def _execute_langgraph_http_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        endpoint = str(runtime.get("endpoint") or "").strip()
+        if not endpoint:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:langgraph-http",
+                reason="runtime.endpoint is required",
+                extra={"runtime": "langgraph-http"},
+            )
+        if not self.policy.http_host_allowed(endpoint):
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:langgraph-http",
+                reason="runtime endpoint host is not allowlisted",
+                extra={"runtime": "langgraph-http", "endpoint": endpoint},
+            )
+        request_body: dict[str, Any] = {
+            "thread_id": self._langgraph_thread_id(task, runtime),
+            "input": self._langgraph_input(task, runtime),
+            "task_id": task.get("id"),
+            "workflow_id": task.get("workflow_id"),
+            "worker_id": worker_id,
+        }
+        if "assistant_id" in runtime:
+            request_body["assistant_id"] = runtime.get("assistant_id")
+        if "config" in runtime:
+            request_body["config"] = dict(runtime.get("config") or {})
+        if "checkpoint" in runtime:
+            request_body["checkpoint"] = runtime.get("checkpoint")
+        headers = {"Content-Type": "application/json"}
+        headers.update(dict(runtime.get("headers") or {}))
+        auth_token = str(runtime.get("auth_token") or "").strip()
+        if auth_token:
+            headers["Authorization"] = f"Bearer {auth_token}"
+        try:
+            response = self.transport.request_json(
+                endpoint,
+                method="POST",
+                payload=request_body,
+                headers=headers,
+                timeout=float(runtime.get("timeout_seconds") or 60),
+            )
+        except Exception as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:langgraph-http",
+                reason=str(exc),
+                extra={"runtime": "langgraph-http", "endpoint": endpoint},
+            )
+        assistant_message = self._extract_langgraph_assistant_message(response)
+        result = self._base_result(task, worker_id=worker_id)
+        result["adapter"] = {
+            "mode": "runtime-adapter",
+            "protocol": "langgraph-http",
+            "status": "completed",
+            "endpoint": endpoint,
+            "thread_id": request_body["thread_id"],
+        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="langgraph-http",
+            decision="allowed",
+            reason="runtime endpoint allowlisted",
+            mode="runtime-adapter",
+            runtime="langgraph-http",
+            endpoint=endpoint,
+            thread_id=request_body["thread_id"],
+        )
+        result["runtime_execution"] = {
+            "runtime": "langgraph-http",
+            "endpoint": endpoint,
+            "request": request_body,
+            "response": response,
+            "assistant_message": assistant_message,
+            "run_id": response.get("run_id"),
+            "thread_id": response.get("thread_id") or request_body["thread_id"],
+            "state": response.get("state"),
+        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="langgraph-http",
+            status="completed",
+            outcome="runtime-graph-run",
+            artifacts={
+                "endpoint": endpoint,
+                "thread_id": request_body["thread_id"],
+                "run_id": response.get("run_id"),
+                "assistant_id": request_body.get("assistant_id"),
+            },
         )
         return result
 

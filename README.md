@@ -138,6 +138,7 @@ The worker runtime now also has a first agent-adapter layer:
 - `GET /v1/runtimes` lists built-in runtime adapters
 - `POST /v1/runtimes/bind` can attach a runtime adapter to an existing task
 - `http-json` can call an HTTP agent runtime through the same outbound transport policy
+- `langgraph-http` can call a LangGraph-style HTTP runtime and normalize `thread_id`, `run_id`, `state`, and assistant output
 - `openai-chat` can call an OpenAI-compatible gateway, including OpenClaw Gateway, and can request JSON-schema structured output
 - `ollama-chat` can call a local Ollama-compatible chat endpoint for offline and private execution
 - `cli-json` can invoke a local agent wrapper over stdin/stdout JSON

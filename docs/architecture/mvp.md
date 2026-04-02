@@ -174,6 +174,7 @@ The worker loop now also has a first runtime-adapter layer:
 
 - `payload._runtime` can steer execution independently of bridge metadata
 - `http-json` forwards a normalized task envelope to an HTTP agent runtime
+- `langgraph-http` forwards thread-oriented graph execution requests to a LangGraph-style HTTP runtime
 - `cli-json` invokes a local CLI wrapper over JSON stdin/stdout
 - runtime policy can restrict allowed runtime kinds and HTTP host targets
 

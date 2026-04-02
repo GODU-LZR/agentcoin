@@ -182,6 +182,62 @@ class HttpAgentHarness:
         self.thread.join(timeout=2)
 
 
+class LangGraphHarness:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.port = _free_port()
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), self._build_handler())
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/runs/wait"
+
+    def _build_handler(self) -> type[BaseHTTPRequestHandler]:
+        harness = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                payload = json.loads(raw.decode("utf-8"))
+                harness.calls.append(payload)
+                response = {
+                    "thread_id": payload.get("thread_id"),
+                    "run_id": "run-langgraph-1",
+                    "state": "completed",
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": f"langgraph:{json.dumps(payload.get('input'), ensure_ascii=False)}",
+                        }
+                    ],
+                    "output": {
+                        "role": "assistant",
+                        "content": f"langgraph:{json.dumps(payload.get('input'), ensure_ascii=False)}",
+                    },
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    def start(self) -> None:
+        self.thread.start()
+        time.sleep(0.2)
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self.thread.join(timeout=2)
+
+
 class OllamaHarness:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
@@ -3231,6 +3287,104 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
             ollama.stop()
+
+    def test_runtime_adapter_langgraph_http(self) -> None:
+        langgraph = LangGraphHarness()
+        langgraph.start()
+        node = NodeHarness(
+            node_id="runtime-langgraph-node",
+            token="token-langgraph",
+            db_path=str(Path(self.tempdir.name) / "runtime-langgraph.db"),
+            capabilities=["worker"],
+            runtimes=["langgraph-http"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("langgraph-http", runtime_names)
+            descriptor = [item for item in runtimes["items"] if item["runtime"] == "langgraph-http"][0]
+            self.assertTrue(descriptor["supports_http"])
+            self.assertEqual(descriptor["output_modes"], ["run-state", "assistant-message", "json-object"])
+
+            _, card = self._get(f"{node.base_url}/v1/card")
+            self.assertIn("langgraph-http", card["runtime_capabilities"])
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-langgraph",
+                {
+                    "id": "runtime-langgraph-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "workflow_id": "wf-langgraph-1",
+                    "payload": {"input": {"prompt": "hello graph"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/runtimes/bind",
+                "token-langgraph",
+                {
+                    "task_id": "runtime-langgraph-1",
+                    "runtime": "langgraph-http",
+                    "options": {
+                        "endpoint": langgraph.url,
+                        "assistant_id": "assistant-graph-1",
+                        "config": {"recursion_limit": 5},
+                        "timeout_seconds": 10,
+                    },
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "langgraph-http")
+
+            evaluate_status, evaluated = self._post(
+                f"{node.base_url}/v1/tasks/dispatch/evaluate",
+                "token-langgraph",
+                {
+                    "id": "runtime-langgraph-eval",
+                    "kind": "generic",
+                    "role": "worker",
+                    "required_capabilities": ["worker"],
+                    "payload": {
+                        "_runtime": {
+                            "runtime": "langgraph-http",
+                        }
+                    },
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(evaluated["requirements"]["runtime"], "langgraph-http")
+            self.assertEqual(evaluated["candidates"][0]["runtime_match"]["required"], "langgraph-http")
+            self.assertTrue(evaluated["candidates"][0]["runtime_match"]["supported"])
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-langgraph",
+                worker_id="worker-langgraph-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["langgraph-http"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-langgraph-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "langgraph-http")
+            self.assertEqual(task["result"]["adapter"]["thread_id"], "wf-langgraph-1")
+            self.assertEqual(task["result"]["runtime_execution"]["run_id"], "run-langgraph-1")
+            self.assertEqual(task["result"]["runtime_execution"]["state"], "completed")
+            self.assertEqual(task["result"]["runtime_execution"]["assistant_message"]["content"], 'langgraph:{"prompt": "hello graph"}')
+            self.assertEqual(langgraph.calls[0]["thread_id"], "wf-langgraph-1")
+            self.assertEqual(langgraph.calls[0]["assistant_id"], "assistant-graph-1")
+            self.assertEqual(langgraph.calls[0]["config"]["recursion_limit"], 5)
+            self.assertEqual(langgraph.calls[0]["input"], {"prompt": "hello graph"})
+        finally:
+            node.stop()
+            langgraph.stop()
 
     def test_runtime_adapter_openai_chat_for_openclaw_gateway(self) -> None:
         gateway = OpenAICompatHarness()

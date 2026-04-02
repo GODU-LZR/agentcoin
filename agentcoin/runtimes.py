@@ -50,6 +50,15 @@ class RuntimeRegistry:
                 input_modes=["task-envelope"],
                 output_modes=["json-object"],
             ),
+            "langgraph-http": RuntimeAdapterDescriptor(
+                runtime="langgraph-http",
+                version="0.1",
+                title="LangGraph HTTP Runtime Adapter",
+                description="Execute a task by calling a LangGraph-style HTTP endpoint with thread, input, and optional run configuration.",
+                supports_http=True,
+                input_modes=["thread-input", "task-envelope"],
+                output_modes=["run-state", "assistant-message", "json-object"],
+            ),
             "openai-chat": RuntimeAdapterDescriptor(
                 runtime="openai-chat",
                 version="0.1",
