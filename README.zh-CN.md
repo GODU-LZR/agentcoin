@@ -335,6 +335,7 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - `POST /v1/bridges/import` 可以把 `MCP` 或 `A2A` 风格消息导入成持久化 AgentCoin 任务
 - `POST /v1/bridges/export` 可以把任务状态或结果重新导出成桥接协议消息
 - `MCP` bridge 现在统一成 `tool_call` 和 `tool_result` 两段 schema，使导入、执行、导出共用同一结构
+- `A2A` bridge 现在统一成 `message_envelope` 和 `message_result` 两段 schema，使消息导入、执行、导出共用同一结构
 - bridge 上下文会保存在 `payload._bridge`，这样既保留外部协议语境，也不让内部任务模型被替代
 
 worker 执行层现在也已经感知 bridge：

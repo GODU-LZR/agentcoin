@@ -27,6 +27,13 @@ Current MCP normalization adds two stable bridge-level shapes:
 
 This keeps tool-call import, worker execution, and protocol export aligned around the same schema instead of scattered fields.
 
+Current A2A normalization adds two stable bridge-level shapes:
+
+- `payload._bridge.message_envelope`
+- `result.bridge_execution.message_result`
+
+This keeps message import, worker execution, and protocol export aligned around the same structure.
+
 ### Runtime Adapters
 
 These decide how a worker actually invokes an agent runtime.

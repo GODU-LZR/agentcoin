@@ -131,6 +131,48 @@ class BridgeRegistry:
             "structured_content": structured_content,
         }
 
+    @staticmethod
+    def _normalize_a2a_message(message: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": "0.1",
+            "message_id": message.get("message_id"),
+            "conversation_id": message.get("conversation_id"),
+            "sender": message.get("sender"),
+            "intent": str(message.get("intent") or message.get("type") or "").strip(),
+            "in_reply_to": message.get("in_reply_to"),
+            "content": message.get("content"),
+            "metadata": dict(message.get("metadata") or {}),
+        }
+
+    @staticmethod
+    def _normalize_a2a_result(task: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
+        task_result = dict(result if result is not None else task.get("result") or {})
+        bridge_execution = dict(task_result.get("bridge_execution") or {})
+        message_envelope = dict(bridge_execution.get("message_envelope") or task.get("payload", {}).get("_bridge", {}).get("message_envelope") or {})
+        normalized_output = dict(bridge_execution.get("normalized_output") or {})
+        content = dict(normalized_output.get("content") or {})
+        if not content:
+            content = {
+                "task_id": task.get("id"),
+                "status": task.get("status"),
+                "result": task_result,
+            }
+        return {
+            "schema_version": "0.1",
+            "message_id": task.get("id"),
+            "conversation_id": message_envelope.get("conversation_id") or task.get("workflow_id") or task.get("id"),
+            "sender": task.get("sender"),
+            "intent": str(normalized_output.get("intent") or "task.result"),
+            "in_reply_to": message_envelope.get("message_id"),
+            "content": content,
+            "task": {
+                "id": task.get("id"),
+                "status": task.get("status"),
+                "kind": task.get("kind"),
+                "result": task_result,
+            },
+        }
+
     def _import_mcp(self, message: dict[str, Any], overrides: dict[str, Any]) -> TaskEnvelope:
         method = str(message.get("method") or "").strip()
         if not method:
@@ -178,6 +220,7 @@ class BridgeRegistry:
         intent = str(message.get("intent") or message.get("type") or "").strip()
         if not intent:
             raise ValueError("a2a bridge requires message.intent or message.type")
+        message_envelope = self._normalize_a2a_message(message)
         bridge_payload = self._base_bridge_payload("a2a", message)
         bridge_payload["_bridge"].update(
             {
@@ -185,6 +228,7 @@ class BridgeRegistry:
                 "conversation_id": message.get("conversation_id"),
                 "intent": intent,
                 "in_reply_to": message.get("in_reply_to"),
+                "message_envelope": message_envelope,
             }
         )
         payload = dict(overrides.pop("payload", {}) or {})
@@ -243,19 +287,8 @@ class BridgeRegistry:
     @staticmethod
     def _export_a2a(task: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
         bridge = dict(task.get("payload", {}).get("_bridge") or {})
+        normalized_message = BridgeRegistry._normalize_a2a_result(task, result)
         return {
             "protocol": "a2a",
-            "message": {
-                "message_id": task["id"],
-                "conversation_id": bridge.get("conversation_id") or task.get("workflow_id") or task["id"],
-                "sender": task["sender"],
-                "intent": "task.result",
-                "in_reply_to": bridge.get("message_id"),
-                "task": {
-                    "id": task["id"],
-                    "status": task["status"],
-                    "kind": task["kind"],
-                    "result": result if result is not None else task.get("result"),
-                },
-            },
+            "message": normalized_message,
         }

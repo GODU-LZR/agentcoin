@@ -1588,6 +1588,9 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(a2a_status, 201)
             self.assertEqual(a2a_imported["task"]["workflow_id"], "conv-1")
             self.assertEqual(a2a_imported["task"]["payload"]["_bridge"]["protocol"], "a2a")
+            self.assertEqual(a2a_imported["task"]["payload"]["_bridge"]["schema_version"], "0.1")
+            self.assertEqual(a2a_imported["task"]["payload"]["_bridge"]["message_envelope"]["intent"], "summarize")
+            self.assertEqual(a2a_imported["task"]["payload"]["_bridge"]["message_envelope"]["content"]["text"], "hello world")
 
             a2a_export_status, a2a_exported = self._post(
                 f"{node.base_url}/v1/bridges/export",
@@ -1601,6 +1604,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(a2a_export_status, 200)
             self.assertEqual(a2a_exported["message"]["conversation_id"], "conv-1")
             self.assertEqual(a2a_exported["message"]["task"]["result"]["summary"], "done")
+            self.assertEqual(a2a_exported["message"]["intent"], "task.result")
         finally:
             node.stop()
 
@@ -1674,6 +1678,14 @@ class NodeIntegrationTests(unittest.TestCase):
                 by_id["bridge-exec-a2a"]["result"]["bridge_execution"]["normalized_output"]["content"]["accepted_intent"],
                 "summarize",
             )
+            self.assertEqual(
+                by_id["bridge-exec-a2a"]["result"]["bridge_execution"]["message_envelope"]["intent"],
+                "summarize",
+            )
+            self.assertEqual(
+                by_id["bridge-exec-a2a"]["result"]["bridge_execution"]["message_result"]["intent"],
+                "task.result",
+            )
 
             _, exported = self._post(
                 f"{node.base_url}/v1/bridges/export",
@@ -1689,6 +1701,8 @@ class NodeIntegrationTests(unittest.TestCase):
                 {"protocol": "a2a", "task_id": "bridge-exec-a2a"},
             )
             self.assertEqual(exported_a2a["message"]["task"]["result"]["adapter"]["protocol"], "a2a")
+            self.assertEqual(exported_a2a["message"]["intent"], "task.result")
+            self.assertEqual(exported_a2a["message"]["content"]["accepted_intent"], "summarize")
         finally:
             node.stop()
 

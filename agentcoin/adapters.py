@@ -1053,9 +1053,10 @@ class ExecutionAdapterRegistry:
 
     def _execute_a2a(self, task: dict[str, Any], *, bridge: dict[str, Any], worker_id: str) -> dict[str, Any]:
         payload = dict(task.get("payload", {}))
+        message_envelope = dict(bridge.get("message_envelope") or {})
         content = payload.get("content")
         metadata = payload.get("metadata") or {}
-        intent = str(bridge.get("intent") or "")
+        intent = str(message_envelope.get("intent") or bridge.get("intent") or "")
         if intent and not self.policy.intent_allowed(intent):
             return self._rejected_result(
                 task,
@@ -1079,10 +1080,40 @@ class ExecutionAdapterRegistry:
         )
         result["bridge_execution"] = {
             "protocol": "a2a",
+            "schema_version": "0.1",
             "message_id": bridge.get("message_id") or task["id"],
             "conversation_id": bridge.get("conversation_id") or task.get("workflow_id"),
             "intent": intent,
             "accepted": True,
+            "message_envelope": {
+                "schema_version": "0.1",
+                "message_id": message_envelope.get("message_id") or bridge.get("message_id") or task["id"],
+                "conversation_id": message_envelope.get("conversation_id") or bridge.get("conversation_id") or task.get("workflow_id"),
+                "sender": message_envelope.get("sender") or task.get("sender"),
+                "intent": intent,
+                "in_reply_to": message_envelope.get("in_reply_to") or bridge.get("in_reply_to"),
+                "content": content,
+                "metadata": metadata,
+            },
+            "message_result": {
+                "schema_version": "0.1",
+                "message_id": bridge.get("message_id") or task["id"],
+                "conversation_id": bridge.get("conversation_id") or task.get("workflow_id"),
+                "sender": task.get("sender"),
+                "intent": "task.result",
+                "in_reply_to": message_envelope.get("message_id") or bridge.get("message_id"),
+                "content": {
+                    "accepted_intent": intent,
+                    "handled_by": worker_id,
+                    "content": content,
+                    "metadata": metadata,
+                },
+                "task": {
+                    "id": task["id"],
+                    "status": task.get("status"),
+                    "kind": task.get("kind"),
+                },
+            },
             "normalized_output": {
                 "intent": "task.result",
                 "content": {

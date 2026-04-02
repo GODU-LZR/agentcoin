@@ -101,7 +101,7 @@ Status legend:
 - `[x]` LangGraph HTTP adapter
 - `[x]` container-job adapter skeleton
 - `[x]` MCP tool schema normalization
-- `[ ]` A2A message schema normalization
+- `[x]` A2A message schema normalization
 - `[x]` runtime capability advertisement
 
 ## Phase 10

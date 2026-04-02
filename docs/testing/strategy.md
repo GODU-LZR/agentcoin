@@ -18,6 +18,7 @@ The current test scope covers:
 - outbound proxy bypass and explicit proxy selection rules
 - bridge registry plus MCP / A2A import-export flow
 - MCP tool-call and tool-result schema normalization
+- A2A message-envelope and message-result schema normalization
 - bridge-aware worker execution normalization
 - runtime adapter execution for HTTP JSON and CLI JSON agents
 - runtime adapter execution for LangGraph-style HTTP runtimes
