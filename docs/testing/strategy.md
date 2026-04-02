@@ -47,7 +47,7 @@ The current test scope covers:
 - execution audit trail and replay inspector endpoints
 - policy violation tracking, local reputation scoring, and quarantine blocking
 - operator-driven quarantine and release flows
-- signed read-only preview plus replay, settlement, and governance inspection, workflow-admin, bridge-admin, Tier 3, and Tier 4 operator request verification, nonce replay rejection, denial auth-receipt persistence, and workflow / bridge governance receipt persistence
+- signed read-only preview plus replay, settlement, governance, and operational inspection, workflow-admin, bridge-admin, Tier 3, and Tier 4 operator request verification, nonce replay rejection, denial auth-receipt persistence, and workflow / bridge governance receipt persistence
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior

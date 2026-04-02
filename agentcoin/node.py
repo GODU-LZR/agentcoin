@@ -2015,6 +2015,26 @@ class AgentCoinNode:
                 "policy_level": 1,
                 "required_scopes": ["read-only"],
             },
+            "GET /v1/audits": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/peer-health": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/outbox": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/outbox/dead-letter": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
             "GET /v1/onchain/settlement-preview": {
                 "policy_tier": "read-only",
                 "policy_level": 1,

@@ -193,7 +193,7 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [ ] Add policy for dangerous file operations and path traversal defense.
 - [ ] Add inbound payload size policy by endpoint group.
 - [x] Add policy receipts for denied operator mutations.
-- [~] Add operator role model for read-only preview plus replay, settlement, and governance inspection, bridge-admin, trust-admin, workflow-admin, and settlement-admin.
+- [~] Add operator role model for read-only preview plus replay, settlement, governance, and operational inspection, bridge-admin, trust-admin, workflow-admin, and settlement-admin.
 - [x] Add auth failure audit trail.
 - [ ] Add secure defaults for overlay-exposed deployments.
 - [ ] Add formal threat model document for the reference node.

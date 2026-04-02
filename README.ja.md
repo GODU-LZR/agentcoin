@@ -381,6 +381,7 @@ execution audit と replay inspect の最初の層も追加しました。
 - `GET /v1/audits` で全体または `task_id` 単位の audit を参照できます
 - `GET /v1/tasks/replay-inspect?task_id=...` で task, audit trail, bridge export preview を確認できます
 - `policy receipt` と `execution receipt` は task result に保存され、後から再確認できます
+- `operator_identities` を設定すると、`GET /v1/audits` は signed `read-only` request、またはそれを包含する高権限の signed operator scope を要求します
 
 governance と quarantine の最初の骨格も追加しました。
 
@@ -427,6 +428,7 @@ task retry も明示的になりました。
 - `POST /v1/tasks/ack` に `requeue=true` を渡すと即時再取得ではなく遅延再試行になる
 - retry budget を使い切ると task は `dead-letter` になる
 - `POST /v1/tasks/requeue` と `POST /v1/outbox/requeue` で再投入できます
+- `operator_identities` を設定すると、`GET /v1/peer-health`、`GET /v1/outbox`、`GET /v1/outbox/dead-letter` は signed `read-only` request、またはそれを包含する高権限の signed operator scope を要求します
 
 最小の planner dispatch も追加しました。
 

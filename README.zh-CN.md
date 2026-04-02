@@ -394,6 +394,7 @@ worker 执行层现在也已经感知 bridge：
 - `GET /v1/audits` 可以全局查看或按 `task_id` 过滤审计事件
 - `GET /v1/tasks/replay-inspect?task_id=...` 会返回任务、审计轨迹和 bridge 导出预览
 - `policy receipt` 和 `execution receipt` 现在会一起进入任务结果，方便后续复查和 replay
+- 当配置了 `operator_identities` 时，`GET /v1/audits` 现在要求 signed `read-only` 请求，或更高权限的已签名运维 scope
 
 现在也有了第一版治理与隔离骨架：
 
@@ -440,6 +441,7 @@ worker 执行层现在也已经感知 bridge：
 - `POST /v1/tasks/ack` 传 `requeue=true` 时不会立刻再次 claim，而是延迟重试
 - 超过重试上限后，任务自动进入 `dead-letter`
 - 运维方可以通过 `POST /v1/tasks/requeue` 和 `POST /v1/outbox/requeue` 重新放回队列
+- 当配置了 `operator_identities` 时，`GET /v1/peer-health`、`GET /v1/outbox` 和 `GET /v1/outbox/dead-letter` 现在要求 signed `read-only` 请求，或更高权限的已签名运维 scope
 
 现在也已经有了最小版 planner 分发：
 

@@ -3677,6 +3677,174 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_signed_operator_request_is_required_for_read_only_operational_observability(self) -> None:
+        bad_peer = PeerConfig(peer_id="ops-peer-bad", name="Ops Bad Peer", url="http://127.0.0.1:19999", auth_token="token-bad")
+        node = NodeHarness(
+            node_id="read-only-ops-node",
+            token="token-read-only-ops",
+            db_path=str(Path(self.tempdir.name) / "read-only-ops.db"),
+            capabilities=["planner", "worker"],
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-ops-observer-secret",
+                    scopes=["read-only"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="workflow-admin:ops-1",
+                    shared_secret="workflow-ops-secret",
+                    scopes=["workflow-admin"],
+                ),
+            ],
+            peers=[bad_peer],
+            local_dispatch_fallback=False,
+            outbox_max_attempts=1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-read-only-ops",
+                {"id": "ops-audit-task-1", "kind": "generic", "role": "worker", "payload": {}},
+            )
+            self._complete_onchain_task(node, "token-read-only-ops", "ops-audit-task-1", "worker-read-only-ops-1")
+
+            sync_status, sync_payload = self._post(f"{node.base_url}/v1/peers/sync", "token-read-only-ops", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["peer_id"], "ops-peer-bad")
+            self.assertEqual(sync_payload["items"][0]["status"], "error")
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-read-only-ops",
+                {"id": "ops-root-workflow", "kind": "plan", "role": "planner", "payload": {}},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/dispatch",
+                "token-read-only-ops",
+                {
+                    "id": "ops-remote-dead",
+                    "kind": "code",
+                    "deliver_to": "ops-peer-bad",
+                    "required_capabilities": ["worker"],
+                },
+            )
+            flush_status, flushed = self._post(f"{node.base_url}/v1/outbox/flush", "token-read-only-ops", {})
+            self.assertEqual(flush_status, 200)
+            self.assertEqual(flushed["flushed"], 0)
+
+            denied_audits_status, denied_audits = self._get_auth(
+                f"{node.base_url}/v1/audits?task_id=ops-audit-task-1",
+                "token-read-only-ops",
+            )
+            self.assertEqual(denied_audits_status, 401)
+            self.assertEqual(denied_audits["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_health_status, denied_health = self._get_auth(
+                f"{node.base_url}/v1/peer-health?peer_id=ops-peer-bad",
+                "token-read-only-ops",
+            )
+            self.assertEqual(denied_health_status, 401)
+            self.assertEqual(denied_health["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_outbox_status, denied_outbox = self._get_auth(
+                f"{node.base_url}/v1/outbox",
+                "token-read-only-ops",
+            )
+            self.assertEqual(denied_outbox_status, 401)
+            self.assertEqual(denied_outbox["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_dead_letter_status, denied_dead_letter = self._get_auth(
+                f"{node.base_url}/v1/outbox/dead-letter",
+                "token-read-only-ops",
+            )
+            self.assertEqual(denied_dead_letter_status, 401)
+            self.assertEqual(denied_dead_letter["policy_receipt"]["reason_code"], "signed-request-required")
+
+            audits_status, audits = self._signed_get(
+                f"{node.base_url}/v1/audits?task_id=ops-audit-task-1",
+                "token-read-only-ops",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-ops-observer-secret",
+            )
+            self.assertEqual(audits_status, 200)
+            self.assertEqual(len(audits["items"]), 1)
+            self.assertEqual(audits["items"][0]["task_id"], "ops-audit-task-1")
+            self.assertEqual(audits["items"][0]["status"], "completed")
+
+            health_status, health = self._signed_get(
+                f"{node.base_url}/v1/peer-health?peer_id=ops-peer-bad",
+                "token-read-only-ops",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-ops-observer-secret",
+            )
+            self.assertEqual(health_status, 200)
+            self.assertGreaterEqual(int(health["sync_failures"] or 0), 1)
+            self.assertGreaterEqual(int(health["delivery_failures"] or 0), 1)
+            self.assertTrue(health["dispatch_blocked"]["cooldown"])
+
+            outbox_status, outbox = self._signed_get(
+                f"{node.base_url}/v1/outbox",
+                "token-read-only-ops",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-ops-observer-secret",
+            )
+            self.assertEqual(outbox_status, 200)
+            self.assertEqual(len(outbox["items"]), 1)
+            self.assertEqual(outbox["items"][0]["task_id"], "ops-remote-dead")
+            self.assertEqual(outbox["items"][0]["status"], "dead-letter")
+
+            dead_letter_status, dead_letter = self._signed_get(
+                f"{node.base_url}/v1/outbox/dead-letter",
+                "token-read-only-ops",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-ops-observer-secret",
+            )
+            self.assertEqual(dead_letter_status, 200)
+            self.assertEqual(len(dead_letter["items"]), 1)
+            self.assertEqual(dead_letter["items"][0]["task_id"], "ops-remote-dead")
+            self.assertEqual(dead_letter["items"][0]["status"], "dead-letter")
+
+            inherited_outbox_status, inherited_outbox = self._signed_get(
+                f"{node.base_url}/v1/outbox",
+                "token-read-only-ops",
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-ops-secret",
+            )
+            self.assertEqual(inherited_outbox_status, 200)
+            self.assertEqual(len(inherited_outbox["items"]), 1)
+
+            denied_fanout_status, denied_fanout = self._signed_post(
+                f"{node.base_url}/v1/workflows/fanout",
+                "token-read-only-ops",
+                {
+                    "parent_task_id": "ops-root-workflow",
+                    "subtasks": [{"id": "ops-child-1", "kind": "code", "role": "worker"}],
+                },
+                key_id="read-only:observer-1",
+                shared_secret="read-only-ops-observer-secret",
+            )
+            self.assertEqual(denied_fanout_status, 403)
+            self.assertEqual(denied_fanout["policy_receipt"]["reason_code"], "scope-denied")
+
+            audits_auth = node.node.store.list_operator_auth_audits(endpoint="/v1/audits", limit=10)
+            self.assertEqual([item["decision"] for item in audits_auth[:2]], ["allowed", "denied"])
+            self.assertEqual(audits_auth[0]["key_id"], "read-only:observer-1")
+            self.assertEqual(audits_auth[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            outbox_auth = node.node.store.list_operator_auth_audits(endpoint="/v1/outbox", limit=10)
+            self.assertEqual([item["decision"] for item in outbox_auth[:3]], ["allowed", "allowed", "denied"])
+            self.assertEqual(
+                {item["key_id"] for item in outbox_auth[:2]},
+                {"read-only:observer-1", "workflow-admin:ops-1"},
+            )
+
+            fanout_auth = node.node.store.list_operator_auth_audits(endpoint="/v1/workflows/fanout", limit=10)
+            self.assertEqual(fanout_auth[0]["decision"], "denied")
+            self.assertEqual(fanout_auth[0]["payload"]["policy_receipt"]["reason_code"], "scope-denied")
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",

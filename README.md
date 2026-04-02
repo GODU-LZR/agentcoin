@@ -407,6 +407,7 @@ There is now also a first execution audit and replay layer:
 - `GET /v1/audits` lists audit events globally or by `task_id`
 - `GET /v1/tasks/replay-inspect?task_id=...` returns the task, its audits, and a bridge export preview
 - policy receipts and execution receipts are now carried in task results for later review and replay
+- when `operator_identities` are configured, `GET /v1/audits` now requires a signed `read-only` request or a higher-privilege signed operator scope
 
 There is now also a first governance and quarantine skeleton:
 
@@ -446,6 +447,7 @@ Weak-network handling is now more explicit too:
 - after `outbox_max_attempts`, failed deliveries go to an outbox dead-letter lane
 - if `local_dispatch_fallback=true` and the node can satisfy the task locally, a permanently failed remote dispatch becomes `fallback-local`
 - otherwise the task itself moves to task dead-letter for operator review or replay
+- when `operator_identities` are configured, `GET /v1/peer-health`, `GET /v1/outbox`, and `GET /v1/outbox/dead-letter` now require a signed `read-only` request or a higher-privilege signed operator scope
 
 Task retries are now bounded:
 
