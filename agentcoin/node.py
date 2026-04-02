@@ -136,6 +136,33 @@ class AgentCoinNode:
                     values.append(normalized)
         return values
 
+    @staticmethod
+    def _expand_operator_scopes(*candidates: Any) -> list[str]:
+        implications = {
+            "bridge-admin": ["read-only"],
+            "committee-member": ["read-only"],
+            "settlement-admin": ["read-only"],
+            "trust-admin": ["read-only"],
+            "workflow-admin": ["read-only"],
+        }
+        pending: list[str] = []
+        resolved: list[str] = []
+        for candidate in candidates:
+            items = candidate if isinstance(candidate, list) else [candidate]
+            for item in items:
+                normalized = str(item or "").strip().lower()
+                if normalized and normalized not in pending and normalized not in resolved:
+                    pending.append(normalized)
+        while pending:
+            scope = pending.pop(0)
+            if scope in resolved:
+                continue
+            resolved.append(scope)
+            for implied in implications.get(scope, []):
+                if implied not in resolved and implied not in pending:
+                    pending.append(implied)
+        return resolved
+
     def _identity_trust_report(self, peer: PeerConfig, card: dict[str, Any]) -> dict[str, Any] | None:
         identity = card.get("identity")
         if not isinstance(identity, dict):
@@ -1963,6 +1990,41 @@ class AgentCoinNode:
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
         operator_endpoint_policies: dict[str, dict[str, Any]] = {
+            "/v1/tasks/dispatch/evaluate": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "/v1/peers/identity-trust/export": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "/v1/onchain/intents/build": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "/v1/onchain/rpc-payload": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "/v1/onchain/rpc-plan": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "/v1/onchain/settlement-rpc-plan": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "/v1/onchain/settlement-raw-bundle": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
             "/v1/workflows/fanout": {
                 "policy_tier": "workflow-admin",
                 "policy_level": 2,
@@ -2393,7 +2455,7 @@ class AgentCoinNode:
                         )
                         return None
 
-                    granted_scopes = operator.normalized_scopes
+                    granted_scopes = node._expand_operator_scopes(operator.normalized_scopes)
                     auth_context = self._auth_context(
                         policy_tier=policy_tier,
                         policy_level=policy_level,

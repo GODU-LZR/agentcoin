@@ -3007,6 +3007,224 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_signed_operator_request_is_required_for_read_only_preview_endpoints(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_read_only_scope", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_read_only_scope", "node-b")
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "read-only-scope-b.db"),
+            capabilities=["worker"],
+            signing_secret="node-b-secret",
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:read-only-scope",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node_a = NodeHarness(
+            node_id="read-only-auth-node",
+            token="token-read-only-auth",
+            db_path=str(Path(self.tempdir.name) / "read-only-scope-a.db"),
+            capabilities=["planner", "worker", "reviewer"],
+            signing_secret="read-only-node-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-operator-secret",
+                    scopes=["read-only"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="settlement-admin:ops-1",
+                    shared_secret="settlement-preview-secret",
+                    scopes=["settlement-admin"],
+                ),
+            ],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+            onchain=onchain,
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-read-only-auth", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+
+            self._post(
+                f"{node_a.base_url}/v1/tasks",
+                "token-read-only-auth",
+                {
+                    "id": "read-only-plan-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 952,
+                },
+            )
+            _, claim = self._post(
+                f"{node_a.base_url}/v1/tasks/claim",
+                "token-read-only-auth",
+                {"worker_id": "worker-read-only-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node_a.base_url}/v1/tasks/ack",
+                "token-read-only-auth",
+                {
+                    "task_id": "read-only-plan-task-1",
+                    "worker_id": "worker-read-only-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True, "worker_id": "worker-read-only-1"},
+                },
+            )
+
+            evaluate_payload = {
+                "id": "read-only-eval-task",
+                "kind": "review",
+                "role": "reviewer",
+                "required_capabilities": ["reviewer"],
+            }
+
+            denied_evaluate_status, denied_evaluate = self._post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-read-only-auth",
+                evaluate_payload,
+            )
+            self.assertEqual(denied_evaluate_status, 401)
+            self.assertEqual(denied_evaluate["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_export_status, denied_export = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/export",
+                "token-read-only-auth",
+                {"peer_id": "node-b", "include_preview": True},
+            )
+            self.assertEqual(denied_export_status, 401)
+            self.assertEqual(denied_export["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_plan_status, denied_plan = self._post(
+                f"{node_a.base_url}/v1/onchain/settlement-rpc-plan",
+                "token-read-only-auth",
+                {"task_id": "read-only-plan-task-1", "resolve_live": False},
+            )
+            self.assertEqual(denied_plan_status, 401)
+            self.assertEqual(denied_plan["policy_receipt"]["reason_code"], "signed-request-required")
+
+            evaluate_status, evaluated = self._signed_post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-read-only-auth",
+                evaluate_payload,
+                key_id="read-only:observer-1",
+                shared_secret="read-only-operator-secret",
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(evaluated["task"]["id"], "read-only-eval-task")
+            self.assertEqual(len(evaluated["candidates"]), 1)
+
+            export_status, exported = self._signed_post(
+                f"{node_a.base_url}/v1/peers/identity-trust/export",
+                "token-read-only-auth",
+                {"peer_id": "node-b", "include_preview": True},
+                key_id="read-only:observer-1",
+                shared_secret="read-only-operator-secret",
+            )
+            self.assertEqual(export_status, 200)
+            self.assertTrue(exported["ok"])
+            self.assertEqual(len(exported["items"]), 1)
+            self.assertEqual(exported["items"][0]["peer_id"], "node-b")
+            self.assertEqual(exported["items"][0]["suggested_actions"], ["apply-pending-trust"])
+
+            plan_status, plan_payload = self._signed_post(
+                f"{node_a.base_url}/v1/onchain/settlement-rpc-plan",
+                "token-read-only-auth",
+                {"task_id": "read-only-plan-task-1", "resolve_live": False},
+                key_id="read-only:observer-1",
+                shared_secret="read-only-operator-secret",
+            )
+            self.assertEqual(plan_status, 200)
+            plan = plan_payload["plan"]
+            self.assertEqual(plan["kind"], "evm-settlement-rpc-plan")
+            self.assertFalse(plan["resolved_live"])
+            plan_verification = verify_document(
+                plan,
+                secret="read-only-node-secret",
+                expected_scope="onchain-settlement-rpc-plan",
+                expected_key_id="read-only-auth-node",
+            )
+            self.assertTrue(plan_verification["verified"])
+
+            inherited_status, inherited = self._signed_post(
+                f"{node_a.base_url}/v1/tasks/dispatch/evaluate",
+                "token-read-only-auth",
+                evaluate_payload,
+                key_id="settlement-admin:ops-1",
+                shared_secret="settlement-preview-secret",
+            )
+            self.assertEqual(inherited_status, 200)
+            self.assertEqual(len(inherited["candidates"]), 1)
+
+            denied_write_status, denied_write = self._signed_post(
+                f"{node_a.base_url}/v1/bridges/import",
+                "token-read-only-auth",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "read-only-bridge-denied-1",
+                        "method": "tools/call",
+                        "params": {"name": "reviewer", "arguments": {"path": "README.md"}},
+                        "sender": "bridge-client",
+                    },
+                    "task_overrides": {"id": "read-only-bridge-denied-task", "role": "worker"},
+                },
+                key_id="read-only:observer-1",
+                shared_secret="read-only-operator-secret",
+            )
+            self.assertEqual(denied_write_status, 403)
+            self.assertEqual(denied_write["policy_receipt"]["reason_code"], "scope-denied")
+
+            evaluate_audits = node_a.node.store.list_operator_auth_audits(endpoint="/v1/tasks/dispatch/evaluate", limit=10)
+            self.assertEqual([item["decision"] for item in evaluate_audits[:3]], ["allowed", "allowed", "denied"])
+            self.assertEqual(
+                {item["key_id"] for item in evaluate_audits[:2]},
+                {"read-only:observer-1", "settlement-admin:ops-1"},
+            )
+            self.assertEqual(evaluate_audits[2]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            export_audits = node_a.node.store.list_operator_auth_audits(endpoint="/v1/peers/identity-trust/export", limit=10)
+            self.assertEqual([item["decision"] for item in export_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(export_audits[0]["key_id"], "read-only:observer-1")
+
+            plan_audits = node_a.node.store.list_operator_auth_audits(endpoint="/v1/onchain/settlement-rpc-plan", limit=10)
+            self.assertEqual([item["decision"] for item in plan_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(plan_audits[0]["key_id"], "read-only:observer-1")
+
+            bridge_audits = node_a.node.store.list_operator_auth_audits(endpoint="/v1/bridges/import", limit=10)
+            self.assertEqual(bridge_audits[0]["decision"], "denied")
+            self.assertEqual(bridge_audits[0]["payload"]["policy_receipt"]["reason_code"], "scope-denied")
+        finally:
+            node_a.stop()
+            node_b.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",

@@ -20,6 +20,7 @@ Relevant endpoints:
 2. If the node is configured with `auth_token`, send `Authorization: Bearer <token>`.
 3. Run at least one peer sync before attempting trust export or trust apply, otherwise no stored peer card will exist.
 4. Start the node with `--config <path>` if the operator needs config previews or on-disk persistence. Without a loaded config file, preview still works in runtime-only mode, but `persist_to_config=true` will fail.
+5. If `operator_identities` are configured, trust export can be delegated to a signed `read-only` or inherited higher-privilege identity, while trust apply still requires `trust-admin`.
 
 ## Severity Model
 

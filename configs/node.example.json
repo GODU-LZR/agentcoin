@@ -15,6 +15,18 @@
   "operator_auth_nonce_ttl_seconds": 900,
   "operator_identities": [
     {
+      "key_id": "read-only:observer-1",
+      "name": "Local Read-Only Observer",
+      "shared_secret": "replace-with-read-only-request-secret",
+      "scopes": [
+        "read-only"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    },
+    {
       "key_id": "bridge-admin:ops-1",
       "name": "Local Bridge Admin",
       "shared_secret": "replace-with-bridge-admin-request-secret",
