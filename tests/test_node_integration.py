@@ -2898,6 +2898,115 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_signed_operator_request_is_required_for_bridge_admin_endpoints(self) -> None:
+        node = NodeHarness(
+            node_id="bridge-auth-node",
+            token="token-bridge-auth",
+            db_path=str(Path(self.tempdir.name) / "bridge-auth.db"),
+            capabilities=["worker", "reviewer"],
+            signing_secret="bridge-governance-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="bridge-admin:ops-1",
+                    shared_secret="bridge-operator-secret",
+                    scopes=["bridge-admin"],
+                )
+            ],
+        )
+        node.start()
+        try:
+            denied_import_status, denied_import = self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-bridge-auth",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "bridge-auth-req-1",
+                        "method": "tools/call",
+                        "params": {"name": "reviewer", "arguments": {"path": "README.md"}},
+                        "sender": "bridge-client",
+                    },
+                    "task_overrides": {"id": "bridge-auth-task", "role": "worker"},
+                },
+            )
+            self.assertEqual(denied_import_status, 401)
+            self.assertEqual(denied_import["policy_receipt"]["reason_code"], "signed-request-required")
+
+            import_status, imported = self._signed_post(
+                f"{node.base_url}/v1/bridges/import",
+                "token-bridge-auth",
+                {
+                    "protocol": "mcp",
+                    "operator_id": "bridge-admin:ops-1",
+                    "reason": "ingest bridge task under operator control",
+                    "payload": {"ticket": "BR-101"},
+                    "message": {
+                        "id": "bridge-auth-req-1",
+                        "method": "tools/call",
+                        "params": {"name": "reviewer", "arguments": {"path": "README.md"}},
+                        "sender": "bridge-client",
+                    },
+                    "task_overrides": {"id": "bridge-auth-task", "role": "worker"},
+                },
+                key_id="bridge-admin:ops-1",
+                shared_secret="bridge-operator-secret",
+            )
+            self.assertEqual(import_status, 201)
+            self.assertEqual(imported["task"]["id"], "bridge-auth-task")
+            self.assertEqual(imported["action"]["action_type"], "bridge-import")
+            self.assertEqual(imported["action"]["operator_id"], "bridge-admin:ops-1")
+            self.assertEqual(imported["action"]["receipt"]["auth_context"]["policy_tier"], "bridge-admin")
+            self.assertEqual(imported["action"]["receipt"]["auth_context"]["mode"], "signed-hmac")
+            import_verification = verify_document(
+                imported["action"]["receipt"],
+                secret="bridge-governance-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="bridge-auth-node",
+            )
+            self.assertTrue(import_verification["verified"])
+
+            denied_export_status, denied_export = self._post(
+                f"{node.base_url}/v1/bridges/export",
+                "token-bridge-auth",
+                {"protocol": "mcp", "task_id": "bridge-auth-task"},
+            )
+            self.assertEqual(denied_export_status, 401)
+            self.assertEqual(denied_export["policy_receipt"]["reason_code"], "signed-request-required")
+
+            export_status, exported = self._signed_post(
+                f"{node.base_url}/v1/bridges/export",
+                "token-bridge-auth",
+                {
+                    "protocol": "mcp",
+                    "task_id": "bridge-auth-task",
+                    "operator_id": "bridge-admin:ops-1",
+                    "reason": "export bridge response under operator control",
+                    "payload": {"ticket": "BR-101"},
+                    "result": {"approved": True, "notes": "ok"},
+                },
+                key_id="bridge-admin:ops-1",
+                shared_secret="bridge-operator-secret",
+            )
+            self.assertEqual(export_status, 200)
+            self.assertEqual(exported["message"]["id"], "bridge-auth-req-1")
+            self.assertEqual(exported["action"]["action_type"], "bridge-export")
+            self.assertEqual(exported["action"]["receipt"]["auth_context"]["policy_tier"], "bridge-admin")
+            self.assertEqual(exported["action"]["receipt"]["auth_context"]["mode"], "signed-hmac")
+
+            _, task_actions = self._get(f"{node.base_url}/v1/governance-actions?actor_id=bridge-auth-task")
+            action_types = [item["action_type"] for item in task_actions["items"][:2]]
+            self.assertEqual(action_types, ["bridge-export", "bridge-import"])
+
+            import_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/bridges/import", limit=10)
+            self.assertEqual([item["decision"] for item in import_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(import_audits[0]["key_id"], "bridge-admin:ops-1")
+            self.assertEqual(import_audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            export_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/bridges/export", limit=10)
+            self.assertEqual([item["decision"] for item in export_audits[:2]], ["allowed", "denied"])
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",

@@ -926,6 +926,56 @@ class AgentCoinNode:
             },
         )
 
+    def _record_bridge_governance_action(
+        self,
+        *,
+        task: dict[str, Any],
+        protocol: str,
+        action_type: str,
+        operator_id: str | None,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+        reason_codes: list[str] | None = None,
+        target: dict[str, Any] | None = None,
+        mutation: dict[str, Any] | None = None,
+        auth_context: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
+        before_state: dict[str, Any] | None = None,
+        after_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        task_id = str(task.get("id") or "").strip()
+        workflow_id = str(task.get("workflow_id") or "").strip() or None
+        stored_payload = {"protocol": protocol}
+        stored_payload.update(dict(payload or {}))
+        receipt = self._governance_receipt(
+            action_type=action_type,
+            actor_id=task_id,
+            actor_type="task",
+            operator_id=operator_id,
+            reason=reason,
+            payload=stored_payload,
+            reason_codes=reason_codes,
+            target=target,
+            mutation=mutation,
+            auth_context=auth_context,
+            evidence=evidence,
+            before_state=before_state,
+            after_state=after_state,
+            task_id=task_id,
+            workflow_id=workflow_id,
+        )
+        return self.store.record_governance_action(
+            actor_id=task_id,
+            actor_type="task",
+            action_type=action_type,
+            reason=reason,
+            payload={
+                **stored_payload,
+                "operator_id": operator_id,
+                "receipt": receipt,
+            },
+        )
+
     def _bind_onchain_context(self, task: TaskEnvelope, *, job_id: int | None = None) -> TaskEnvelope:
         if not self.onchain.enabled:
             return task
@@ -1932,6 +1982,16 @@ class AgentCoinNode:
                 "policy_tier": "workflow-admin",
                 "policy_level": 2,
                 "required_scopes": ["workflow-admin"],
+            },
+            "/v1/bridges/import": {
+                "policy_tier": "bridge-admin",
+                "policy_level": 2,
+                "required_scopes": ["bridge-admin"],
+            },
+            "/v1/bridges/export": {
+                "policy_tier": "bridge-admin",
+                "policy_level": 2,
+                "required_scopes": ["bridge-admin"],
             },
             "/v1/peers/identity-trust/apply": {
                 "policy_tier": "trust-admin",
@@ -3704,10 +3764,15 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.CREATED, {"task": task.to_dict(), "target": target})
                         return
                     if self.path == "/v1/bridges/import":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         protocol = str(payload.get("protocol") or "").strip()
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         message = dict(payload.get("message") or {})
                         task_overrides = dict(payload.get("task_overrides") or {})
                         dispatch = bool(payload.get("dispatch"))
@@ -3715,25 +3780,71 @@ class AgentCoinNode:
                         task = node._normalize_task(node.bridges.import_task(protocol, message, task_overrides), node.config)
                         if bool(payload.get("attach_onchain_context")):
                             task = node._bind_onchain_context(task, job_id=payload.get("onchain_job_id"))
-                        target = None
+                        dispatch_target = None
                         if dispatch:
                             if task.deliver_to:
-                                target = {"target_type": "explicit", "target_ref": task.deliver_to}
+                                dispatch_target = {"target_type": "explicit", "target_ref": task.deliver_to}
                             else:
-                                target = node.select_dispatch_target_for_task(task, prefer_local=prefer_local)
-                                if not target:
+                                dispatch_target = node.select_dispatch_target_for_task(task, prefer_local=prefer_local)
+                                if not dispatch_target:
                                     self._json_response(
                                         HTTPStatus.CONFLICT,
                                         {"error": "no dispatch target found", "required_capabilities": task.required_capabilities},
                                     )
                                     return
-                                if target["target_type"] == "peer":
-                                    task.deliver_to = target["target_ref"]
+                                if dispatch_target["target_type"] == "peer":
+                                    task.deliver_to = dispatch_target["target_ref"]
                                     task.delivery_status = "remote-pending"
                         node._persist_task_delivery(task, dispatch_mode="bridge" if task.deliver_to else None)
+                        task_dict = task.to_dict()
+                        action = node._record_bridge_governance_action(
+                            task=task_dict,
+                            protocol=protocol,
+                            action_type="bridge-import",
+                            operator_id=operator_id,
+                            reason=str(payload.get("reason") or f"bridge import {protocol or 'message'}"),
+                            payload={
+                                **dict(payload.get("payload") or {}),
+                                "dispatch": dispatch,
+                                "prefer_local": prefer_local,
+                                "target": dispatch_target,
+                                "attach_onchain_context": bool(payload.get("attach_onchain_context")),
+                            },
+                            reason_codes=node._ordered_unique_strings(
+                                f"protocol-{protocol.lower()}" if protocol else None,
+                                "dispatch-requested" if dispatch else "dispatch-skipped",
+                                "target-explicit" if dispatch_target and dispatch_target.get("target_type") == "explicit" else None,
+                                "target-peer" if dispatch_target and dispatch_target.get("target_type") == "peer" else None,
+                                "target-local" if dispatch_target and dispatch_target.get("target_type") == "local" else None,
+                                "onchain-context-attached" if bool(payload.get("attach_onchain_context")) else None,
+                            ),
+                            target={
+                                "kind": "bridge-task",
+                                "protocol": protocol,
+                                "task_id": task_dict.get("id"),
+                                "workflow_id": task_dict.get("workflow_id"),
+                            },
+                            mutation={
+                                "dispatch": dispatch,
+                                "delivery_status": task_dict.get("delivery_status"),
+                                "deliver_to": task_dict.get("deliver_to"),
+                            },
+                            auth_context=auth_context,
+                            evidence={
+                                "required_capabilities": list(task_dict.get("required_capabilities") or []),
+                                "sender": task_dict.get("sender"),
+                            },
+                            after_state=task_dict,
+                        )
                         self._json_response(
                             HTTPStatus.CREATED,
-                            {"task": task.to_dict(), "target": target, "protocol": protocol, "dispatch": dispatch},
+                            {
+                                "task": task_dict,
+                                "target": dispatch_target,
+                                "protocol": protocol,
+                                "dispatch": dispatch,
+                                "action": action,
+                            },
                         )
                         return
                     if self.path == "/v1/tasks/dispatch/evaluate":
@@ -3842,7 +3953,8 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, result)
                         return
                     if self.path == "/v1/bridges/export":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         protocol = str(payload.get("protocol") or "").strip()
@@ -3852,8 +3964,44 @@ class AgentCoinNode:
                         task = node.store.get_task(task_id)
                         if not task:
                             raise ValueError("task not found")
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
                         exported = node.bridges.export_message(protocol, task, dict(payload.get("result") or {}) or task.get("result"))
-                        self._json_response(HTTPStatus.OK, exported)
+                        action = node._record_bridge_governance_action(
+                            task=task,
+                            protocol=protocol,
+                            action_type="bridge-export",
+                            operator_id=operator_id,
+                            reason=str(payload.get("reason") or f"bridge export {protocol or 'message'}"),
+                            payload={
+                                **dict(payload.get("payload") or {}),
+                                "has_result_override": bool(payload.get("result")),
+                            },
+                            reason_codes=node._ordered_unique_strings(
+                                f"protocol-{protocol.lower()}" if protocol else None,
+                                "result-override" if bool(payload.get("result")) else "task-result-export",
+                            ),
+                            target={
+                                "kind": "bridge-task",
+                                "protocol": protocol,
+                                "task_id": task.get("id"),
+                                "workflow_id": task.get("workflow_id"),
+                            },
+                            mutation={
+                                "status": task.get("status"),
+                                "deliver_to": task.get("deliver_to"),
+                            },
+                            auth_context=auth_context,
+                            evidence={
+                                "required_capabilities": list(task.get("required_capabilities") or []),
+                                "sender": task.get("sender"),
+                            },
+                            before_state=task,
+                            after_state=exported,
+                        )
+                        self._json_response(HTTPStatus.OK, {**exported, "action": action})
                         return
                     if self.path == "/v1/tasks/claim":
                         if not self._require_auth():

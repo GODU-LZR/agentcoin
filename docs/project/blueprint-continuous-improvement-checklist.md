@@ -171,7 +171,7 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [ ] Expand A2A bridge to richer conversation state mapping.
 - [ ] Add bridge capabilities advertisement in peer cards.
 - [ ] Add bridge policy restrictions per peer and per task.
-- [ ] Add bridge-specific audit records for import and export.
+- [x] Add bridge-specific audit records for import and export.
 - [ ] Add bridge interoperability fixtures and conformance examples.
 - [ ] Add ACP, LACP, or adjacent protocol compatibility research notes.
 - [ ] Add protocol bridge version negotiation.
@@ -193,7 +193,7 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [ ] Add policy for dangerous file operations and path traversal defense.
 - [ ] Add inbound payload size policy by endpoint group.
 - [x] Add policy receipts for denied operator mutations.
-- [~] Add operator role model for read-only, trust-admin, workflow-admin, and settlement-admin.
+- [~] Add operator role model for read-only, bridge-admin, trust-admin, workflow-admin, and settlement-admin.
 - [x] Add auth failure audit trail.
 - [ ] Add secure defaults for overlay-exposed deployments.
 - [ ] Add formal threat model document for the reference node.

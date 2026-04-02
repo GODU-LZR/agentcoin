@@ -15,6 +15,18 @@
   "operator_auth_nonce_ttl_seconds": 900,
   "operator_identities": [
     {
+      "key_id": "bridge-admin:ops-1",
+      "name": "Local Bridge Admin",
+      "shared_secret": "replace-with-bridge-admin-request-secret",
+      "scopes": [
+        "bridge-admin"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    },
+    {
       "key_id": "workflow-admin:ops-1",
       "name": "Local Workflow Admin",
       "shared_secret": "replace-with-workflow-admin-request-secret",
