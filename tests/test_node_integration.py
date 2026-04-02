@@ -3386,6 +3386,105 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             langgraph.stop()
 
+    def test_runtime_adapter_container_job_skeleton(self) -> None:
+        workspace = Path(self.tempdir.name) / "container-workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        node = NodeHarness(
+            node_id="runtime-container-node",
+            token="token-container",
+            db_path=str(Path(self.tempdir.name) / "runtime-container.db"),
+            capabilities=["worker"],
+            runtimes=["container-job"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("container-job", runtime_names)
+            descriptor = [item for item in runtimes["items"] if item["runtime"] == "container-job"][0]
+            self.assertTrue(descriptor["supports_local"])
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-container",
+                {
+                    "id": "runtime-container-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"job": "build", "target": "api"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/runtimes/bind",
+                "token-container",
+                {
+                    "task_id": "runtime-container-1",
+                    "runtime": "container-job",
+                    "options": {
+                        "image": "python:3.12-alpine",
+                        "engine_command": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import json,os,pathlib;"
+                                "task=json.loads(pathlib.Path(os.environ['AGENTCOIN_TASK_FILE']).read_text(encoding='utf-8'));"
+                                "out={'task_id':task['id'],'image':os.environ.get('AGENTCOIN_IMAGE'),'worker_id':os.environ.get('AGENTCOIN_WORKER_ID')};"
+                                "pathlib.Path(os.environ['AGENTCOIN_OUTPUT_FILE']).write_text(json.dumps(out),encoding='utf-8');"
+                                "print(json.dumps({'status':'ok','task_id':task['id']}))"
+                            ),
+                        ],
+                        "command": ["ignored-by-test-engine"],
+                        "env": {"JOB_MODE": "ci"},
+                        "timeout_seconds": 10,
+                    },
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "container-job")
+
+            evaluate_status, evaluated = self._post(
+                f"{node.base_url}/v1/tasks/dispatch/evaluate",
+                "token-container",
+                {
+                    "id": "runtime-container-eval",
+                    "kind": "generic",
+                    "role": "worker",
+                    "required_capabilities": ["worker"],
+                    "payload": {"_runtime": {"runtime": "container-job"}},
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertEqual(evaluated["requirements"]["runtime"], "container-job")
+            self.assertTrue(evaluated["candidates"][0]["runtime_match"]["supported"])
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-container",
+                worker_id="worker-container-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["container-job"],
+                    allow_subprocess=True,
+                    allowed_commands=[sys.executable, Path(sys.executable).name],
+                    workspace_root=str(workspace),
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-container-1"][0]
+            execution = task["result"]["runtime_execution"]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "container-job")
+            self.assertEqual(execution["image"], "python:3.12-alpine")
+            self.assertEqual(execution["stdout_json"]["status"], "ok")
+            self.assertEqual(execution["output_json"]["task_id"], "runtime-container-1")
+            self.assertEqual(execution["output_json"]["image"], "python:3.12-alpine")
+            self.assertEqual(execution["output_json"]["worker_id"], "worker-container-1")
+            self.assertEqual(task["result"]["execution_receipt"]["artifacts"]["image"], "python:3.12-alpine")
+        finally:
+            node.stop()
+
     def test_runtime_adapter_openai_chat_for_openclaw_gateway(self) -> None:
         gateway = OpenAICompatHarness()
         gateway.start()

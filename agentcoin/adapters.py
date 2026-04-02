@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -185,6 +186,8 @@ class ExecutionAdapterRegistry:
             return self._execute_http_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "langgraph-http":
             return self._execute_langgraph_http_runtime(task, runtime=runtime, worker_id=worker_id)
+        if runtime_kind == "container-job":
+            return self._execute_container_job_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "openai-chat":
             return self._execute_openai_chat_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "ollama-chat":
@@ -285,6 +288,18 @@ class ExecutionAdapterRegistry:
             "stderr": completed.stderr[:4000],
             "stdout_json": stdout_json,
         }
+
+    @staticmethod
+    def _normalize_command(raw_command: Any, *, field_name: str) -> list[str]:
+        if isinstance(raw_command, list):
+            command = [str(item) for item in raw_command if str(item).strip()]
+        elif isinstance(raw_command, str) and raw_command.strip():
+            command = [raw_command.strip()]
+        else:
+            raise ValueError(f"{field_name} is required")
+        if not command:
+            raise ValueError(f"{field_name} is required")
+        return command
 
     def _execute_http_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
         endpoint = str(runtime.get("endpoint") or "").strip()
@@ -488,6 +503,153 @@ class ExecutionAdapterRegistry:
                 "thread_id": request_body["thread_id"],
                 "run_id": response.get("run_id"),
                 "assistant_id": request_body.get("assistant_id"),
+            },
+        )
+        return result
+
+    def _execute_container_job_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        if not self.policy.allow_subprocess:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:container-job",
+                reason="subprocess execution is disabled",
+                extra={"runtime": "container-job"},
+            )
+        image = str(runtime.get("image") or "").strip()
+        try:
+            engine_command = self._normalize_command(
+                runtime.get("engine_command") or ["docker"],
+                field_name="runtime.engine_command",
+            )
+            if not self.policy.command_allowed(engine_command[0]):
+                raise ValueError(f"command is not allowlisted: {engine_command[0]}")
+            user_command = self._normalize_command(runtime.get("command") or ["python", "-"], field_name="runtime.command")
+        except ValueError as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:container-job",
+                reason=str(exc),
+                extra={"runtime": "container-job", "image": image},
+            )
+
+        env_overrides = {str(key): str(value) for key, value in dict(runtime.get("env") or {}).items() if str(key).strip()}
+        network_mode = str(runtime.get("network_mode") or "none").strip() or "none"
+        task_mount_path = str(runtime.get("task_mount_path") or "/agentcoin/task.json").strip() or "/agentcoin/task.json"
+        output_mount_path = str(runtime.get("output_mount_path") or "/agentcoin/output.json").strip() or "/agentcoin/output.json"
+        read_only_rootfs = bool(runtime.get("read_only_rootfs", False))
+
+        try:
+            with tempfile.TemporaryDirectory(dir=self.policy.workspace_root or None) as tempdir:
+                temp_path = Path(tempdir)
+                task_file = temp_path / "task.json"
+                runtime_file = temp_path / "runtime.json"
+                output_file = temp_path / "output.json"
+                task_file.write_text(json.dumps(task, ensure_ascii=False), encoding="utf-8")
+                runtime_file.write_text(json.dumps(runtime, ensure_ascii=False), encoding="utf-8")
+
+                env = {
+                    "AGENTCOIN_TASK_FILE": str(task_file),
+                    "AGENTCOIN_RUNTIME_FILE": str(runtime_file),
+                    "AGENTCOIN_OUTPUT_FILE": str(output_file),
+                    "AGENTCOIN_IMAGE": image,
+                    "AGENTCOIN_WORKER_ID": worker_id,
+                    "AGENTCOIN_TASK_MOUNT_PATH": task_mount_path,
+                    "AGENTCOIN_OUTPUT_MOUNT_PATH": output_mount_path,
+                    **env_overrides,
+                }
+
+                if runtime.get("engine_command"):
+                    command = [*engine_command, *user_command]
+                else:
+                    if not image:
+                        raise ValueError("runtime.image is required when engine_command is not provided")
+                    command = [*engine_command, "run", "--rm", "--network", network_mode]
+                    if read_only_rootfs:
+                        command.append("--read-only")
+                    for key, value in env.items():
+                        command.extend(["-e", f"{key}={value}"])
+                    command.extend(["-v", f"{task_file}:{task_mount_path}:ro", "-v", f"{output_file}:{output_mount_path}"])
+                    if runtime.get("workdir"):
+                        command.extend(["-w", str(runtime.get("workdir"))])
+                    command.append(image)
+                    command.extend(user_command)
+
+                completed = subprocess.run(
+                    command,
+                    cwd=self._resolve_cwd(runtime.get("cwd")),
+                    env={**os.environ, **env},
+                    capture_output=True,
+                    text=True,
+                    timeout=int(runtime.get("timeout_seconds") or self.policy.subprocess_timeout_seconds),
+                    check=False,
+                )
+
+                stdout_text = completed.stdout[:4000]
+                stdout_json = None
+                if stdout_text.strip():
+                    try:
+                        stdout_json = json.loads(stdout_text)
+                    except json.JSONDecodeError:
+                        stdout_json = None
+
+                output_json = None
+                if output_file.exists() and output_file.read_text(encoding="utf-8").strip():
+                    try:
+                        output_json = json.loads(output_file.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        output_json = None
+        except (ValueError, subprocess.TimeoutExpired) as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:container-job",
+                reason=str(exc),
+                extra={"runtime": "container-job", "image": image},
+            )
+
+        result = self._base_result(task, worker_id=worker_id)
+        result["adapter"] = {
+            "mode": "runtime-adapter",
+            "protocol": "container-job",
+            "status": "completed",
+            "image": image,
+        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="container-job",
+            decision="allowed",
+            reason="container job runner command allowlisted",
+            mode="runtime-adapter",
+            runtime="container-job",
+            image=image,
+            engine_command=engine_command,
+        )
+        result["runtime_execution"] = {
+            "runtime": "container-job",
+            "image": image,
+            "engine_command": engine_command,
+            "command": user_command,
+            "returncode": completed.returncode,
+            "stdout": stdout_text,
+            "stderr": completed.stderr[:4000],
+            "stdout_json": stdout_json,
+            "output_json": output_json,
+            "network_mode": network_mode,
+        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="container-job",
+            status="completed",
+            outcome="runtime-container-job",
+            artifacts={
+                "image": image,
+                "engine_command": engine_command,
+                "command": user_command,
+                "returncode": completed.returncode,
+                "output_json": output_json,
+                "stdout_json": stdout_json,
             },
         )
         return result

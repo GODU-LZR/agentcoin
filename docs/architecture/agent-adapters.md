@@ -26,6 +26,7 @@ These decide how a worker actually invokes an agent runtime.
 
 - `http-json`
 - `langgraph-http`
+- `container-job`
 - `openai-chat`
 - `ollama-chat`
 - `cli-json`
@@ -129,7 +130,38 @@ The response is normalized into:
 - `assistant_message`
 - raw `response`
 
-### 4. Ollama Chat Agent
+### 4. Container Job Agent
+
+Best for:
+
+- docker or podman backed worker jobs
+- isolated build or codegen runners
+- future sandboxed execution that should stay separate from the main worker process
+
+Task binding shape:
+
+```json
+{
+  "_runtime": {
+    "runtime": "container-job",
+    "image": "python:3.12-alpine",
+    "command": ["python", "/app/run.py"],
+    "timeout_seconds": 120
+  }
+}
+```
+
+Current skeleton behavior:
+
+- writes the normalized task to a local task file
+- exposes task/runtime/output paths through env vars
+- can build a docker-style `run` command when `engine_command` is omitted
+- can use a custom local `engine_command` for testing or alternative runtimes
+- normalizes `stdout_json` and `output_json` back into the task result
+
+This is intentionally a skeleton, not a full container orchestration layer.
+
+### 5. Ollama Chat Agent
 
 Best for:
 
@@ -157,7 +189,7 @@ Task binding shape:
 
 The worker sends a non-streaming Ollama-style chat request and normalizes the assistant message into the task result.
 
-### 5. OpenAI-Compatible Chat Agent
+### 6. OpenAI-Compatible Chat Agent
 
 Best for:
 
@@ -235,8 +267,6 @@ This means AgentCoin can adapt many agent shapes without making every worker ful
 ## Suggested Next Adapters
 
 - `openai-responses`
-- `langgraph-http`
 - `webhook-callback`
-- `container-job`
 
 The current runtime layer is intentionally minimal, but the extension point is now stable enough to add these without changing the task model.

@@ -59,6 +59,15 @@ class RuntimeRegistry:
                 input_modes=["thread-input", "task-envelope"],
                 output_modes=["run-state", "assistant-message", "json-object"],
             ),
+            "container-job": RuntimeAdapterDescriptor(
+                runtime="container-job",
+                version="0.1",
+                title="Container Job Runtime Adapter",
+                description="Execute a task as a local container-engine job skeleton with task-file injection and JSON result capture.",
+                supports_local=True,
+                input_modes=["task-file", "env"],
+                output_modes=["json-object", "stdout"],
+            ),
             "openai-chat": RuntimeAdapterDescriptor(
                 runtime="openai-chat",
                 version="0.1",

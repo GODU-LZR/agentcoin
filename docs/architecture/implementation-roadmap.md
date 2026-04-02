@@ -99,7 +99,7 @@ Status legend:
 
 - `[x]` structured output for OpenClaw / OpenAI runtime
 - `[x]` LangGraph HTTP adapter
-- `[ ]` container-job adapter skeleton
+- `[x]` container-job adapter skeleton
 - `[ ]` MCP tool schema normalization
 - `[ ]` A2A message schema normalization
 - `[x]` runtime capability advertisement

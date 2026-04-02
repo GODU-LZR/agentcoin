@@ -148,11 +148,13 @@ Current runtime adapter capabilities:
 - `payload._runtime` can route execution into:
   - `http-json`
   - `langgraph-http`
+  - `container-job`
   - `openai-chat`
   - `ollama-chat`
   - `cli-json`
 - `AgentCard.runtime_capabilities` now exposes structured runtime features such as `supports_structured_output` and `supports_json_schema`
 - `langgraph-http` normalizes graph-style execution into `thread_id`, `run_id`, `state`, and assistant output while preserving the raw response
+- `container-job` normalizes a local container-engine job into `stdout_json`, `output_json`, and execution metadata while keeping the current implementation as a skeleton
 - `openai-chat` can translate `payload._runtime.structured_output` into an OpenAI-compatible `response_format` request and normalize parsed JSON output
 - runtime policy can restrict allowed runtime kinds and allowed HTTP hosts
 
