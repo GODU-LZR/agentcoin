@@ -1995,6 +1995,26 @@ class AgentCoinNode:
                 "policy_level": 1,
                 "required_scopes": ["read-only"],
             },
+            "GET /v1/reputation": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/violations": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/quarantines": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/governance-actions": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
             "GET /v1/onchain/settlement-preview": {
                 "policy_tier": "read-only",
                 "policy_level": 1,

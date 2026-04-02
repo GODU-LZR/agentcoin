@@ -3515,6 +3515,168 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_signed_operator_request_is_required_for_read_only_governance_observability(self) -> None:
+        node = NodeHarness(
+            node_id="read-only-governance-node",
+            token="token-read-only-governance",
+            db_path=str(Path(self.tempdir.name) / "read-only-governance.db"),
+            capabilities=["worker"],
+            signing_secret="read-only-governance-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-governance-observer-secret",
+                    scopes=["read-only"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="trust-admin:ops-1",
+                    shared_secret="trust-governance-secret",
+                    scopes=["trust-admin"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            violation = node.node.store.record_policy_violation(
+                actor_id="worker-governance-1",
+                actor_type="worker",
+                source="adapter-policy",
+                reason="tool is not allowlisted",
+                severity="medium",
+                task_id="governance-observe-task-1",
+                payload={"tool": "forbidden-tool"},
+            )
+            self.assertEqual(violation["actor_id"], "worker-governance-1")
+
+            quarantine_status, quarantined = self._signed_post(
+                f"{node.base_url}/v1/quarantines",
+                "token-read-only-governance",
+                {
+                    "actor_id": "worker-governance-1",
+                    "actor_type": "worker",
+                    "operator_id": "trust-admin:ops-1",
+                    "scope": "task-claim",
+                    "reason": "manual governance hold for inspection",
+                    "payload": {"ticket": "GOV-201"},
+                },
+                key_id="trust-admin:ops-1",
+                shared_secret="trust-governance-secret",
+            )
+            self.assertEqual(quarantine_status, 200)
+            self.assertTrue(quarantined["quarantined"])
+            self.assertEqual(quarantined["action"]["operator_id"], "trust-admin:ops-1")
+
+            denied_reputation_status, denied_reputation = self._get_auth(
+                f"{node.base_url}/v1/reputation?actor_id=worker-governance-1",
+                "token-read-only-governance",
+            )
+            self.assertEqual(denied_reputation_status, 401)
+            self.assertEqual(denied_reputation["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_violations_status, denied_violations = self._get_auth(
+                f"{node.base_url}/v1/violations?actor_id=worker-governance-1",
+                "token-read-only-governance",
+            )
+            self.assertEqual(denied_violations_status, 401)
+            self.assertEqual(denied_violations["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_quarantines_status, denied_quarantines = self._get_auth(
+                f"{node.base_url}/v1/quarantines?actor_id=worker-governance-1",
+                "token-read-only-governance",
+            )
+            self.assertEqual(denied_quarantines_status, 401)
+            self.assertEqual(denied_quarantines["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_actions_status, denied_actions = self._get_auth(
+                f"{node.base_url}/v1/governance-actions?actor_id=worker-governance-1",
+                "token-read-only-governance",
+            )
+            self.assertEqual(denied_actions_status, 401)
+            self.assertEqual(denied_actions["policy_receipt"]["reason_code"], "signed-request-required")
+
+            reputation_status, reputation = self._signed_get(
+                f"{node.base_url}/v1/reputation?actor_id=worker-governance-1",
+                "token-read-only-governance",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-governance-observer-secret",
+            )
+            self.assertEqual(reputation_status, 200)
+            self.assertEqual(reputation["violations"], 1)
+            self.assertEqual(reputation["score"], 85)
+            self.assertTrue(reputation["quarantined"])
+
+            violations_status, violations = self._signed_get(
+                f"{node.base_url}/v1/violations?actor_id=worker-governance-1",
+                "token-read-only-governance",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-governance-observer-secret",
+            )
+            self.assertEqual(violations_status, 200)
+            self.assertEqual(len(violations["items"]), 1)
+            self.assertEqual(violations["items"][0]["reason"], "tool is not allowlisted")
+
+            quarantines_status, quarantines = self._signed_get(
+                f"{node.base_url}/v1/quarantines?actor_id=worker-governance-1",
+                "token-read-only-governance",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-governance-observer-secret",
+            )
+            self.assertEqual(quarantines_status, 200)
+            self.assertEqual(len(quarantines["items"]), 1)
+            self.assertTrue(quarantines["items"][0]["active"])
+
+            actions_status, actions = self._signed_get(
+                f"{node.base_url}/v1/governance-actions?actor_id=worker-governance-1",
+                "token-read-only-governance",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-governance-observer-secret",
+            )
+            self.assertEqual(actions_status, 200)
+            self.assertEqual(len(actions["items"]), 1)
+            self.assertEqual(actions["items"][0]["action_type"], "quarantine-set")
+            self.assertEqual(actions["items"][0]["operator_id"], "trust-admin:ops-1")
+
+            inherited_actions_status, inherited_actions = self._signed_get(
+                f"{node.base_url}/v1/governance-actions?actor_id=worker-governance-1",
+                "token-read-only-governance",
+                key_id="trust-admin:ops-1",
+                shared_secret="trust-governance-secret",
+            )
+            self.assertEqual(inherited_actions_status, 200)
+            self.assertEqual(len(inherited_actions["items"]), 1)
+
+            denied_release_status, denied_release = self._signed_post(
+                f"{node.base_url}/v1/quarantines/release",
+                "token-read-only-governance",
+                {
+                    "actor_id": "worker-governance-1",
+                    "actor_type": "worker",
+                    "reason": "observer cannot release quarantine",
+                },
+                key_id="read-only:observer-1",
+                shared_secret="read-only-governance-observer-secret",
+            )
+            self.assertEqual(denied_release_status, 403)
+            self.assertEqual(denied_release["policy_receipt"]["reason_code"], "scope-denied")
+
+            reputation_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/reputation", limit=10)
+            self.assertEqual([item["decision"] for item in reputation_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(reputation_audits[0]["key_id"], "read-only:observer-1")
+            self.assertEqual(reputation_audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            actions_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/governance-actions", limit=10)
+            self.assertEqual([item["decision"] for item in actions_audits[:3]], ["allowed", "allowed", "denied"])
+            self.assertEqual(
+                {item["key_id"] for item in actions_audits[:2]},
+                {"read-only:observer-1", "trust-admin:ops-1"},
+            )
+
+            release_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/quarantines/release", limit=10)
+            self.assertEqual(release_audits[0]["decision"], "denied")
+            self.assertEqual(release_audits[0]["payload"]["policy_receipt"]["reason_code"], "scope-denied")
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",
