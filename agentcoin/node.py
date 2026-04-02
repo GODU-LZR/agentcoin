@@ -697,14 +697,44 @@ class AgentCoinNode:
         return runtime or None
 
     @staticmethod
+    def _runtime_requirement_details(task: TaskEnvelope) -> dict[str, Any]:
+        runtime_payload = dict(task.payload.get("_runtime") or {})
+        runtime_name = str(runtime_payload.get("runtime") or "").strip() or None
+        structured_output = runtime_payload.get("structured_output")
+        response_format = runtime_payload.get("response_format")
+        structured_output_required = bool(structured_output or response_format)
+        json_schema_required = False
+        schema_name = None
+        if isinstance(structured_output, dict) and structured_output:
+            json_schema_required = bool(structured_output.get("schema"))
+            schema_name = str(structured_output.get("name") or "").strip() or None
+        elif isinstance(response_format, dict) and response_format:
+            response_format_type = str(response_format.get("type") or "").strip().lower()
+            if response_format_type in {"json_schema", "json_object"}:
+                structured_output_required = True
+            if response_format_type == "json_schema":
+                json_schema_required = True
+                schema_name = str(dict(response_format.get("json_schema") or {}).get("name") or "").strip() or None
+        return {
+            "runtime": runtime_name,
+            "structured_output_required": structured_output_required,
+            "json_schema_required": json_schema_required,
+            "schema_name": schema_name,
+        }
+
+    @staticmethod
     def _bridge_requirement(task: TaskEnvelope) -> str | None:
         protocol = str(task.payload.get("_bridge", {}).get("protocol") or "").strip().lower()
         return protocol or None
 
     def _task_dispatch_requirements(self, task: TaskEnvelope) -> dict[str, Any]:
+        runtime_requirements = self._runtime_requirement_details(task)
         return {
             "required_capabilities": list(task.required_capabilities),
-            "runtime": self._runtime_requirement(task),
+            "runtime": runtime_requirements["runtime"],
+            "runtime_requirements": runtime_requirements,
+            "structured_output_required": runtime_requirements["structured_output_required"],
+            "json_schema_required": runtime_requirements["json_schema_required"],
             "bridge_protocol": self._bridge_requirement(task),
         }
 
@@ -721,6 +751,36 @@ class AgentCoinNode:
         normalized = {str(item).strip().lower() for item in available_protocols if str(item).strip()}
         return protocol_name in normalized or f"{protocol_name}-bridge/0.1" in normalized
 
+    @staticmethod
+    def _runtime_capability_map(card: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+        capabilities = dict((card or {}).get("runtime_capabilities") or {})
+        normalized: dict[str, dict[str, Any]] = {}
+        for runtime_name, descriptor in capabilities.items():
+            key = str(runtime_name or "").strip().lower()
+            if key:
+                normalized[key] = dict(descriptor or {})
+        return normalized
+
+    def _runtime_match(self, task: TaskEnvelope, available_runtimes: list[str], runtime_capabilities: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        requirements = self._task_dispatch_requirements(task)["runtime_requirements"]
+        runtime_name = requirements["runtime"]
+        runtime_ok = self._supports_runtime(runtime_name, available_runtimes)
+        descriptor = dict(runtime_capabilities.get(str(runtime_name or "").strip().lower()) or {})
+        structured_supported = bool(descriptor.get("supports_structured_output"))
+        json_schema_supported = bool(descriptor.get("supports_json_schema"))
+        structured_required = bool(requirements["structured_output_required"])
+        json_schema_required = bool(requirements["json_schema_required"])
+        return {
+            "required": runtime_name,
+            "supported": runtime_ok and (not structured_required or structured_supported) and (not json_schema_required or json_schema_supported),
+            "descriptor": descriptor,
+            "structured_output_required": structured_required,
+            "structured_output_supported": structured_supported,
+            "json_schema_required": json_schema_required,
+            "json_schema_supported": json_schema_supported,
+            "schema_name": requirements["schema_name"],
+        }
+
     def dispatch_candidates_for_task(
         self,
         task: TaskEnvelope,
@@ -728,19 +788,22 @@ class AgentCoinNode:
         *,
         include_blocked: bool = False,
     ) -> list[dict[str, Any]]:
-        runtime_requirement = self._runtime_requirement(task)
+        runtime_requirements = self._task_dispatch_requirements(task)["runtime_requirements"]
+        runtime_requirement = runtime_requirements["runtime"]
         bridge_requirement = self._bridge_requirement(task)
         candidates: list[dict[str, Any]] = []
 
         local_report = capability_match_report(task.required_capabilities, self.config.capabilities)
-        local_runtime_ok = self._supports_runtime(runtime_requirement, self.config.runtimes)
+        local_runtime_capabilities = self._runtime_capability_map(self.config.card.to_dict())
+        local_runtime_match = self._runtime_match(task, self.config.runtimes, local_runtime_capabilities)
         local_bridge_ok = self._supports_bridge_protocol(bridge_requirement, self.config.card.protocols)
-        if local_report["satisfied"] and local_runtime_ok and local_bridge_ok:
+        if local_report["satisfied"] and local_runtime_match["supported"] and local_bridge_ok:
             score_breakdown = {
                 "capability_exact": len(local_report["exact_matches"]) * 100,
                 "capability_semantic": len(local_report["expanded_matches"]) * 10,
                 "local_bias": 600 if prefer_local else 100,
                 "runtime_bonus": 150 if runtime_requirement else 0,
+                "structured_output_bonus": 80 if runtime_requirements["structured_output_required"] else 0,
                 "bridge_bonus": 120 if bridge_requirement else 0,
             }
             candidates.append(
@@ -749,9 +812,10 @@ class AgentCoinNode:
                     "target_ref": self.config.node_id,
                     "capabilities": list(self.config.capabilities),
                     "runtimes": list(self.config.runtimes),
+                    "runtime_capabilities": local_runtime_capabilities,
                     "protocols": list(self.config.card.protocols),
                     "match": local_report,
-                    "runtime_match": {"required": runtime_requirement, "supported": local_runtime_ok},
+                    "runtime_match": local_runtime_match,
                     "bridge_match": {"required": bridge_requirement, "supported": local_bridge_ok},
                     "reputation": {"score": 100, "quarantined": False},
                     "dispatchable": True,
@@ -772,10 +836,11 @@ class AgentCoinNode:
             capabilities = list(card.get("capabilities", []))
             protocols = list(card.get("protocols", []))
             runtimes = list(card.get("runtimes", []))
+            runtime_capabilities = self._runtime_capability_map(card)
             report = capability_match_report(task.required_capabilities, capabilities)
-            runtime_ok = self._supports_runtime(runtime_requirement, runtimes)
+            runtime_match = self._runtime_match(task, runtimes, runtime_capabilities)
             bridge_ok = self._supports_bridge_protocol(bridge_requirement, protocols)
-            if not report["satisfied"] or not runtime_ok or not bridge_ok:
+            if not report["satisfied"] or not runtime_match["supported"] or not bridge_ok:
                 continue
             reputation = self.store.get_actor_reputation(peer_id, actor_type="peer")
             reputation_score = int(reputation.get("score", 100))
@@ -787,6 +852,7 @@ class AgentCoinNode:
                 "capability_semantic": len(report["expanded_matches"]) * 10,
                 "reputation": reputation_score,
                 "runtime_priority": 150 if runtime_requirement else 0,
+                "structured_output_priority": 80 if runtime_requirements["structured_output_required"] else 0,
                 "bridge_priority": 120 if bridge_requirement else 0,
                 **snapshot["score_breakdown"],
             }
@@ -796,9 +862,10 @@ class AgentCoinNode:
                     "target_ref": peer_id,
                     "capabilities": capabilities,
                     "runtimes": runtimes,
+                    "runtime_capabilities": runtime_capabilities,
                     "protocols": protocols,
                     "match": report,
-                    "runtime_match": {"required": runtime_requirement, "supported": runtime_ok},
+                    "runtime_match": runtime_match,
                     "bridge_match": {"required": bridge_requirement, "supported": bridge_ok},
                     "reputation": reputation,
                     "dispatchable": snapshot["dispatchable"],

@@ -138,9 +138,10 @@ The worker runtime now also has a first agent-adapter layer:
 - `GET /v1/runtimes` lists built-in runtime adapters
 - `POST /v1/runtimes/bind` can attach a runtime adapter to an existing task
 - `http-json` can call an HTTP agent runtime through the same outbound transport policy
-- `openai-chat` can call an OpenAI-compatible gateway, including OpenClaw Gateway
+- `openai-chat` can call an OpenAI-compatible gateway, including OpenClaw Gateway, and can request JSON-schema structured output
 - `ollama-chat` can call a local Ollama-compatible chat endpoint for offline and private execution
 - `cli-json` can invoke a local agent wrapper over stdin/stdout JSON
+- `AgentCard.runtime_capabilities` now advertises machine-readable runtime features such as structured output and JSON-schema support
 - bridge adapters and runtime adapters are intentionally separate, so protocol import/export does not have to dictate execution mode
 
 The runtime now also has a first semantic layer:

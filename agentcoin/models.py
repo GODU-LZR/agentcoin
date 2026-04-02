@@ -25,6 +25,7 @@ class AgentCard:
     capabilities: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     runtimes: list[str] = field(default_factory=list)
+    runtime_capabilities: dict[str, Any] = field(default_factory=dict)
     offline_mode: bool = True
     secure_by_default: bool = True
     endpoints: dict[str, str] = field(default_factory=dict)

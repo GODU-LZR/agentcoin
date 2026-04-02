@@ -253,6 +253,28 @@ class OpenAICompatHarness:
                 payload = json.loads(raw.decode("utf-8"))
                 harness.calls.append(payload)
                 harness.headers.append({key: value for key, value in self.headers.items()})
+                response_format = dict(payload.get("response_format") or {})
+                assistant_message: dict[str, object]
+                if response_format.get("type") == "json_schema":
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "decision": "approve",
+                                "summary": payload.get("messages", [{}])[-1].get("content", ""),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "parsed": {
+                            "decision": "approve",
+                            "summary": payload.get("messages", [{}])[-1].get("content", ""),
+                        },
+                    }
+                else:
+                    assistant_message = {
+                        "role": "assistant",
+                        "content": f"openai:{payload.get('messages', [{}])[-1].get('content', '')}",
+                    }
                 response = {
                     "id": "chatcmpl-openclaw-1",
                     "object": "chat.completion",
@@ -260,10 +282,7 @@ class OpenAICompatHarness:
                     "choices": [
                         {
                             "index": 0,
-                            "message": {
-                                "role": "assistant",
-                                "content": f"openai:{payload.get('messages', [{}])[-1].get('content', '')}",
-                            },
+                            "message": assistant_message,
                             "finish_reason": "stop",
                         }
                     ],
@@ -3221,12 +3240,20 @@ class NodeIntegrationTests(unittest.TestCase):
             token="token-openai",
             db_path=str(Path(self.tempdir.name) / "runtime-openai.db"),
             capabilities=["worker"],
+            runtimes=["openai-chat"],
         )
         node.start()
         try:
             _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
             runtime_names = {item["runtime"] for item in runtimes["items"]}
             self.assertIn("openai-chat", runtime_names)
+            openai_runtime = [item for item in runtimes["items"] if item["runtime"] == "openai-chat"][0]
+            self.assertTrue(openai_runtime["supports_structured_output"])
+            self.assertTrue(openai_runtime["supports_json_schema"])
+
+            _, card = self._get(f"{node.base_url}/v1/card")
+            self.assertIn("runtime_capabilities", card)
+            self.assertTrue(card["runtime_capabilities"]["openai-chat"]["supports_structured_output"])
 
             self._post(
                 f"{node.base_url}/v1/tasks",
@@ -3278,6 +3305,114 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(gateway.calls[0]["model"], "openclaw/gateway")
             self.assertEqual(gateway.calls[0]["messages"][0]["content"], "hello openclaw")
             self.assertEqual(gateway.headers[0]["Authorization"], "Bearer gw-secret-token")
+        finally:
+            node.stop()
+            gateway.stop()
+
+    def test_runtime_adapter_openai_chat_supports_structured_output(self) -> None:
+        gateway = OpenAICompatHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-openai-structured-node",
+            token="token-openai-structured",
+            db_path=str(Path(self.tempdir.name) / "runtime-openai-structured.db"),
+            capabilities=["worker"],
+            runtimes=["openai-chat"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-openai-structured",
+                {
+                    "id": "runtime-openai-structured-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": {"prompt": "review diff A"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/runtimes/bind",
+                "token-openai-structured",
+                {
+                    "task_id": "runtime-openai-structured-1",
+                    "runtime": "openai-chat",
+                    "options": {
+                        "endpoint": gateway.url,
+                        "model": "openclaw/gateway",
+                        "prompt": "review diff A",
+                        "auth_token": "gw-secret-token",
+                        "structured_output": {
+                            "name": "review_decision",
+                            "strict": True,
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "decision": {"type": "string"},
+                                    "summary": {"type": "string"},
+                                },
+                                "required": ["decision", "summary"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "timeout_seconds": 10,
+                    },
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "openai-chat")
+
+            evaluate_status, evaluated = self._post(
+                f"{node.base_url}/v1/tasks/dispatch/evaluate",
+                "token-openai-structured",
+                {
+                    "id": "runtime-openai-structured-eval",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["worker"],
+                    "payload": {
+                        "_runtime": {
+                            "runtime": "openai-chat",
+                            "structured_output": {
+                                "name": "review_decision",
+                                "schema": {"type": "object"},
+                            }
+                        }
+                    },
+                },
+            )
+            self.assertEqual(evaluate_status, 200)
+            self.assertTrue(evaluated["requirements"]["structured_output_required"])
+            self.assertTrue(evaluated["requirements"]["json_schema_required"])
+            self.assertEqual(evaluated["candidates"][0]["runtime_match"]["required"], "openai-chat")
+            self.assertTrue(evaluated["candidates"][0]["runtime_match"]["structured_output_supported"])
+            self.assertTrue(evaluated["candidates"][0]["runtime_match"]["json_schema_supported"])
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-openai-structured",
+                worker_id="worker-openai-structured-1",
+                capabilities=["worker", "reviewer"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["openai-chat"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-openai-structured-1"][0]
+            runtime_execution = task["result"]["runtime_execution"]
+            self.assertEqual(runtime_execution["structured_output"]["decision"], "approve")
+            self.assertEqual(runtime_execution["structured_output"]["summary"], "review diff A")
+            self.assertEqual(gateway.calls[0]["response_format"]["type"], "json_schema")
+            self.assertEqual(gateway.calls[0]["response_format"]["json_schema"]["name"], "review_decision")
+            self.assertEqual(
+                task["result"]["execution_receipt"]["artifacts"]["response_format"]["type"],
+                "json_schema",
+            )
         finally:
             node.stop()
             gateway.stop()

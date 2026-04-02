@@ -33,6 +33,7 @@ def context_document() -> dict[str, Any]:
             "capabilities": "agentcoin:capability",
             "protocols": "agentcoin:protocol",
             "runtimes": "agentcoin:runtime",
+            "runtime_capabilities": "agentcoin:runtimeCapabilities",
             "node_id": "agentcoin:nodeId",
             "workflow_id": "agentcoin:workflowId",
             "required_capabilities": "agentcoin:requiredCapability",
@@ -68,6 +69,7 @@ def agent_card_semantics(card: dict[str, Any]) -> dict[str, Any]:
         "protocols": list(card.get("protocols") or []),
         "capabilities": list(card.get("capabilities") or []),
         "runtimes": list(card.get("runtimes") or []),
+        "runtime_capabilities": dict(card.get("runtime_capabilities") or {}),
         "endpoints": dict(card.get("endpoints") or {}),
         "identity": dict(card.get("identity") or {}),
         "network": dict(card.get("network") or {}),
@@ -102,6 +104,13 @@ def semantic_examples() -> dict[str, Any]:
             "name": "AgentCoin Reference Node",
             "capabilities": ["task-routing", "offline-queue"],
             "runtimes": ["python", "openai-chat", "ollama-chat"],
+            "runtime_capabilities": {
+                "openai-chat": {
+                    "supports_structured_output": True,
+                    "supports_json_schema": True,
+                    "output_modes": ["assistant-message", "structured-json"],
+                }
+            },
         },
         "task_envelope": {
             "@context": AGENTCOIN_CONTEXT_URL,

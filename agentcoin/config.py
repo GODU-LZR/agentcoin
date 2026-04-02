@@ -97,7 +97,10 @@ class NodeConfig:
 
     @property
     def card(self) -> AgentCard:
+        from agentcoin.runtimes import RuntimeRegistry
+
         protocols = ["agentcoin/0.1", *[f"{protocol}-bridge/0.1" for protocol in self.bridges]]
+        runtime_capabilities = RuntimeRegistry().advertisement(self.runtimes)
         return AgentCard(
             node_id=self.node_id,
             name=self.name,
@@ -106,6 +109,7 @@ class NodeConfig:
             capabilities=self.capabilities,
             tags=self.tags,
             runtimes=self.runtimes,
+            runtime_capabilities=runtime_capabilities,
             endpoints={
                 "health": f"{self.base_url}/healthz",
                 "card": f"{self.base_url}/v1/card",

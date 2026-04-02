@@ -20,6 +20,7 @@ The current test scope covers:
 - bridge-aware worker execution normalization
 - runtime adapter execution for HTTP JSON and CLI JSON agents
 - runtime adapter execution for Ollama chat and OpenAI-compatible gateways
+- OpenAI-compatible structured output forwarding and parsed JSON normalization
 - semantic card and task shape exposure
 - receipt schema examples and subjective review / challenge evidence receipts
 - peer health cache, cooldown / blacklist controls, and dispatch backlog penalties

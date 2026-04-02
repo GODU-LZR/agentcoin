@@ -131,9 +131,10 @@ worker runtime には最初の agent-adapter layer も追加しました。
 - `GET /v1/runtimes` で built-in runtime adapter を列挙できます
 - `POST /v1/runtimes/bind` で既存 task に runtime adapter を束ねられます
 - `http-json` は同じ outbound transport policy を使って HTTP agent runtime を呼び出せます
-- `openai-chat` は OpenAI-compatible gateway を呼び出せるので、OpenClaw Gateway にもそのまま接続できます
+- `openai-chat` は OpenAI-compatible gateway を呼び出せるので、OpenClaw Gateway にもそのまま接続でき、JSON Schema ベースの structured output も要求できます
 - `ollama-chat` は local Ollama 互換 chat endpoint を呼び出せるので、offline と private execution に向きます
 - `cli-json` は stdin/stdout JSON で local CLI agent wrapper を実行できます
+- `AgentCard.runtime_capabilities` で structured output や JSON Schema support のような runtime feature を機械可読で広告します
 - bridge adapter と runtime adapter を分けることで、protocol compatibility と execution mode を分離しています
 
 runtime には最小の semantic layer も追加しました。

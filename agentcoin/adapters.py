@@ -531,6 +531,20 @@ class ExecutionAdapterRegistry:
         for optional_key in ("temperature", "top_p", "max_tokens", "presence_penalty", "frequency_penalty", "stream"):
             if optional_key in runtime:
                 request_body[optional_key] = runtime.get(optional_key)
+        structured_output = runtime.get("structured_output")
+        response_format = runtime.get("response_format")
+        if isinstance(structured_output, dict) and structured_output:
+            json_schema = {
+                "name": str(structured_output.get("name") or "agentcoin_output"),
+                "strict": bool(structured_output.get("strict", True)),
+                "schema": dict(structured_output.get("schema") or {}),
+            }
+            request_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": json_schema,
+            }
+        elif isinstance(response_format, dict) and response_format:
+            request_body["response_format"] = response_format
         headers = {"Content-Type": "application/json"}
         headers.update(dict(runtime.get("headers") or {}))
         auth_token = str(runtime.get("auth_token") or "").strip()
@@ -555,6 +569,14 @@ class ExecutionAdapterRegistry:
         choices = list(response.get("choices") or [])
         first_choice = dict(choices[0] or {}) if choices else {}
         assistant_message = dict(first_choice.get("message") or {})
+        parsed_output = assistant_message.get("parsed")
+        if parsed_output is None:
+            content = assistant_message.get("content")
+            if isinstance(content, str) and content.strip():
+                try:
+                    parsed_output = json.loads(content)
+                except json.JSONDecodeError:
+                    parsed_output = None
         result = self._base_result(task, worker_id=worker_id)
         result["adapter"] = {
             "mode": "runtime-adapter",
@@ -580,13 +602,21 @@ class ExecutionAdapterRegistry:
             "assistant_message": assistant_message,
             "finish_reason": first_choice.get("finish_reason"),
         }
+        if parsed_output is not None:
+            result["runtime_execution"]["structured_output"] = parsed_output
         result["execution_receipt"] = build_deterministic_execution_receipt(
             task,
             worker_id=worker_id,
             protocol="openai-chat",
             status="completed",
             outcome="runtime-chat",
-            artifacts={"endpoint": endpoint, "model": model, "response_id": response.get("id")},
+            artifacts={
+                "endpoint": endpoint,
+                "model": model,
+                "response_id": response.get("id"),
+                "structured_output": parsed_output,
+                "response_format": request_body.get("response_format"),
+            },
         )
         return result
 

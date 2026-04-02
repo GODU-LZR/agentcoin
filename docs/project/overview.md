@@ -150,6 +150,8 @@ Current runtime adapter capabilities:
   - `openai-chat`
   - `ollama-chat`
   - `cli-json`
+- `AgentCard.runtime_capabilities` now exposes structured runtime features such as `supports_structured_output` and `supports_json_schema`
+- `openai-chat` can translate `payload._runtime.structured_output` into an OpenAI-compatible `response_format` request and normalize parsed JSON output
 - runtime policy can restrict allowed runtime kinds and allowed HTTP hosts
 
 This lets AgentCoin adapt different agent implementations without pretending every agent speaks the same native protocol.
