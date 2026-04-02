@@ -2945,9 +2945,15 @@ class NodeStore:
             if reviewer_type not in {"human", "ai"}:
                 raise ValueError("reviewer_type must be 'human' or 'ai'")
             review_meta["reviewer_type"] = reviewer_type
+            target_git = dict(target.get("payload", {}).get("_git") or {})
+            if target_git:
+                review_meta.setdefault("base_ref", target_git.get("base_ref"))
+                review_meta.setdefault("head_ref", target_git.get("target_ref") or target_git.get("head_ref"))
+                review_meta.setdefault("base_sha", target_git.get("base_sha"))
+                review_meta.setdefault("head_sha", target_git.get("target_sha") or target_git.get("head_sha"))
             review.payload["_review"] = review_meta
-            if target.get("payload", {}).get("_git") and "_git" not in review.payload:
-                review.payload["_git"] = dict(target["payload"]["_git"])
+            if target_git and "_git" not in review.payload:
+                review.payload["_git"] = target_git
             if not review.commit_message:
                 review.commit_message = f"review {target_task_id} on {target['branch']}"
             self.add_task(review)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ class GitWorkspace:
             raise ValueError(f"git_root does not exist: {self.repo_path}")
         self.root = Path(self._git("rev-parse", "--show-toplevel")).resolve()
 
-    def _git(self, *args: str) -> str:
+    def _git_result(self, *args: str) -> subprocess.CompletedProcess[str]:
         result = subprocess.run(
             ["git", *args],
             cwd=self.repo_path,
@@ -21,10 +22,44 @@ class GitWorkspace:
             text=True,
             encoding="utf-8",
         )
+        return result
+
+    def _git(self, *args: str) -> str:
+        result = self._git_result(*args)
         if result.returncode != 0:
             stderr = result.stderr.strip() or result.stdout.strip() or "git command failed"
             raise ValueError(stderr)
         return result.stdout.strip()
+
+    def _git_optional(self, *args: str) -> str | None:
+        result = self._git_result(*args)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    @staticmethod
+    def _sha256_text(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def ref_sha(self, ref: str | None) -> str | None:
+        if not ref:
+            return None
+        return self._git_optional("rev-parse", f"{ref}^{{commit}}")
+
+    def merge_base(self, left_ref: str | None, right_ref: str | None) -> str | None:
+        if not left_ref or not right_ref:
+            return None
+        return self._git_optional("merge-base", left_ref, right_ref)
+
+    def _is_ancestor(self, ancestor_ref: str | None, descendant_ref: str | None) -> bool | None:
+        if not ancestor_ref or not descendant_ref:
+            return None
+        result = self._git_result("merge-base", "--is-ancestor", ancestor_ref, descendant_ref)
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        return None
 
     def status(self) -> dict[str, Any]:
         branch = self._git("rev-parse", "--abbrev-ref", "HEAD")
@@ -84,15 +119,81 @@ class GitWorkspace:
             "files": [line for line in output.splitlines() if line.strip()] if name_only else [],
         }
 
+    def diff_hash(self, base_ref: str = "HEAD", target_ref: str | None = None) -> str:
+        diff = self.diff(base_ref=base_ref, target_ref=target_ref, name_only=False)
+        return self._sha256_text(str(diff["output"] or ""))
+
+    def mergeability_snapshot(self, base_ref: str, target_ref: str) -> dict[str, Any]:
+        base_sha = self.ref_sha(base_ref)
+        target_sha = self.ref_sha(target_ref)
+        merge_base_sha = self.merge_base(base_ref, target_ref)
+        base_is_ancestor = self._is_ancestor(base_ref, target_ref)
+        target_is_ancestor = self._is_ancestor(target_ref, base_ref)
+        mergeable = None
+        if base_is_ancestor is True or target_is_ancestor is True:
+            mergeable = True
+        return {
+            "base_ref": base_ref,
+            "target_ref": target_ref,
+            "base_sha": base_sha,
+            "target_sha": target_sha,
+            "merge_base_sha": merge_base_sha,
+            "base_is_ancestor_of_target": base_is_ancestor,
+            "target_is_ancestor_of_base": target_is_ancestor,
+            "mergeable": mergeable,
+            "conflict_hint": None,
+            "merge_tree_hash": None,
+        }
+
     def task_context(self, base_ref: str = "HEAD", target_ref: str | None = None) -> dict[str, Any]:
         status = self.status()
         diff_files = self.diff(base_ref=base_ref, target_ref=target_ref, name_only=True)
+        head_ref = status["branch"]
+        head_sha = status["head"]
+        base_sha = self.ref_sha(base_ref)
+        effective_target_ref = target_ref or head_ref
+        target_sha = self.ref_sha(target_ref) if target_ref else head_sha
         return {
             "repo_root": status["root"],
             "branch": status["branch"],
             "head": status["head"],
+            "head_ref": head_ref,
+            "head_sha": head_sha,
+            "commit_sha": head_sha,
             "base_ref": base_ref,
-            "target_ref": target_ref,
+            "base_sha": base_sha,
+            "target_ref": effective_target_ref,
+            "target_sha": target_sha,
+            "merge_base_sha": self.merge_base(base_ref, target_ref) if target_ref else None,
             "is_dirty": status["is_dirty"],
             "changed_files": diff_files["files"],
+            "diff_hash": self.diff_hash(base_ref=base_ref, target_ref=target_ref),
+            "mergeability": self.mergeability_snapshot(base_ref, target_ref) if target_ref else None,
         }
+
+    def merge_proof_context(
+        self,
+        *,
+        base_ref: str,
+        target_ref: str,
+        parent_contexts: list[dict[str, Any]] | None = None,
+        parent_task_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        context = self.task_context(base_ref=base_ref, target_ref=target_ref)
+        context["proof_bundle"] = {
+            "kind": "git-proof-bundle",
+            "repo_root": context["repo_root"],
+            "base_ref": context["base_ref"],
+            "base_sha": context["base_sha"],
+            "head_ref": context["head_ref"],
+            "head_sha": context["head_sha"],
+            "target_ref": context["target_ref"],
+            "target_sha": context["target_sha"],
+            "merge_base_sha": context["merge_base_sha"],
+            "diff_hash": context["diff_hash"],
+            "changed_files": list(context["changed_files"]),
+            "parent_task_ids": list(parent_task_ids or []),
+            "parent_contexts": list(parent_contexts or []),
+            "mergeability": dict(context["mergeability"] or {}),
+        }
+        return context

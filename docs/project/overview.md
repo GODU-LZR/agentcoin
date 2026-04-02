@@ -176,6 +176,9 @@ Current Git-native capabilities:
 - inspect diffs
 - create branches
 - attach repository context to tasks
+- attach `commit_sha`, `diff_hash`, and ref / SHA proof fields to Git-aware tasks
+- propagate review `base/head` proof metadata and merge `mergeability` snapshots
+- expose Git proof bundles through replay inspection
 
 This keeps source-of-truth code history in Git while AgentCoin handles coordination and policy.
 

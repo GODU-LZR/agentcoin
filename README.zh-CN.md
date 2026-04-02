@@ -323,6 +323,8 @@ curl http://127.0.0.1:8080/v1/peer-cards
 - `POST /v1/git/branch` 从指定 ref 创建分支
 - `POST /v1/git/task-context` 把真实仓库上下文绑定到已有任务
 - `POST /v1/tasks` 现在可以传 `attach_git_context=true`，在创建时直接保存 `_git` 元数据
+- Git-aware 任务现在也会带 `commit_sha`、`diff_hash` 以及 ref / SHA proof 字段
+- review 任务会继承 base/head proof 信息，merge 任务会带 mergeability snapshot，replay-inspect 会暴露 Git proof bundle
 
 桥接层现在也有了第一版可执行骨架：
 

@@ -87,13 +87,13 @@ Status legend:
 
 ## Phase 8
 
-- `[ ]` Git-native proof bundle
-- `[ ]` task `commit sha`
-- `[ ]` task `diff hash`
-- `[ ]` review task `base/head`
-- `[ ]` merge task `mergeability snapshot`
-- `[ ]` dispute task `diff evidence`
-- `[ ]` replay-inspect Git proof bundle
+- `[x]` Git-native proof bundle
+- `[x]` task `commit sha`
+- `[x]` task `diff hash`
+- `[x]` review task `base/head`
+- `[x]` merge task `mergeability snapshot`
+- `[x]` dispute task `diff evidence`
+- `[x]` replay-inspect Git proof bundle
 
 ## Phase 9
 

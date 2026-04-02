@@ -309,6 +309,8 @@ node は内部 workflow を Git の代替にするのではなく、実際の Gi
 - `POST /v1/git/branch` で指定 ref から branch を作成
 - `POST /v1/git/task-context` で既存 task に real repository context を付与
 - `POST /v1/tasks` に `attach_git_context=true` を渡すと作成時に `_git` metadata を保存
+- Git-aware task には `commit_sha`、`diff_hash`、ref / SHA proof field も付与されます
+- review task は base/head proof data を継承し、merge task は mergeability snapshot を持ち、replay-inspect は Git proof bundle を返します
 
 bridge layer にも最初の実行可能 skeleton を追加しました。
 

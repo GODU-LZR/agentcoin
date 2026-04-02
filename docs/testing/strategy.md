@@ -32,6 +32,7 @@ The current test scope covers:
 - review gate and protected merge behavior
 - hybrid human and AI approval policy
 - Git repository status, diff, branch, and task-context attachment
+- Git proof bundle propagation for task, review, merge, dispute, and replay inspection
 - weak-network retry, dead-letter, and local fallback
 - on-chain JSON-RPC payload generation and signature verification
 - live JSON-RPC planning and raw transaction relay against a local mock RPC

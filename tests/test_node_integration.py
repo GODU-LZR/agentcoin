@@ -1292,6 +1292,24 @@ class NodeIntegrationTests(unittest.TestCase):
         repo_path = Path(self.tempdir.name) / "repo"
         self._init_git_repo(repo_path)
         (repo_path / "README.txt").write_text("hello\nchange\n", encoding="utf-8")
+        main_branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(["git", "checkout", "-b", "feature/a"], cwd=repo_path, check=True, capture_output=True, text=True)
+        (repo_path / "feature_a.txt").write_text("feature a\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature_a.txt"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "feature a"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "checkout", main_branch], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "checkout", "-b", "feature/b"], cwd=repo_path, check=True, capture_output=True, text=True)
+        (repo_path / "feature_b.txt").write_text("feature b\n", encoding="utf-8")
+        subprocess.run(["git", "add", "feature_b.txt"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "commit", "-m", "feature b"], cwd=repo_path, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "checkout", main_branch], cwd=repo_path, check=True, capture_output=True, text=True)
+        (repo_path / "README.txt").write_text("hello\nchange\n", encoding="utf-8")
 
         node = NodeHarness(
             node_id="git-node",
@@ -1324,29 +1342,49 @@ class NodeIntegrationTests(unittest.TestCase):
                 {
                     "id": "git-task-1",
                     "kind": "code",
+                    "workflow_id": "git-wf-1",
                     "payload": {"goal": "use git context"},
                     "attach_git_context": True,
-                    "git_base_ref": "HEAD",
+                    "git_base_ref": main_branch,
+                    "git_target_ref": "feature/a",
                 },
             )
             _, tasks = self._get(f"{node.base_url}/v1/tasks")
             git_task = [item for item in tasks["items"] if item["id"] == "git-task-1"][0]
             self.assertEqual(git_task["payload"]["_git"]["repo_root"], str(repo_path.resolve()))
-            self.assertIn("README.txt", git_task["payload"]["_git"]["changed_files"])
+            self.assertTrue(git_task["payload"]["_git"]["commit_sha"])
+            self.assertTrue(git_task["payload"]["_git"]["diff_hash"])
+            self.assertEqual(git_task["payload"]["_git"]["base_ref"], main_branch)
+            self.assertEqual(git_task["payload"]["_git"]["target_ref"], "feature/a")
+            self.assertIn("feature_a.txt", git_task["payload"]["_git"]["changed_files"])
 
             _, attached = self._post(
                 f"{node.base_url}/v1/git/task-context",
                 "token-g",
-                {"task_id": "git-task-1", "base_ref": "HEAD"},
+                {"task_id": "git-task-1", "base_ref": main_branch, "target_ref": "feature/a"},
             )
             self.assertTrue(attached["updated"])
             self.assertEqual(attached["task_id"], "git-task-1")
 
             self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-g",
+                {
+                    "id": "git-task-2",
+                    "kind": "code",
+                    "workflow_id": "git-wf-1",
+                    "payload": {"goal": "use second git context"},
+                    "attach_git_context": True,
+                    "git_base_ref": main_branch,
+                    "git_target_ref": "feature/b",
+                },
+            )
+
+            self._post(
                 f"{node.base_url}/v1/workflows/review-gate",
                 "token-g",
                 {
-                    "workflow_id": "git-task-1",
+                    "workflow_id": "git-wf-1",
                     "reviews": [
                         {
                             "id": "git-review-human",
@@ -1368,6 +1406,35 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(review_tasks["git-review-human"]["payload"]["_review"]["reviewer_type"], "human")
             self.assertEqual(review_tasks["git-review-ai"]["payload"]["_review"]["reviewer_type"], "ai")
             self.assertEqual(review_tasks["git-review-human"]["payload"]["_git"]["repo_root"], str(repo_path.resolve()))
+            self.assertEqual(review_tasks["git-review-human"]["payload"]["_review"]["base_ref"], main_branch)
+            self.assertEqual(review_tasks["git-review-human"]["payload"]["_review"]["head_ref"], "feature/a")
+            self.assertTrue(review_tasks["git-review-human"]["payload"]["_review"]["head_sha"])
+
+            _, merge_created = self._post(
+                f"{node.base_url}/v1/workflows/merge",
+                "token-g",
+                {
+                    "workflow_id": "git-wf-1",
+                    "parent_task_ids": ["git-task-1", "git-task-2"],
+                    "attach_git_context": True,
+                    "git_base_ref": "feature/a",
+                    "git_target_ref": "feature/b",
+                    "task": {
+                        "id": "git-merge-1",
+                        "kind": "merge",
+                        "role": "reviewer",
+                        "branch": main_branch,
+                    },
+                },
+            )
+            self.assertEqual(merge_created["task"]["payload"]["_git"]["mergeability"]["base_ref"], "feature/a")
+            self.assertEqual(merge_created["task"]["payload"]["_git"]["mergeability"]["target_ref"], "feature/b")
+            self.assertIn("proof_bundle", merge_created["task"]["payload"]["_git"])
+
+            _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=git-task-1")
+            self.assertEqual(replay["git_proof_bundle"]["task"]["git"]["target_ref"], "feature/a")
+            self.assertEqual(len(replay["git_proof_bundle"]["related_reviews"]), 2)
+            self.assertEqual(replay["git_proof_bundle"]["merge_tasks"][0]["task_id"], "git-merge-1")
         finally:
             node.stop()
 

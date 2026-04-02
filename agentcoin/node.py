@@ -267,6 +267,27 @@ class AgentCoinNode:
             raise ValueError("git integration is not configured")
         return self.git
 
+    def _task_git_proof_bundle(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        git_context = dict(task.get("payload", {}).get("_git") or {})
+        if not git_context:
+            return None
+        bundle = {
+            "kind": "git-proof-bundle",
+            "task_id": task.get("id"),
+            "workflow_id": task.get("workflow_id"),
+            "role": task.get("role"),
+            "branch": task.get("branch"),
+            "revision": task.get("revision"),
+            "git": git_context,
+        }
+        review_meta = dict(task.get("payload", {}).get("_review") or {})
+        if review_meta:
+            bundle["review"] = review_meta
+        merge_policy = dict(task.get("payload", {}).get("_merge_policy") or {})
+        if merge_policy:
+            bundle["merge_policy"] = merge_policy
+        return bundle
+
     def _governance_receipt(
         self,
         *,
@@ -1118,6 +1139,32 @@ class AgentCoinNode:
                     export_preview = None
                     if bridge_protocol:
                         export_preview = node.bridges.export_message(bridge_protocol, task)
+                    workflow_tasks = node.store.list_workflow_tasks(str(task.get("workflow_id") or task_id))
+                    related_reviews = [
+                        item
+                        for item in workflow_tasks
+                        if str(item.get("payload", {}).get("_review", {}).get("target_task_id") or "").strip() == task_id
+                    ]
+                    git_proof_bundle = None
+                    task_git_bundle = node._task_git_proof_bundle(task)
+                    if task_git_bundle or related_reviews:
+                        git_proof_bundle = {
+                            "task": task_git_bundle,
+                            "related_reviews": [node._task_git_proof_bundle(item) for item in related_reviews if node._task_git_proof_bundle(item)],
+                            "merge_tasks": [
+                                node._task_git_proof_bundle(item)
+                                for item in workflow_tasks
+                                if item.get("kind") == "merge" and node._task_git_proof_bundle(item)
+                            ],
+                            "dispute_evidence": [
+                                {
+                                    "dispute_id": item.get("id"),
+                                    "challenge_evidence": item.get("challenge_evidence"),
+                                    "git": item.get("payload", {}).get("_git"),
+                                }
+                                for item in node.store.list_disputes(task_id=task_id, limit=200)
+                            ],
+                        }
                     onchain_preview = None
                     if task.get("payload", {}).get("_onchain"):
                         onchain_preview = {
@@ -1142,6 +1189,7 @@ class AgentCoinNode:
                             "settlement_relays": node.store.list_settlement_relays(task_id=task_id, limit=200),
                             "latest_settlement_relay": node.store.get_latest_settlement_relay(task_id),
                             "bridge_export_preview": export_preview,
+                            "git_proof_bundle": git_proof_bundle,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
                             "onchain_receipt": task.get("result", {}).get("_onchain_receipt") if task.get("result") else None,
                             "onchain_intent_preview": onchain_preview,
@@ -1555,6 +1603,11 @@ class AgentCoinNode:
                             review = node._normalize_task(TaskEnvelope.from_dict(item), node.config)
                             if attach_git_context:
                                 review.payload["_git"] = node._require_git().task_context(base_ref=git_base_ref, target_ref=git_target_ref)
+                                review.payload.setdefault("_review", {})
+                                review.payload["_review"].setdefault("base_ref", git_base_ref)
+                                review.payload["_review"].setdefault("head_ref", git_target_ref or review.payload["_git"].get("head_ref"))
+                                review.payload["_review"].setdefault("base_sha", review.payload["_git"].get("base_sha"))
+                                review.payload["_review"].setdefault("head_sha", review.payload["_git"].get("target_sha"))
                             reviews.append(review)
                         created = node.store.create_review_tasks(workflow_id, reviews)
                         self._json_response(HTTPStatus.CREATED, {"items": created})
@@ -1584,6 +1637,25 @@ class AgentCoinNode:
                                 payload.get("required_ai_approvals_per_branch") or 0
                             )
                             task.payload["_merge_policy"] = merge_policy
+                        if node.git and (bool(payload.get("attach_git_context")) or any(node.store.get_task(parent_id) for parent_id in parent_task_ids)):
+                            parent_contexts: list[dict[str, Any]] = []
+                            for parent_id in parent_task_ids:
+                                parent = node.store.get_task(parent_id)
+                                if parent and parent.get("payload", {}).get("_git"):
+                                    parent_contexts.append(dict(parent["payload"]["_git"]))
+                            git_base_ref = str(payload.get("git_base_ref") or (parent_contexts[0].get("base_ref") if parent_contexts else "HEAD"))
+                            git_target_ref = str(
+                                payload.get("git_target_ref")
+                                or task.payload.get("_git", {}).get("target_ref")
+                                or task.branch
+                                or (parent_contexts[-1].get("target_ref") if parent_contexts else "HEAD")
+                            )
+                            task.payload["_git"] = node._require_git().merge_proof_context(
+                                base_ref=git_base_ref,
+                                target_ref=git_target_ref,
+                                parent_contexts=parent_contexts,
+                                parent_task_ids=parent_task_ids,
+                            )
                         created = node.store.create_merge_task(workflow_id, parent_task_ids, task)
                         self._json_response(HTTPStatus.CREATED, {"task": created})
                         return
@@ -1869,6 +1941,10 @@ class AgentCoinNode:
                         reason = str(payload.get("reason") or "").strip()
                         if not task_id or not challenger_id or not reason:
                             raise ValueError("task_id, challenger_id, and reason are required")
+                        dispute_payload = dict(payload.get("payload") or {})
+                        task = node.store.get_task(task_id)
+                        if task and task.get("payload", {}).get("_git"):
+                            dispute_payload.setdefault("_git", dict(task["payload"]["_git"]))
                         result = node.store.open_dispute(
                             task_id=task_id,
                             challenger_id=challenger_id,
@@ -1883,7 +1959,7 @@ class AgentCoinNode:
                             ),
                             committee_quorum=int(payload.get("committee_quorum") or 0),
                             committee_deadline=str(payload.get("committee_deadline") or "").strip() or None,
-                            payload=dict(payload.get("payload") or {}),
+                            payload=dispute_payload,
                         )
                         self._json_response(HTTPStatus.CREATED, result)
                         return

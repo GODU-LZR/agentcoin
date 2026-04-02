@@ -141,6 +141,11 @@ The node now also has a Git-native adapter layer:
 - repository status and diff inspection
 - branch creation
 - task attachment to real repository context
+- task Git context now includes `commit_sha`, `diff_hash`, and ref / SHA proof fields
+- review tasks now carry base/head proof metadata
+- merge tasks now carry a mergeability snapshot and proof bundle
+- dispute payloads inherit task Git evidence
+- replay inspection now exposes a Git proof bundle
 - no attempt to replace Git history with internal workflow metadata
 
 The node now also has a first on-chain build layer:

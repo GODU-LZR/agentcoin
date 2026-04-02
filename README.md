@@ -338,6 +338,8 @@ The node can now also adapt to a real Git repository instead of treating the int
 - `POST /v1/git/branch` creates a Git branch from a chosen ref
 - `POST /v1/git/task-context` attaches real repository context to an existing task
 - `POST /v1/tasks` can set `attach_git_context=true` to persist `_git` metadata at creation time
+- Git-aware tasks now carry `commit_sha`, `diff_hash`, and ref / SHA proof fields
+- review tasks inherit base/head proof metadata, merge tasks carry mergeability snapshots, and replay inspection exposes a Git proof bundle
 
 The bridge layer now has a first executable MCP / A2A skeleton:
 
