@@ -285,12 +285,14 @@ Current baseline:
 - supports HMAC-signed capability cards and task envelopes
 - supports `ssh-keygen` compatible asymmetric signatures for cards, task envelopes, and delivery receipts
 - can require signed inbox delivery from configured peers
+- trust, quarantine, and dispute governance actions now emit structured signed governance receipts with target, reason-code, auth-context, and mutation metadata
 - avoids mandatory external runtime dependencies
 - treats transport and execution failure as separate accountability domains
 
 Still missing for later milestones:
 
 - public-key request signing
+- per-endpoint auth policy enforcement beyond the current documented rollout plan
 - stronger peer identity verification
 - encrypted secret storage
 - richer ACL and outbound policy
@@ -367,11 +369,11 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 
 ## Current Limitations
 
-- SSH identity rotation now supports staged multi-key trust plus explicit revoked-key lists, peer sync surfaces trust drift with severity ranking for operator review, operators can export trust reconciliation with suggested actions and previewed runtime or config diffs, and operators can apply trust updates with governance receipts and optionally persist them back to the loaded JSON config, but stronger trust bootstrap and richer trust-chain management are not implemented yet
+- SSH identity rotation now supports staged multi-key trust plus explicit revoked-key lists, peer sync surfaces trust drift with severity ranking for operator review, operators can export trust reconciliation with suggested actions and previewed runtime or config diffs, operators can apply trust updates with structured governance receipts and optionally persist them back to the loaded JSON config, but stronger trust bootstrap and richer trust-chain management are not implemented yet
 - no plugin adapter marketplace yet
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade
-- no production-grade authN/authZ model yet
+- no production-grade authN/authZ model yet, although the operator hardening rollout is now documented
 
 ## Current Verification
 
@@ -394,6 +396,7 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 ## Document Map
 
 - Architecture: [docs/architecture/mvp.md](../architecture/mvp.md)
+- Operator auth hardening plan: [docs/project/operator-auth-hardening-plan.md](operator-auth-hardening-plan.md)
 - Trust operator runbook: [docs/project/trust-operator-runbook.md](trust-operator-runbook.md)
 - Connectivity: [docs/architecture/e2ee-connectivity.md](../architecture/e2ee-connectivity.md)
 - Testing: [docs/testing/strategy.md](../testing/strategy.md)

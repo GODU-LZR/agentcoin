@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 AGENTCOIN_CONTEXT_URL = "https://agentcoin.ai/ns/context/v0.1"
 RECEIPT_SCHEMA_VERSION = "0.1"
+GOVERNANCE_RECEIPT_SEMANTICS_VERSION = "0.2"
 
 
 def utc_now() -> str:
@@ -40,6 +43,11 @@ def _base_receipt(
     }
 
 
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def build_policy_receipt(
     *,
     protocol: str,
@@ -58,6 +66,57 @@ def build_policy_receipt(
         }
     )
     receipt.update(extra)
+    return receipt
+
+
+def build_governance_action_receipt(
+    *,
+    action_type: str,
+    node_id: str,
+    actor_id: str,
+    actor_type: str,
+    operator_id: str | None,
+    reason: str,
+    reason_codes: list[str] | None = None,
+    task_id: str | None = None,
+    workflow_id: str | None = None,
+    target: dict[str, Any] | None = None,
+    mutation: dict[str, Any] | None = None,
+    auth_context: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    before_state: dict[str, Any] | None = None,
+    after_state: dict[str, Any] | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    receipt = _base_receipt(
+        "agentcoin:GovernanceActionReceipt",
+        task_id=task_id,
+        workflow_id=workflow_id,
+        generated_at=generated_at,
+    )
+    state_digests: dict[str, Any] = {}
+    if before_state is not None:
+        state_digests["before"] = _canonical_digest(before_state)
+    if after_state is not None:
+        state_digests["after"] = _canonical_digest(after_state)
+    receipt.update(
+        {
+            "semantics_version": GOVERNANCE_RECEIPT_SEMANTICS_VERSION,
+            "node_id": node_id,
+            "action_type": action_type,
+            "actor": {"id": actor_id, "type": actor_type},
+            "operator_id": operator_id,
+            "reason": reason,
+            "reason_codes": list(reason_codes or []),
+            "target": dict(target or {}),
+            "mutation": dict(mutation or {}),
+            "auth_context": dict(auth_context or {}),
+            "evidence": dict(evidence or {}),
+            "context_digest": _canonical_digest(context or {}),
+            "state_digests": state_digests,
+        }
+    )
     return receipt
 
 
@@ -260,6 +319,21 @@ def build_onchain_result_receipt(
 
 def receipt_examples() -> dict[str, Any]:
     return {
+        "governance_receipt": build_governance_action_receipt(
+            action_type="peer-identity-trust-apply",
+            node_id="node-1",
+            actor_id="peer-node-b",
+            actor_type="peer",
+            operator_id="admin-1",
+            reason="approve rotated peer key",
+            reason_codes=["pending-trust-key", "applied-apply-pending-trust", "runtime-only"],
+            target={"kind": "peer-identity-trust", "peer_id": "peer-node-b"},
+            mutation={"applied_actions": ["apply-pending-trust"], "aligned_after": True},
+            auth_context={"mode": "bearer-token", "endpoint": "/v1/peers/identity-trust/apply"},
+            context={"ticket": "TRUST-101"},
+            before_state={"severity": "medium", "aligned": False},
+            after_state={"severity": "none", "aligned": True},
+        ),
         "policy_receipt": build_policy_receipt(
             protocol="mcp",
             decision="allowed",

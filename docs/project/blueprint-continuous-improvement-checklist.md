@@ -332,8 +332,8 @@ It is intentionally broader than the current implementation roadmap. The roadmap
 - [x] Add principal-adoption tests and stale-trusted-key removal tests.
 - [x] Add config reconciliation export endpoint or CLI helper.
 - [x] Add richer operator runbook for trust update and recovery.
-- [ ] Add auth hardening plan for operator endpoints.
-- [ ] Add stronger receipt semantics for governance and trust changes.
+- [x] Add auth hardening plan for operator endpoints.
+- [x] Add stronger receipt semantics for governance and trust changes.
 - [ ] Add first task-state transition refinement beyond current queue status set.
 - [ ] Expand runtime adapter realism for container-job.
 - [ ] Expand MCP and A2A bridge conformance coverage.

@@ -227,7 +227,7 @@ Action:
 
 ## Known Limits
 
-- Operator protection is still bearer-token-only today. Stronger auth hardening remains a separate near-term task.
+- Operator protection is still bearer-token-based today. The phased hardening plan now lives in `docs/project/operator-auth-hardening-plan.md`, but signed operator requests and scoped auth tiers are not enforced yet.
 - There is no persisted trust history export yet for external audit pipelines.
 - The node surfaces critical revoked-key conflicts, but local automatic rejection policy is not implemented yet.
 - `persist_to_config=true` requires a node config file loaded via `--config`.

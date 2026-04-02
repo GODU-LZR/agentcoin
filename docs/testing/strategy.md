@@ -237,7 +237,7 @@ Target:
 4. release the quarantine through the API
 5. verify the worker can claim again
 6. verify both actions are visible in governance history
-7. if signing is enabled, verify governance receipts pass signature verification
+7. if signing is enabled, verify structured governance receipts pass signature verification and include target plus reason-code fields
 
 ## Manual Test Commands
 
@@ -299,5 +299,5 @@ The MVP should not be considered stable until:
 4. Add cross-platform verification notes
 5. Add performance and weak-network stress tests
 6. Add operator override and quarantine release coverage
-7. Add signed governance receipt coverage
+7. Add signed governance receipt coverage for denial and workflow-override paths
 8. Add automated coverage for the multi-node compose topology once Docker-based CI jobs are introduced

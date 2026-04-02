@@ -1562,6 +1562,22 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old, pub_b_new])
             self.assertEqual(applied["action"]["operator_id"], "admin-1")
             self.assertEqual(applied["action"]["receipt"]["action_type"], "peer-identity-trust-apply")
+            self.assertEqual(applied["action"]["receipt"]["@type"], "agentcoin:GovernanceActionReceipt")
+            self.assertEqual(applied["action"]["receipt"]["target"]["kind"], "peer-identity-trust")
+            self.assertEqual(applied["action"]["receipt"]["target"]["peer_id"], "node-b")
+            self.assertEqual(applied["action"]["receipt"]["mutation"]["trusted_keys_added"], [pub_b_new])
+            self.assertEqual(
+                applied["action"]["receipt"]["reason_codes"],
+                [
+                    "pending-trust-key",
+                    "requested-apply-pending-trust",
+                    "applied-apply-pending-trust",
+                    "runtime-only",
+                ],
+            )
+            self.assertEqual(applied["action"]["receipt"]["auth_context"]["policy_tier"], "trust-admin")
+            self.assertIn("before", applied["action"]["receipt"]["state_digests"])
+            self.assertIn("after", applied["action"]["receipt"]["state_digests"])
             apply_verification = verify_document(
                 applied["action"]["receipt"],
                 secret="governance-secret",
@@ -3116,6 +3132,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertTrue(applied["quarantined"])
             self.assertEqual(applied["action"]["operator_id"], "admin-1")
             self.assertEqual(applied["action"]["receipt"]["action_type"], "quarantine-set")
+            self.assertEqual(applied["action"]["receipt"]["@type"], "agentcoin:GovernanceActionReceipt")
+            self.assertEqual(applied["action"]["receipt"]["target"]["kind"], "actor-quarantine")
+            self.assertEqual(applied["action"]["receipt"]["mutation"]["scope"], "task-claim")
+            self.assertEqual(applied["action"]["receipt"]["reason_codes"], ["manual-quarantine", "scope-task-claim"])
             receipt_verification = verify_document(
                 applied["action"]["receipt"],
                 secret="governance-secret",
@@ -3156,6 +3176,9 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(released["quarantined"])
             self.assertEqual(released["action"]["operator_id"], "admin-1")
             self.assertEqual(released["action"]["receipt"]["action_type"], "quarantine-release")
+            self.assertEqual(released["action"]["receipt"]["@type"], "agentcoin:GovernanceActionReceipt")
+            self.assertEqual(released["action"]["receipt"]["mutation"]["quarantined"], False)
+            self.assertEqual(released["action"]["receipt"]["reason_codes"], ["manual-release"])
             release_verification = verify_document(
                 released["action"]["receipt"],
                 secret="governance-secret",
@@ -3638,6 +3661,12 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(dispute_payload["dispute"]["status"], "open")
             self.assertEqual(dispute_payload["dispute"]["bond_amount_wei"], "7000000000000000")
             self.assertEqual(dispute_payload["dispute"]["bond_status"], "locked")
+            self.assertEqual(dispute_payload["action"]["receipt"]["@type"], "agentcoin:GovernanceActionReceipt")
+            self.assertEqual(dispute_payload["action"]["receipt"]["target"]["dispute_id"], dispute_payload["dispute"]["id"])
+            self.assertEqual(
+                dispute_payload["action"]["receipt"]["reason_codes"],
+                ["dispute-opened", "severity-high", "bond-required"],
+            )
             self.assertEqual(dispute_payload["dispute"]["challenge_evidence"]["@type"], "agentcoin:ChallengeEvidence")
             self.assertEqual(dispute_payload["dispute"]["challenge_evidence"]["evidence_hash"], "evidence-hash-1")
             self.assertEqual(dispute_payload["dispute"]["contract_alignment"]["escrow"]["action"], "challengeJob")
@@ -3686,11 +3715,27 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(resolve_status, 200)
             self.assertEqual(resolved["dispute"]["status"], "dismissed")
             self.assertEqual(resolved["dispute"]["bond_status"], "slashed")
+            self.assertEqual(resolved["dispute"]["resolution"]["receipt"]["@type"], "agentcoin:GovernanceActionReceipt")
+            self.assertEqual(
+                resolved["dispute"]["resolution"]["receipt"]["reason_codes"],
+                ["dispute-resolved", "resolution-dismissed", "operator-resolution"],
+            )
+            self.assertEqual(
+                resolved["dispute"]["resolution"]["receipt"]["target"]["dispute_id"],
+                disputes["items"][0]["id"],
+            )
             self.assertEqual(resolved["dispute"]["contract_alignment"]["escrow"]["action"], "completeJob")
             self.assertEqual(
                 resolved["dispute"]["contract_alignment"]["bond"]["projected_action"],
                 "slashChallengerBond",
             )
+            dismissal_verification = verify_document(
+                resolved["dispute"]["resolution"]["receipt"],
+                secret="challenge-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="challenge-node",
+            )
+            self.assertTrue(dismissal_verification["verified"])
 
             _, preview_after_dismiss = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             self.assertEqual(preview_after_dismiss["settlement"]["recommended_resolution"], "completeJob")
@@ -3723,6 +3768,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(resolve_status_2, 200)
             self.assertEqual(resolved_2["dispute"]["status"], "upheld")
             self.assertEqual(resolved_2["dispute"]["bond_status"], "awarded")
+            self.assertEqual(
+                resolved_2["dispute"]["resolution"]["receipt"]["reason_codes"],
+                ["dispute-resolved", "resolution-upheld", "operator-resolution"],
+            )
             self.assertEqual(resolved_2["dispute"]["contract_alignment"]["escrow"]["action"], "slashJob")
             self.assertEqual(
                 resolved_2["dispute"]["contract_alignment"]["bond"]["projected_action"],
@@ -3822,8 +3871,21 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(vote_two["dispute"]["status"], "upheld")
             self.assertEqual(vote_two["dispute"]["resolution"]["operator_id"], "committee:committee-b")
+            self.assertEqual(vote_two["dispute"]["resolution"]["receipt"]["@type"], "agentcoin:GovernanceActionReceipt")
+            self.assertEqual(
+                vote_two["dispute"]["resolution"]["receipt"]["reason_codes"],
+                ["dispute-resolved", "resolution-upheld", "committee-resolution"],
+            )
+            self.assertEqual(vote_two["dispute"]["resolution"]["receipt"]["target"]["dispute_id"], dispute_id)
             self.assertEqual(vote_two["dispute"]["contract_alignment"]["committee"]["projected_action"], "finalizeCommitteeResolution")
             self.assertEqual(vote_two["dispute"]["contract_alignment"]["escrow"]["action"], "slashJob")
+            committee_verification = verify_document(
+                vote_two["dispute"]["resolution"]["receipt"],
+                secret="committee-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="committee-node",
+            )
+            self.assertTrue(committee_verification["verified"])
 
             _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=committee-task-1")
             self.assertEqual(preview["settlement"]["recommended_resolution"], "slashJob")

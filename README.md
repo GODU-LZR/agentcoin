@@ -78,6 +78,7 @@ flowchart TB
 ## Documentation Map
 
 - Project documentation: [docs/project/overview.md](docs/project/overview.md)
+- Operator auth hardening plan: [docs/project/operator-auth-hardening-plan.md](docs/project/operator-auth-hardening-plan.md)
 - Trust operator runbook: [docs/project/trust-operator-runbook.md](docs/project/trust-operator-runbook.md)
 - Testing documentation: [docs/testing/strategy.md](docs/testing/strategy.md)
 - Architecture notes: [docs/architecture/mvp.md](docs/architecture/mvp.md)

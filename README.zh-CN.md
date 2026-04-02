@@ -81,6 +81,7 @@ flowchart TB
 ## 项目文档入口
 
 - 项目说明：[docs/project/overview.md](docs/project/overview.md)
+- Operator 鉴权加固计划：[docs/project/operator-auth-hardening-plan.md](docs/project/operator-auth-hardening-plan.md)
 - Trust operator 运行手册：[docs/project/trust-operator-runbook.md](docs/project/trust-operator-runbook.md)
 - 测试文档：[docs/testing/strategy.md](docs/testing/strategy.md)
 - 架构说明：[docs/architecture/mvp.md](docs/architecture/mvp.md)

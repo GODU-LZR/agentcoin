@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
@@ -1194,6 +1194,7 @@ class NodeStore:
     def open_dispute(
         self,
         *,
+        dispute_id: str | None = None,
         task_id: str,
         challenger_id: str,
         reason: str,
@@ -1205,9 +1206,11 @@ class NodeStore:
         committee_quorum: int | None = None,
         committee_deadline: str | None = None,
         payload: dict[str, Any] | None = None,
+        operator_id: str | None = None,
+        receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = utc_now()
-        dispute_id = str(uuid4())
+        dispute_id = str(dispute_id or uuid4())
         normalized_bond_amount = str(bond_amount_wei or "0").strip() or "0"
         bond_status = "locked" if normalized_bond_amount != "0" else "none"
         normalized_committee_quorum = max(0, int(committee_quorum or 0))
@@ -1240,7 +1243,7 @@ class NodeStore:
                     now,
                 ),
             )
-            self._insert_governance_action(
+            action = self._insert_governance_action(
                 conn,
                 actor_id=actor_id or challenger_id,
                 actor_type=actor_type,
@@ -1254,6 +1257,8 @@ class NodeStore:
                     "bond_status": bond_status,
                     "committee_quorum": normalized_committee_quorum,
                     "committee_deadline": committee_deadline,
+                    "operator_id": operator_id,
+                    "receipt": receipt,
                     "context": payload or {},
                 },
                 created_at=now,
@@ -1288,6 +1293,7 @@ class NodeStore:
                     if evidence_hash
                     else None
                 ),
+                "action": action,
                 "ok": True,
                 "dispute": {
                     "id": dispute_id,
@@ -1336,6 +1342,7 @@ class NodeStore:
         reason: str,
         operator_id: str | None = None,
         payload: dict[str, Any] | None = None,
+        receipt: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         now = utc_now()
         conn = self._connect()
@@ -1362,6 +1369,7 @@ class NodeStore:
                 "reason": reason,
                 "operator_id": operator_id,
                 "payload": payload or {},
+                "receipt": receipt,
             }
             resolution_name = str(resolution["status"])
             actor_id = row["actor_id"]
@@ -1541,6 +1549,7 @@ class NodeStore:
                     "task_id": row["task_id"],
                     "dispute_id": dispute_id,
                     "operator_id": operator_id,
+                    "receipt": receipt,
                     "resolution": resolution,
                     "bond_outcome": bond_outcome,
                 },
@@ -1607,6 +1616,7 @@ class NodeStore:
         decision: str,
         note: str | None = None,
         payload: dict[str, Any] | None = None,
+        resolution_receipt_factory: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     ) -> dict[str, Any] | None:
         now = utc_now()
         normalized_decision = str(decision or "").strip().lower()
@@ -1691,6 +1701,22 @@ class NodeStore:
             resolution_reason = "committee reached quorum without decisive outcome"
 
         if resolution_status:
+            resolution_context = {
+                "dispute_id": dispute_id,
+                "task_id": row["task_id"],
+                "challenger_id": row["challenger_id"],
+                "actor_id": row["actor_id"],
+                "actor_type": row["actor_type"],
+                "reason": row["reason"],
+                "evidence_hash": row["evidence_hash"],
+                "severity": row["severity"],
+                "committee_quorum": committee_quorum,
+                "committee_votes": filtered_votes,
+                "committee_tally": tally,
+                "resolution_status": resolution_status,
+                "resolution_reason": resolution_reason,
+                "operator_id": f"committee:{voter_id}",
+            }
             return self.resolve_dispute(
                 dispute_id=dispute_id,
                 resolution_status=resolution_status,
@@ -1701,6 +1727,7 @@ class NodeStore:
                     "committee_tally": tally,
                     "committee_quorum": committee_quorum,
                 },
+                receipt=resolution_receipt_factory(resolution_context) if resolution_receipt_factory else None,
             )
         return self.get_dispute(dispute_id)
 

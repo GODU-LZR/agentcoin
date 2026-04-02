@@ -19,6 +19,7 @@ from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.receipts import (
     build_deterministic_execution_receipt,
+    build_governance_action_receipt,
     build_settlement_relay_receipt,
     build_subjective_review_receipt,
 )
@@ -112,6 +113,17 @@ class AgentCoinNode:
                 if normalized and normalized not in keys:
                     keys.append(normalized)
         return keys
+
+    @staticmethod
+    def _ordered_unique_strings(*candidates: Any) -> list[str]:
+        values: list[str] = []
+        for candidate in candidates:
+            items = candidate if isinstance(candidate, list) else [candidate]
+            for item in items:
+                normalized = str(item or "").strip()
+                if normalized and normalized not in values:
+                    values.append(normalized)
+        return values
 
     def _identity_trust_report(self, peer: PeerConfig, card: dict[str, Any]) -> dict[str, Any] | None:
         identity = card.get("identity")
@@ -380,6 +392,7 @@ class AgentCoinNode:
         persist_to_config: bool = False,
         preview_only: bool = False,
         context: dict[str, Any] | None = None,
+        auth_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         allowed_actions = {
             "apply-pending-trust",
@@ -515,24 +528,80 @@ class AgentCoinNode:
             trusted_public_keys=updated_trusted,
             revoked_public_keys=updated_revoked,
         )
+        trust_mutation = {
+            "requested_actions": list(normalized_actions),
+            "applied_actions": list(applied_actions),
+            "noop_actions": list(noop_actions),
+            "runtime_only": not bool(persisted_config),
+            "persisted_to_config": bool(persisted_config),
+            "config_preview_changed": bool(config_preview and config_preview.get("changed")),
+            "aligned_before": bool(before_report.get("aligned")),
+            "aligned_after": bool(after_report.get("aligned")),
+            "severity_before": before_report.get("severity"),
+            "severity_after": after_report.get("severity"),
+            "severity_rank_before": int(before_report.get("severity_rank") or 0),
+            "severity_rank_after": int(after_report.get("severity_rank") or 0),
+            "principal_changed": before_report.get("configured_principal") != after_report.get("configured_principal"),
+            "trusted_keys_added": [
+                key
+                for key in list(after_report.get("configured_trusted_public_keys") or [])
+                if key not in list(before_report.get("configured_trusted_public_keys") or [])
+            ],
+            "trusted_keys_removed": [
+                key
+                for key in list(before_report.get("configured_trusted_public_keys") or [])
+                if key not in list(after_report.get("configured_trusted_public_keys") or [])
+            ],
+            "revoked_keys_added": [
+                key
+                for key in list(after_report.get("configured_revoked_public_keys") or [])
+                if key not in list(before_report.get("configured_revoked_public_keys") or [])
+            ],
+            "revoked_keys_removed": [
+                key
+                for key in list(before_report.get("configured_revoked_public_keys") or [])
+                if key not in list(after_report.get("configured_revoked_public_keys") or [])
+            ],
+        }
+        receipt_payload = {
+            "requested_actions": normalized_actions,
+            "applied_actions": applied_actions,
+            "noop_actions": noop_actions,
+            "before": before_report,
+            "after": after_report,
+            "runtime_only": not bool(persisted_config),
+            "persisted_to_config": bool(persisted_config),
+            "config_path": persisted_config.get("config_path") if persisted_config else None,
+            "config_preview": config_preview,
+            "context": dict(context or {}),
+        }
         receipt = self._governance_receipt(
             action_type="peer-identity-trust-apply",
             actor_id=peer.peer_id,
             actor_type="peer",
             operator_id=operator_id,
             reason=reason,
-            payload={
-                "requested_actions": normalized_actions,
-                "applied_actions": applied_actions,
-                "noop_actions": noop_actions,
-                "before": before_report,
-                "after": after_report,
-                "runtime_only": not bool(persisted_config),
-                "persisted_to_config": bool(persisted_config),
-                "config_path": persisted_config.get("config_path") if persisted_config else None,
-                "config_preview": config_preview,
-                "context": dict(context or {}),
+            payload=receipt_payload,
+            reason_codes=self._ordered_unique_strings(
+                before_report.get("severity_reasons") or [],
+                [f"requested-{action}" for action in normalized_actions],
+                [f"applied-{action}" for action in applied_actions],
+                [f"noop-{action}" for action in noop_actions],
+                "config-persisted" if persisted_config else "runtime-only",
+            ),
+            target={
+                "kind": "peer-identity-trust",
+                "peer_id": peer.peer_id,
+                "principal": after_report.get("configured_principal"),
             },
+            mutation=trust_mutation,
+            auth_context=auth_context,
+            evidence={
+                "severity_before": before_report.get("severity"),
+                "severity_after": after_report.get("severity"),
+            },
+            before_state=before_report,
+            after_state=after_report,
         )
         action = self.store.record_governance_action(
             actor_id=peer.peer_id,
@@ -542,16 +611,7 @@ class AgentCoinNode:
             payload={
                 "operator_id": operator_id,
                 "receipt": receipt,
-                "requested_actions": normalized_actions,
-                "applied_actions": applied_actions,
-                "noop_actions": noop_actions,
-                "before": before_report,
-                "after": after_report,
-                "runtime_only": not bool(persisted_config),
-                "persisted_to_config": bool(persisted_config),
-                "config_path": persisted_config.get("config_path") if persisted_config else None,
-                "config_preview": config_preview,
-                "context": dict(context or {}),
+                **receipt_payload,
             },
         )
         return {
@@ -777,17 +837,35 @@ class AgentCoinNode:
         actor_type: str,
         operator_id: str | None,
         reason: str,
-        payload: dict | None = None,
+        payload: dict[str, Any] | None = None,
+        reason_codes: list[str] | None = None,
+        target: dict[str, Any] | None = None,
+        mutation: dict[str, Any] | None = None,
+        auth_context: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
+        before_state: dict[str, Any] | None = None,
+        after_state: dict[str, Any] | None = None,
+        task_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> dict:
-        document = {
-            "action_type": action_type,
-            "actor_id": actor_id,
-            "actor_type": actor_type,
-            "operator_id": operator_id,
-            "reason": reason,
-            "node_id": self.config.node_id,
-            "payload": payload or {},
-        }
+        document = build_governance_action_receipt(
+            action_type=action_type,
+            node_id=self.config.node_id,
+            actor_id=actor_id,
+            actor_type=actor_type,
+            operator_id=operator_id,
+            reason=reason,
+            reason_codes=reason_codes,
+            task_id=task_id,
+            workflow_id=workflow_id,
+            target=target,
+            mutation=mutation,
+            auth_context=auth_context,
+            evidence=evidence,
+            context=payload,
+            before_state=before_state,
+            after_state=after_state,
+        )
         return self._sign_document(document, hmac_scope="governance-receipt", identity_namespace="agentcoin-governance")
 
     def _bind_onchain_context(self, task: TaskEnvelope, *, job_id: int | None = None) -> TaskEnvelope:
@@ -1808,6 +1886,21 @@ class AgentCoinNode:
                     return True
                 self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                 return False
+
+            def _auth_context(self, *, policy_tier: str) -> dict[str, Any]:
+                remote_address = None
+                remote_port = None
+                if isinstance(self.client_address, tuple) and self.client_address:
+                    remote_address = self.client_address[0]
+                    if len(self.client_address) > 1:
+                        remote_port = self.client_address[1]
+                return {
+                    "mode": "bearer-token" if node.config.auth_token.strip() else "none",
+                    "endpoint": urlparse(self.path).path,
+                    "policy_tier": policy_tier,
+                    "remote_address": remote_address,
+                    "remote_port": remote_port,
+                }
 
             def do_GET(self) -> None:
                 parsed_request = urlparse(self.path)
@@ -2910,6 +3003,7 @@ class AgentCoinNode:
                             persist_to_config=bool(payload.get("persist_to_config")),
                             preview_only=bool(payload.get("preview_only")),
                             context=dict(payload.get("payload") or {}),
+                            auth_context=self._auth_context(policy_tier="trust-admin"),
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return
@@ -3012,6 +3106,7 @@ class AgentCoinNode:
                         reason = str(payload.get("reason") or "manual quarantine")
                         operator_id = str(payload.get("operator_id") or "").strip() or None
                         context = dict(payload.get("payload") or {})
+                        current_reputation = node.store.get_actor_reputation(actor_id, actor_type=actor_type)
                         result = node.store.set_actor_quarantine(
                             actor_id=actor_id,
                             actor_type=actor_type,
@@ -3026,6 +3121,15 @@ class AgentCoinNode:
                                 operator_id=operator_id,
                                 reason=reason,
                                 payload={"scope": scope, "context": context},
+                                reason_codes=node._ordered_unique_strings("manual-quarantine", f"scope-{scope}"),
+                                target={"kind": "actor-quarantine", "actor_id": actor_id, "actor_type": actor_type},
+                                mutation={
+                                    "scope": scope,
+                                    "quarantined": True,
+                                    "previously_quarantined": bool(current_reputation.get("quarantined")),
+                                },
+                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                before_state=current_reputation,
                             ),
                         )
                         self._json_response(HTTPStatus.OK, result)
@@ -3041,6 +3145,7 @@ class AgentCoinNode:
                         reason = str(payload.get("reason") or "manual release")
                         operator_id = str(payload.get("operator_id") or "").strip() or None
                         context = dict(payload.get("payload") or {})
+                        current_reputation = node.store.get_actor_reputation(actor_id, actor_type=actor_type)
                         result = node.store.release_actor_quarantine(
                             actor_id=actor_id,
                             actor_type=actor_type,
@@ -3054,6 +3159,14 @@ class AgentCoinNode:
                                 operator_id=operator_id,
                                 reason=reason,
                                 payload={"context": context},
+                                reason_codes=node._ordered_unique_strings("manual-release"),
+                                target={"kind": "actor-quarantine", "actor_id": actor_id, "actor_type": actor_type},
+                                mutation={
+                                    "quarantined": False,
+                                    "previously_quarantined": bool(current_reputation.get("quarantined")),
+                                },
+                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                before_state=current_reputation,
                             ),
                         )
                         self._json_response(HTTPStatus.OK, result)
@@ -3068,24 +3181,74 @@ class AgentCoinNode:
                         if not task_id or not challenger_id or not reason:
                             raise ValueError("task_id, challenger_id, and reason are required")
                         dispute_payload = dict(payload.get("payload") or {})
+                        operator_id = str(payload.get("operator_id") or "").strip() or None
+                        dispute_id = str(uuid4())
                         task = node.store.get_task(task_id)
                         if task and task.get("payload", {}).get("_git"):
                             dispute_payload.setdefault("_git", dict(task["payload"]["_git"]))
+                        bond_amount_wei = (
+                            str(payload.get("bond_amount_wei") or "").strip()
+                            or str(node.config.challenge_bond_required_wei)
+                        )
+                        committee_quorum = int(payload.get("committee_quorum") or 0)
+                        committee_deadline = str(payload.get("committee_deadline") or "").strip() or None
+                        actor_id = str(payload.get("actor_id") or "").strip() or None
+                        actor_type = str(payload.get("actor_type") or "worker").strip() or "worker"
+                        severity = str(payload.get("severity") or "medium").strip() or "medium"
                         result = node.store.open_dispute(
+                            dispute_id=dispute_id,
                             task_id=task_id,
                             challenger_id=challenger_id,
-                            actor_id=str(payload.get("actor_id") or "").strip() or None,
-                            actor_type=str(payload.get("actor_type") or "worker").strip() or "worker",
+                            actor_id=actor_id,
+                            actor_type=actor_type,
                             reason=reason,
                             evidence_hash=str(payload.get("evidence_hash") or "").strip() or None,
-                            severity=str(payload.get("severity") or "medium").strip() or "medium",
-                            bond_amount_wei=(
-                                str(payload.get("bond_amount_wei") or "").strip()
-                                or str(node.config.challenge_bond_required_wei)
-                            ),
-                            committee_quorum=int(payload.get("committee_quorum") or 0),
-                            committee_deadline=str(payload.get("committee_deadline") or "").strip() or None,
+                            severity=severity,
+                            bond_amount_wei=bond_amount_wei,
+                            committee_quorum=committee_quorum,
+                            committee_deadline=committee_deadline,
                             payload=dispute_payload,
+                            operator_id=operator_id,
+                            receipt=node._governance_receipt(
+                                action_type="dispute-opened",
+                                actor_id=actor_id or challenger_id,
+                                actor_type=actor_type,
+                                operator_id=operator_id,
+                                reason=reason,
+                                payload={
+                                    "task_id": task_id,
+                                    "challenger_id": challenger_id,
+                                    "evidence_hash": str(payload.get("evidence_hash") or "").strip() or None,
+                                    "bond_amount_wei": bond_amount_wei,
+                                    "committee_quorum": committee_quorum,
+                                    "committee_deadline": committee_deadline,
+                                    "context": dispute_payload,
+                                },
+                                reason_codes=node._ordered_unique_strings(
+                                    "dispute-opened",
+                                    f"severity-{severity}",
+                                    "bond-required" if bond_amount_wei != "0" else "bond-not-required",
+                                    "committee-review" if committee_quorum > 0 else None,
+                                ),
+                                task_id=task_id,
+                                target={
+                                    "kind": "dispute",
+                                    "dispute_id": dispute_id,
+                                    "task_id": task_id,
+                                    "challenger_id": challenger_id,
+                                    "subject_actor_id": actor_id,
+                                    "subject_actor_type": actor_type,
+                                },
+                                mutation={
+                                    "status": "open",
+                                    "severity": severity,
+                                    "bond_amount_wei": bond_amount_wei,
+                                    "committee_quorum": committee_quorum,
+                                    "committee_deadline": committee_deadline,
+                                },
+                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                evidence={"evidence_hash": str(payload.get("evidence_hash") or "").strip() or None},
+                            ),
                         )
                         task = task or node.store.get_task(task_id)
                         response_payload = dict(result)
@@ -3107,6 +3270,47 @@ class AgentCoinNode:
                             decision=decision,
                             note=str(payload.get("note") or "").strip() or None,
                             payload=dict(payload.get("payload") or {}),
+                            resolution_receipt_factory=lambda details: node._governance_receipt(
+                                action_type="dispute-resolved",
+                                actor_id=str(details.get("actor_id") or details.get("challenger_id") or voter_id),
+                                actor_type=str(details.get("actor_type") or "worker"),
+                                operator_id=str(details.get("operator_id") or "").strip() or None,
+                                reason=str(details.get("resolution_reason") or "committee resolution"),
+                                payload={
+                                    "dispute_id": dispute_id,
+                                    "task_id": details.get("task_id"),
+                                    "resolution_status": details.get("resolution_status"),
+                                    "committee_votes": list(details.get("committee_votes") or []),
+                                    "committee_tally": dict(details.get("committee_tally") or {}),
+                                    "committee_quorum": details.get("committee_quorum"),
+                                },
+                                reason_codes=node._ordered_unique_strings(
+                                    "dispute-resolved",
+                                    f"resolution-{details.get('resolution_status')}",
+                                    "committee-resolution",
+                                ),
+                                task_id=str(details.get("task_id") or "") or None,
+                                target={
+                                    "kind": "dispute",
+                                    "dispute_id": dispute_id,
+                                    "task_id": details.get("task_id"),
+                                    "challenger_id": details.get("challenger_id"),
+                                    "subject_actor_id": details.get("actor_id"),
+                                    "subject_actor_type": details.get("actor_type"),
+                                },
+                                mutation={
+                                    "status": details.get("resolution_status"),
+                                    "committee_quorum": details.get("committee_quorum"),
+                                    "committee_votes_recorded": len(list(details.get("committee_votes") or [])),
+                                },
+                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                evidence={"evidence_hash": details.get("evidence_hash")},
+                                before_state={
+                                    "status": "open",
+                                    "committee_quorum": details.get("committee_quorum"),
+                                    "committee_tally": details.get("committee_tally"),
+                                },
+                            ),
                         )
                         if not result:
                             self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
@@ -3122,12 +3326,52 @@ class AgentCoinNode:
                         reason = str(payload.get("reason") or "").strip()
                         if not dispute_id or not resolution_status or not reason:
                             raise ValueError("dispute_id, resolution_status, and reason are required")
+                        current_dispute = node.store.get_dispute(dispute_id)
+                        if not current_dispute:
+                            self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
+                            return
+                        operator_id = str(payload.get("operator_id") or "").strip() or None
                         result = node.store.resolve_dispute(
                             dispute_id=dispute_id,
                             resolution_status=resolution_status,
                             reason=reason,
-                            operator_id=str(payload.get("operator_id") or "").strip() or None,
+                            operator_id=operator_id,
                             payload=dict(payload.get("payload") or {}),
+                            receipt=node._governance_receipt(
+                                action_type="dispute-resolved",
+                                actor_id=str(current_dispute.get("actor_id") or current_dispute.get("challenger_id") or ""),
+                                actor_type=str(current_dispute.get("actor_type") or "worker"),
+                                operator_id=operator_id,
+                                reason=reason,
+                                payload={
+                                    "dispute_id": dispute_id,
+                                    "task_id": current_dispute.get("task_id"),
+                                    "resolution_status": resolution_status,
+                                    "context": dict(payload.get("payload") or {}),
+                                },
+                                reason_codes=node._ordered_unique_strings(
+                                    "dispute-resolved",
+                                    f"resolution-{resolution_status.strip().lower()}",
+                                    "committee-resolution" if operator_id and operator_id.startswith("committee:") else "operator-resolution",
+                                ),
+                                task_id=str(current_dispute.get("task_id") or "") or None,
+                                target={
+                                    "kind": "dispute",
+                                    "dispute_id": dispute_id,
+                                    "task_id": current_dispute.get("task_id"),
+                                    "challenger_id": current_dispute.get("challenger_id"),
+                                    "subject_actor_id": current_dispute.get("actor_id"),
+                                    "subject_actor_type": current_dispute.get("actor_type"),
+                                },
+                                mutation={
+                                    "status": resolution_status.strip().lower(),
+                                    "committee_quorum": current_dispute.get("committee_quorum"),
+                                    "bond_amount_wei": current_dispute.get("bond_amount_wei"),
+                                },
+                                auth_context=self._auth_context(policy_tier="governance-admin"),
+                                evidence={"evidence_hash": current_dispute.get("evidence_hash")},
+                                before_state=current_dispute,
+                            ),
                         )
                         if not result:
                             self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
