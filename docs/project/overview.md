@@ -313,6 +313,7 @@ Still missing for later milestones:
 - `POST /v1/tasks/dispatch`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
+- MCP bridge import/export now normalizes tool traffic into explicit `tool_call` and `tool_result` shapes
 - `POST /v1/tasks/claim`
 - `POST /v1/tasks/lease/renew`
 - `POST /v1/tasks/ack`

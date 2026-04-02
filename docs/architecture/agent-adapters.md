@@ -20,6 +20,13 @@ These preserve external message shape and import/export semantics.
 
 They write protocol context into `payload._bridge`.
 
+Current MCP normalization adds two stable bridge-level shapes:
+
+- `payload._bridge.tool_call`
+- `result.bridge_execution.tool_result`
+
+This keeps tool-call import, worker execution, and protocol export aligned around the same schema instead of scattered fields.
+
 ### Runtime Adapters
 
 These decide how a worker actually invokes an agent runtime.

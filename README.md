@@ -349,6 +349,7 @@ The bridge layer now has a first executable MCP / A2A skeleton:
 - `GET /v1/bridges` lists enabled bridge adapters
 - `POST /v1/bridges/import` turns MCP or A2A style messages into durable AgentCoin tasks
 - `POST /v1/bridges/export` renders task state or explicit results back into bridge-shaped protocol messages
+- MCP bridge traffic now normalizes around `tool_call` and `tool_result` schemas so import, execution, and export share the same structure
 - bridge metadata is stored in `payload._bridge`, so planners and workers can preserve protocol context without replacing the internal task model
 
 Worker execution is now bridge-aware too:

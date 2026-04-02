@@ -77,9 +77,58 @@ class BridgeRegistry:
         return {
             "_bridge": {
                 "protocol": protocol,
+                "schema_version": "0.1",
                 "imported_at": utc_now(),
                 "source_message": message,
             }
+        }
+
+    @staticmethod
+    def _normalize_mcp_tool_call(message: dict[str, Any]) -> dict[str, Any]:
+        params = dict(message.get("params") or {})
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict):
+            arguments = {}
+        return {
+            "schema_version": "0.1",
+            "request_id": message.get("id"),
+            "method": str(message.get("method") or "").strip(),
+            "tool_name": str(params.get("name") or params.get("tool") or "").strip(),
+            "arguments": arguments,
+            "content": params.get("content"),
+        }
+
+    @staticmethod
+    def _normalize_mcp_tool_result(task: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
+        task_result = dict(result if result is not None else task.get("result") or {})
+        bridge_execution = dict(task_result.get("bridge_execution") or {})
+        tool_call = dict(bridge_execution.get("tool_call") or task.get("payload", {}).get("_bridge", {}).get("tool_call") or {})
+        normalized_output = dict(bridge_execution.get("normalized_output") or {})
+        content_items = list(normalized_output.get("content") or [])
+        if not content_items:
+            content_items = [
+                {
+                    "type": "json",
+                    "data": {
+                        "task_id": task.get("id"),
+                        "status": task.get("status"),
+                        "result": task_result,
+                    },
+                }
+            ]
+        structured_content = {
+            "task_id": task.get("id"),
+            "status": task.get("status"),
+            "kind": task.get("kind"),
+            "tool_name": tool_call.get("tool_name"),
+            "result": task_result,
+        }
+        return {
+            "schema_version": "0.1",
+            "tool_name": tool_call.get("tool_name"),
+            "is_error": bool(task_result.get("adapter", {}).get("status") == "rejected"),
+            "content": content_items,
+            "structured_content": structured_content,
         }
 
     def _import_mcp(self, message: dict[str, Any], overrides: dict[str, Any]) -> TaskEnvelope:
@@ -87,16 +136,20 @@ class BridgeRegistry:
         if not method:
             raise ValueError("mcp bridge requires message.method")
         params = dict(message.get("params") or {})
+        tool_call = self._normalize_mcp_tool_call(message)
         bridge_payload = self._base_bridge_payload("mcp", message)
         bridge_payload["_bridge"].update(
             {
                 "request_id": message.get("id"),
                 "method": method,
                 "tool_name": params.get("name") or params.get("tool"),
+                "tool_call": tool_call,
             }
         )
         payload = dict(overrides.pop("payload", {}) or {})
         payload.update(bridge_payload)
+        if tool_call.get("tool_name") and "tool_name" not in payload:
+            payload["tool_name"] = tool_call.get("tool_name")
         if "arguments" in params and "arguments" not in payload:
             payload["arguments"] = params.get("arguments")
         if "content" in params and "content" not in payload:
@@ -161,20 +214,27 @@ class BridgeRegistry:
     @staticmethod
     def _export_mcp(task: dict[str, Any], result: dict[str, Any] | None = None) -> dict[str, Any]:
         bridge = dict(task.get("payload", {}).get("_bridge") or {})
+        tool_result = BridgeRegistry._normalize_mcp_tool_result(task, result)
         return {
             "protocol": "mcp",
             "message": {
                 "jsonrpc": "2.0",
                 "id": bridge.get("request_id") or task["id"],
                 "result": {
-                    "task_id": task["id"],
-                    "status": task["status"],
-                    "kind": task["kind"],
-                    "sender": task["sender"],
-                    "result": result if result is not None else task.get("result"),
-                    "bridge": {
-                        "method": bridge.get("method"),
-                        "tool_name": bridge.get("tool_name"),
+                    "content": tool_result["content"],
+                    "isError": tool_result["is_error"],
+                    "structuredContent": tool_result["structured_content"],
+                    "_agentcoin": {
+                        "task_id": task["id"],
+                        "status": task["status"],
+                        "kind": task["kind"],
+                        "sender": task["sender"],
+                        "result": result if result is not None else task.get("result"),
+                        "bridge": {
+                            "method": bridge.get("method"),
+                            "tool_name": bridge.get("tool_name"),
+                            "schema_version": bridge.get("schema_version"),
+                        },
                     },
                 },
             },

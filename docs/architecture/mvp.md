@@ -92,6 +92,7 @@ The outbound transport path is now centralized as well:
 - `POST /v1/disputes/resolve`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
+- MCP bridge traffic is normalized into `tool_call` and `tool_result` structures
 - `POST /v1/runtimes/bind`
 - `POST /v1/integrations/openclaw/bind`
 - `POST /v1/workflows/fanout`

@@ -320,6 +320,7 @@ bridge layer にも最初の実行可能 skeleton を追加しました。
 - `GET /v1/bridges` で有効な bridge adapter を一覧できます
 - `POST /v1/bridges/import` で `MCP` / `A2A` 風 message を durable AgentCoin task に変換できます
 - `POST /v1/bridges/export` で task state や result を bridge-shaped message に戻せます
+- `MCP` bridge は `tool_call` と `tool_result` schema に正規化され、import / execution / export で同じ構造を共有します
 - bridge metadata は `payload._bridge` に保存されるため、外部 protocol context を保ったまま内部 task model を維持できます
 
 worker execution も bridge-aware になりました。

@@ -1549,6 +1549,9 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(imported["task"]["id"], "bridge-task-1")
             self.assertEqual(imported["task"]["kind"], "tool-call")
             self.assertEqual(imported["task"]["payload"]["_bridge"]["protocol"], "mcp")
+            self.assertEqual(imported["task"]["payload"]["_bridge"]["schema_version"], "0.1")
+            self.assertEqual(imported["task"]["payload"]["_bridge"]["tool_call"]["tool_name"], "reviewer")
+            self.assertEqual(imported["task"]["payload"]["_bridge"]["tool_call"]["arguments"]["path"], "README.md")
             self.assertEqual(imported["task"]["required_capabilities"], ["reviewer"])
 
             export_status, exported = self._post(
@@ -1562,7 +1565,9 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(export_status, 200)
             self.assertEqual(exported["message"]["id"], "mcp-req-1")
-            self.assertEqual(exported["message"]["result"]["result"]["approved"], True)
+            self.assertEqual(exported["message"]["result"]["structuredContent"]["result"]["approved"], True)
+            self.assertEqual(exported["message"]["result"]["_agentcoin"]["bridge"]["schema_version"], "0.1")
+            self.assertEqual(exported["message"]["result"]["isError"], False)
 
             a2a_status, a2a_imported = self._post(
                 f"{node.base_url}/v1/bridges/import",
@@ -1658,8 +1663,12 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(by_id["bridge-exec-mcp"]["result"]["adapter"]["protocol"], "mcp")
             self.assertEqual(by_id["bridge-exec-a2a"]["result"]["adapter"]["protocol"], "a2a")
             self.assertEqual(
-                by_id["bridge-exec-mcp"]["result"]["bridge_execution"]["normalized_output"]["content"][0]["data"]["tool_name"],
+                by_id["bridge-exec-mcp"]["result"]["bridge_execution"]["tool_call"]["tool_name"],
                 "tool-runner",
+            )
+            self.assertEqual(
+                by_id["bridge-exec-mcp"]["result"]["bridge_execution"]["tool_result"]["structured_content"]["handled_by"],
+                "worker-bridge-1",
             )
             self.assertEqual(
                 by_id["bridge-exec-a2a"]["result"]["bridge_execution"]["normalized_output"]["content"]["accepted_intent"],
@@ -1671,7 +1680,8 @@ class NodeIntegrationTests(unittest.TestCase):
                 "token-bridge-worker",
                 {"protocol": "mcp", "task_id": "bridge-exec-mcp"},
             )
-            self.assertEqual(exported["message"]["result"]["result"]["adapter"]["protocol"], "mcp")
+            self.assertEqual(exported["message"]["result"]["structuredContent"]["result"]["adapter"]["protocol"], "mcp")
+            self.assertEqual(exported["message"]["result"]["content"][0]["data"]["tool_name"], "tool-runner")
 
             _, exported_a2a = self._post(
                 f"{node.base_url}/v1/bridges/export",

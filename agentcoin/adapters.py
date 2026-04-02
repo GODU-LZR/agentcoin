@@ -957,8 +957,9 @@ class ExecutionAdapterRegistry:
     def _execute_mcp(self, task: dict[str, Any], *, bridge: dict[str, Any], worker_id: str) -> dict[str, Any]:
         payload = dict(task.get("payload", {}))
         method = str(bridge.get("method") or "")
-        tool_name = str(bridge.get("tool_name") or payload.get("tool_name") or "")
-        arguments = payload.get("arguments") or {}
+        tool_call = dict(bridge.get("tool_call") or {})
+        tool_name = str(tool_call.get("tool_name") or bridge.get("tool_name") or payload.get("tool_name") or "")
+        arguments = dict(tool_call.get("arguments") or payload.get("arguments") or {})
         if tool_name and not self.policy.tool_allowed(tool_name):
             return self._rejected_result(
                 task,
@@ -993,26 +994,50 @@ class ExecutionAdapterRegistry:
                     reason=str(exc),
                     extra={"tool_name": tool_name},
                 )
+        tool_call = {
+            "schema_version": "0.1",
+            "request_id": bridge.get("request_id"),
+            "method": method,
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "content": payload.get("content"),
+        }
+        tool_result = {
+            "schema_version": "0.1",
+            "tool_name": tool_name,
+            "is_error": False,
+            "content": [
+                {
+                    "type": "json",
+                    "data": {
+                        "tool_name": tool_name,
+                        "arguments": arguments,
+                        "handled_by": worker_id,
+                        "status": "accepted",
+                        "execution": execution,
+                    },
+                }
+            ],
+            "structured_content": {
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "handled_by": worker_id,
+                "status": "accepted",
+                "execution": execution,
+            },
+        }
         result["bridge_execution"] = {
             "protocol": "mcp",
+            "schema_version": "0.1",
             "request_id": bridge.get("request_id"),
             "method": method,
             "tool_name": tool_name,
             "arguments": arguments,
             "accepted": True,
+            "tool_call": tool_call,
+            "tool_result": tool_result,
             "normalized_output": {
-                "content": [
-                    {
-                        "type": "json",
-                        "data": {
-                            "tool_name": tool_name,
-                            "arguments": arguments,
-                            "handled_by": worker_id,
-                            "status": "accepted",
-                            "execution": execution,
-                        },
-                    }
-                ]
+                "content": list(tool_result["content"]),
             },
         }
         result["execution_receipt"] = build_deterministic_execution_receipt(
