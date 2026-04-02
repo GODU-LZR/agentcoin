@@ -449,6 +449,43 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def _signed_get(
+        self,
+        url: str,
+        token: str,
+        *,
+        key_id: str,
+        shared_secret: str | None = None,
+        private_key_path: str | None = None,
+        principal: str | None = None,
+        public_key: str | None = None,
+        timestamp: str | None = None,
+        nonce: str | None = None,
+    ) -> tuple[int, dict]:
+        parsed = urlparse(url)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            **sign_operator_request_headers(
+                method="GET",
+                path=parsed.path,
+                query=parsed.query,
+                body=b"",
+                key_id=key_id,
+                shared_secret=shared_secret,
+                private_key_path=private_key_path,
+                principal=principal,
+                public_key=public_key,
+                timestamp=timestamp,
+                nonce=nonce,
+            ),
+        }
+        req = request.Request(url, headers=headers, method="GET")
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def _get(self, url: str) -> tuple[int, dict]:
         with request.urlopen(url, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
@@ -3224,6 +3261,259 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node_a.stop()
             node_b.stop()
+
+    def test_signed_operator_request_is_required_for_read_only_replay_and_settlement_observability(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0xreadonlyobserve{call_count['raw']}"
+
+        rpc = RpcHarness({"eth_sendRawTransaction": raw_tx_response})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:read-only-observe",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="read-only-observe-node",
+            token="token-read-only-observe",
+            db_path=str(Path(self.tempdir.name) / "read-only-observe.db"),
+            capabilities=["worker", "reviewer"],
+            signing_secret="read-only-observe-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-observer-secret",
+                    scopes=["read-only"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="settlement-admin:ops-1",
+                    shared_secret="settlement-observer-secret",
+                    scopes=["settlement-admin"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="trust-admin:ops-1",
+                    shared_secret="trust-observer-secret",
+                    scopes=["trust-admin"],
+                ),
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-read-only-observe",
+                {
+                    "id": "read-only-observe-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 963,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-read-only-observe",
+                "read-only-observe-task-1",
+                "worker-read-only-observe-1",
+            )
+
+            dispute_status, dispute_payload = self._signed_post(
+                f"{node.base_url}/v1/disputes",
+                "token-read-only-observe",
+                {
+                    "task_id": "read-only-observe-task-1",
+                    "challenger_id": "reviewer-read-only-1",
+                    "actor_id": "worker-read-only-observe-1",
+                    "actor_type": "worker",
+                    "reason": "inspection-only replay found mismatch",
+                    "evidence_hash": "read-only-evidence-1",
+                    "severity": "high",
+                    "operator_id": "trust-admin:ops-1",
+                },
+                key_id="trust-admin:ops-1",
+                shared_secret="trust-observer-secret",
+            )
+            self.assertEqual(dispute_status, 201)
+            dispute_id = dispute_payload["dispute"]["id"]
+
+            queue_status, queued = self._signed_post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-read-only-observe",
+                {
+                    "task_id": "read-only-observe-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "challengeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                    "delay_seconds": 30,
+                },
+                key_id="settlement-admin:ops-1",
+                shared_secret="settlement-observer-secret",
+            )
+            self.assertEqual(queue_status, 201)
+            queue_item = queued["item"]
+
+            relay_status, relay_payload = self._signed_post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-read-only-observe",
+                {
+                    "task_id": "read-only-observe-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xcccc"},
+                        {"action": "challengeJob", "raw_transaction": "0xdddd"},
+                    ],
+                },
+                key_id="settlement-admin:ops-1",
+                shared_secret="settlement-observer-secret",
+            )
+            self.assertEqual(relay_status, 200)
+            relay = relay_payload["relay"]
+
+            denied_replay_status, denied_replay = self._get_auth(
+                f"{node.base_url}/v1/tasks/replay-inspect?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+            )
+            self.assertEqual(denied_replay_status, 401)
+            self.assertEqual(denied_replay["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_disputes_status, denied_disputes = self._get_auth(
+                f"{node.base_url}/v1/disputes?task_id=read-only-observe-task-1&status=open",
+                "token-read-only-observe",
+            )
+            self.assertEqual(denied_disputes_status, 401)
+            self.assertEqual(denied_disputes["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_latest_status, denied_latest = self._get_auth(
+                f"{node.base_url}/v1/onchain/settlement-relays/latest?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+            )
+            self.assertEqual(denied_latest_status, 401)
+            self.assertEqual(denied_latest["policy_receipt"]["reason_code"], "signed-request-required")
+
+            preview_status, preview = self._signed_get(
+                f"{node.base_url}/v1/onchain/settlement-preview?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(preview_status, 200)
+            self.assertEqual(preview["settlement"]["open_dispute_count"], 1)
+            self.assertEqual(preview["settlement"]["recommended_resolution"], "challengeJob")
+
+            ledger_status, ledger_payload = self._signed_get(
+                f"{node.base_url}/v1/onchain/settlement-ledger?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(ledger_status, 200)
+            ledger_verification = verify_document(
+                ledger_payload["ledger"],
+                secret="read-only-observe-secret",
+                expected_scope="onchain-settlement-ledger",
+                expected_key_id="read-only-observe-node",
+            )
+            self.assertTrue(ledger_verification["verified"])
+
+            disputes_status, disputes = self._signed_get(
+                f"{node.base_url}/v1/disputes?task_id=read-only-observe-task-1&status=open",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(disputes_status, 200)
+            self.assertEqual(len(disputes["items"]), 1)
+            self.assertEqual(disputes["items"][0]["id"], dispute_id)
+
+            replay_status, replay = self._signed_get(
+                f"{node.base_url}/v1/tasks/replay-inspect?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(replay_status, 200)
+            self.assertEqual(replay["task"]["id"], "read-only-observe-task-1")
+            self.assertEqual(len(replay["disputes"]), 1)
+            self.assertEqual(replay["disputes"][0]["id"], dispute_id)
+            self.assertEqual(len(replay["settlement_relays"]), 1)
+            self.assertEqual(len(replay["settlement_relay_queue"]), 1)
+            self.assertEqual(replay["latest_settlement_relay"]["id"], relay["relay_record_id"])
+            self.assertEqual(replay["settlement_reconciliation"]["status"], "unknown")
+
+            relay_history_status, relay_history = self._signed_get(
+                f"{node.base_url}/v1/onchain/settlement-relays?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(relay_history_status, 200)
+            self.assertEqual(len(relay_history["items"]), 1)
+            self.assertEqual(relay_history["items"][0]["id"], relay["relay_record_id"])
+
+            queue_view_status, queue_view = self._signed_get(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(queue_view_status, 200)
+            self.assertEqual(len(queue_view["items"]), 1)
+            self.assertEqual(queue_view["items"][0]["id"], queue_item["id"])
+
+            latest_status, latest = self._signed_get(
+                f"{node.base_url}/v1/onchain/settlement-relays/latest?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(latest_status, 200)
+            self.assertEqual(latest["id"], relay["relay_record_id"])
+
+            inherited_replay_status, inherited_replay = self._signed_get(
+                f"{node.base_url}/v1/tasks/replay-inspect?task_id=read-only-observe-task-1",
+                "token-read-only-observe",
+                key_id="settlement-admin:ops-1",
+                shared_secret="settlement-observer-secret",
+            )
+            self.assertEqual(inherited_replay_status, 200)
+            self.assertEqual(inherited_replay["task"]["id"], "read-only-observe-task-1")
+
+            denied_pause_status, denied_pause = self._signed_post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue/pause",
+                "token-read-only-observe",
+                {"queue_id": queue_item["id"]},
+                key_id="read-only:observer-1",
+                shared_secret="read-only-observer-secret",
+            )
+            self.assertEqual(denied_pause_status, 403)
+            self.assertEqual(denied_pause["policy_receipt"]["reason_code"], "scope-denied")
+
+            replay_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/tasks/replay-inspect", limit=10)
+            self.assertEqual([item["decision"] for item in replay_audits[:3]], ["allowed", "allowed", "denied"])
+            self.assertEqual(
+                {item["key_id"] for item in replay_audits[:2]},
+                {"read-only:observer-1", "settlement-admin:ops-1"},
+            )
+
+            latest_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/onchain/settlement-relays/latest", limit=10)
+            self.assertEqual([item["decision"] for item in latest_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(latest_audits[0]["key_id"], "read-only:observer-1")
+            self.assertEqual(latest_audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+        finally:
+            node.stop()
+            rpc.stop()
 
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(

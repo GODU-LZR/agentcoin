@@ -1990,6 +1990,41 @@ class AgentCoinNode:
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
         operator_endpoint_policies: dict[str, dict[str, Any]] = {
+            "GET /v1/disputes": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/onchain/settlement-preview": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/onchain/settlement-ledger": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/onchain/settlement-relays": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/onchain/settlement-relay-queue": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/onchain/settlement-relays/latest": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/tasks/replay-inspect": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
             "/v1/tasks/dispatch/evaluate": {
                 "policy_tier": "read-only",
                 "policy_level": 1,
@@ -2366,7 +2401,10 @@ class AgentCoinNode:
                     if str(scope or "").strip()
                 ]
                 if not policy_tier:
-                    default_policy = operator_endpoint_policies.get(urlparse(self.path).path)
+                    parsed_request = urlparse(self.path)
+                    default_policy = operator_endpoint_policies.get(f"{self.command} {parsed_request.path}")
+                    if not default_policy:
+                        default_policy = operator_endpoint_policies.get(parsed_request.path)
                     if default_policy:
                         return self._require_auth(
                             policy_tier=str(default_policy.get("policy_tier") or ""),
@@ -2683,6 +2721,11 @@ class AgentCoinNode:
                 parsed_request = urlparse(self.path)
                 path = parsed_request.path
                 query = parse_qs(parsed_request.query)
+
+                # Preserve the current public MVP surface until operators explicitly configure signed identities.
+                if node.config.operator_identities and operator_endpoint_policies.get(f"GET {path}"):
+                    if not self._require_auth():
+                        return
 
                 if path == "/healthz":
                     self._json_response(
