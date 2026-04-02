@@ -1,0 +1,76 @@
+{
+  "node_id": "agentcoin-demo-c",
+  "name": "AgentCoin Demo Node C",
+  "description": "Reviewer node for the local multi-node Docker Compose demo.",
+  "host": "0.0.0.0",
+  "port": 8080,
+  "advertise_url": "http://agentcoin-node-c:8080",
+  "auth_token": "demo-token-c",
+  "database_path": "./var/agentcoin-node-c.db",
+  "git_root": "/app",
+  "sync_interval_seconds": 5,
+  "outbox_max_attempts": 5,
+  "task_retry_limit": 3,
+  "task_retry_backoff_seconds": 5,
+  "local_dispatch_fallback": true,
+  "network": {
+    "no_proxy_hosts": [
+      "127.0.0.1",
+      "localhost",
+      "::1",
+      "agentcoin-node-a",
+      "agentcoin-node-b",
+      "agentcoin-node-c",
+      "172.30.0.0/24"
+    ],
+    "use_environment_proxies": false
+  },
+  "overlay_network": "compose-bridge",
+  "overlay_endpoint": "agentcoin-node-c:8080",
+  "overlay_addresses": [
+    "172.30.0.13"
+  ],
+  "capabilities": [
+    "reviewer",
+    "agent-card"
+  ],
+  "tags": [
+    "compose-demo",
+    "reviewer"
+  ],
+  "runtimes": [
+    "python"
+  ],
+  "peers": [
+    {
+      "peer_id": "agentcoin-peer-a",
+      "name": "AgentCoin Demo Peer A",
+      "url": "http://agentcoin-node-a:8080",
+      "auth_token": "demo-token-a",
+      "overlay_endpoint": "agentcoin-node-a:8080",
+      "overlay_addresses": [
+        "172.30.0.11"
+      ],
+      "tags": [
+        "compose-demo",
+        "planner"
+      ],
+      "enabled": true
+    },
+    {
+      "peer_id": "agentcoin-peer-b",
+      "name": "AgentCoin Demo Peer B",
+      "url": "http://agentcoin-node-b:8080",
+      "auth_token": "demo-token-b",
+      "overlay_endpoint": "agentcoin-node-b:8080",
+      "overlay_addresses": [
+        "172.30.0.12"
+      ],
+      "tags": [
+        "compose-demo",
+        "worker"
+      ],
+      "enabled": true
+    }
+  ]
+}

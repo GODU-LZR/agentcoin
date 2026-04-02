@@ -4,10 +4,10 @@ This document is the current engineering handoff for continuing AgentCoin withou
 
 ## Repository State
 
-- Repository: `c:\Users\Twist\Desktop\agentcorn`
+- Repository: `c:\Users\Twist\Desktop\agentcoin`
 - Default branch: `main`
-- Latest known good commit: `14f75c4` (`Add settlement relay queue persistence`)
-- Test baseline: `60/60` passing with `python -m unittest discover -s tests -v`
+- Latest known good baseline should be re-read from the working tree rather than assumed from old chat history
+- Test baseline should be revalidated from the working tree rather than assumed from old chat history
 - Python baseline: Python `3.11`
 - Runtime style: Python standard library first, lightweight, cross-platform, SQLite-backed
 
@@ -155,46 +155,34 @@ Examples of important endpoints already implemented:
 Source of truth:
 
 - `docs/architecture/implementation-roadmap.md`
+- `docs/project/blueprint-continuous-improvement-checklist.md`
 
 Status summary:
 
-- `Phase 1-9`: completed
-- `Phase 10`: started
-  - completed: relay queue persistence
-  - next: background settlement relay worker
-- `Phase 11-14`: not started
+- `Phase 1-12`: completed
+- `Phase 13`: completed for project docs, testing docs, README multilingual sync, committee / bond / replay architecture docs, and alignment-gap refresh
+- `Phase 14`: completed for challenge contract alignment, relay reconciliation auto-finalize, signed settlement ledger propagation, Headscale / overlay deployment examples, and local multi-node demo compose
 
 ## Recommended Next Task
 
 The next implementation target should be:
 
-- `Phase 10`: background settlement relay worker
+- pick the next concrete engineering task from `docs/project/blueprint-continuous-improvement-checklist.md` or the near-term roadmap in `docs/project/overview.md`, with stronger trust bootstrap / richer trust-chain workflow now the most direct follow-on after staged key rotation, explicit revoked-key lists, sync-time trust-drift reporting, and operator preview/apply with config reconciliation
 
 Suggested scope:
 
-1. Add a background loop that polls `settlement_relay_queue`.
-2. Respect `next_attempt_at`, `max_attempts`, and queue item `status`.
-3. Execute queued relay jobs by reusing existing settlement relay code paths.
-4. Persist success/failure back to queue records.
-5. Introduce queue states such as:
-   - `queued`
-   - `running`
-   - `retrying`
-   - `completed`
-   - `dead-letter`
-6. Expose operator controls afterward:
-   - pause / resume
-   - requeue
-   - dead-letter inspection
+1. verify the roadmap file before assuming the next task from old notes
+2. keep `docs/testing/strategy.md`, `README.md`, `README.zh-CN.md`, and `README.ja.md` aligned with newly completed roadmap items
+3. treat `docs/architecture/e2ee-connectivity.md` as the source of truth for Headscale / overlay deployment examples
+4. treat `docs/project/multi-node-demo.md` and `compose.multi-node.yaml` as the source of truth for the local multi-node compose demo
+5. when Docker is available, use the multi-node compose stack for manual peer-sync and remote-dispatch smoke validation
 
 ## Files Most Likely To Change Next
 
-- `agentcoin/node.py`
-- `agentcoin/store.py`
-- `agentcoin/onchain.py`
-- `tests/test_node_integration.py`
 - `docs/architecture/implementation-roadmap.md`
 - `docs/testing/strategy.md`
+- `docs/project/copilot-handoff.md`
+- `docs/project/multi-node-demo.md`
 - `README.md`
 - `README.zh-CN.md`
 - `README.ja.md`
@@ -211,6 +199,13 @@ Run a focused integration test:
 
 ```bash
 python -m unittest tests.test_node_integration.NodeIntegrationTests.test_onchain_settlement_relay_queue_persists_items -v
+```
+
+When Docker is available, validate the local multi-node demo compose shape with:
+
+```bash
+docker compose -f compose.multi-node.yaml config
+docker compose -f compose.multi-node.yaml up --build
 ```
 
 Compile-check Python files:

@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from agentcoin.bridges import BridgeRegistry
-from agentcoin.config import NodeConfig, PeerConfig
+from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_config, preview_peer_identity_config_update
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
@@ -86,6 +86,12 @@ class AgentCoinNode:
             payload["signing_secret"] = "***"
         if payload.get("identity_public_key"):
             payload["identity_public_key"] = f"{str(payload['identity_public_key'])[:32]}..."
+        if payload.get("identity_public_keys"):
+            payload["identity_public_keys"] = [f"{str(value)[:32]}..." for value in payload["identity_public_keys"]]
+        if payload.get("identity_revoked_public_keys"):
+            payload["identity_revoked_public_keys"] = [
+                f"{str(value)[:32]}..." for value in payload["identity_revoked_public_keys"]
+            ]
         return payload
 
     @staticmethod
@@ -95,6 +101,345 @@ class AgentCoinNode:
         if len(results) == 1:
             return next(iter(results.values()))
         return {"verified": True, **results}
+
+    @staticmethod
+    def _normalize_identity_keys(*candidates: Any) -> list[str]:
+        keys: list[str] = []
+        for candidate in candidates:
+            values = candidate if isinstance(candidate, list) else [candidate]
+            for value in values:
+                normalized = str(value or "").strip()
+                if normalized and normalized not in keys:
+                    keys.append(normalized)
+        return keys
+
+    def _identity_trust_report(self, peer: PeerConfig, card: dict[str, Any]) -> dict[str, Any] | None:
+        identity = card.get("identity")
+        if not isinstance(identity, dict):
+            identity = {}
+
+        configured_principal = str(peer.identity_principal or "").strip()
+        advertised_principal = str(identity.get("principal") or "").strip()
+        advertised_public_keys = self._normalize_identity_keys(identity.get("public_key"), identity.get("public_keys") or [])
+        advertised_revoked_public_keys = self._normalize_identity_keys(identity.get("revoked_public_keys") or [])
+        advertised_active_public_keys = [
+            key for key in advertised_public_keys if key not in advertised_revoked_public_keys
+        ]
+        configured_trusted_public_keys = peer.trusted_identity_public_keys
+        configured_revoked_public_keys = peer.revoked_identity_public_keys
+
+        if not any(
+            [
+                configured_principal,
+                advertised_principal,
+                configured_trusted_public_keys,
+                configured_revoked_public_keys,
+                advertised_public_keys,
+                advertised_revoked_public_keys,
+            ]
+        ):
+            return None
+
+        principal_match = configured_principal == advertised_principal if configured_principal or advertised_principal else True
+        pending_trust_public_keys = [
+            key
+            for key in advertised_active_public_keys
+            if key not in configured_trusted_public_keys and key not in configured_revoked_public_keys
+        ]
+        pending_revocation_public_keys = [
+            key for key in advertised_revoked_public_keys if key not in configured_revoked_public_keys
+        ]
+        stale_trusted_public_keys = [
+            key for key in configured_trusted_public_keys if key not in advertised_active_public_keys
+        ]
+        local_only_revoked_public_keys = [
+            key for key in configured_revoked_public_keys if key not in advertised_revoked_public_keys
+        ]
+        revoked_still_advertised_public_keys = [
+            key for key in advertised_public_keys if key in configured_revoked_public_keys
+        ]
+        requires_review = bool(
+            not principal_match
+            or pending_trust_public_keys
+            or pending_revocation_public_keys
+            or stale_trusted_public_keys
+            or revoked_still_advertised_public_keys
+        )
+        return {
+            "aligned": not requires_review,
+            "requires_review": requires_review,
+            "configured_principal": configured_principal,
+            "advertised_principal": advertised_principal,
+            "principal_match": principal_match,
+            "configured_trusted_public_keys": configured_trusted_public_keys,
+            "configured_revoked_public_keys": configured_revoked_public_keys,
+            "advertised_public_keys": advertised_public_keys,
+            "advertised_active_public_keys": advertised_active_public_keys,
+            "advertised_revoked_public_keys": advertised_revoked_public_keys,
+            "pending_trust_public_keys": pending_trust_public_keys,
+            "pending_revocation_public_keys": pending_revocation_public_keys,
+            "stale_trusted_public_keys": stale_trusted_public_keys,
+            "local_only_revoked_public_keys": local_only_revoked_public_keys,
+            "revoked_still_advertised_public_keys": revoked_still_advertised_public_keys,
+        }
+
+    def _peer_card_view(self, item: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(item)
+        try:
+            peer = self.config.resolve_peer(str(item.get("peer_id") or ""))
+        except KeyError:
+            peer = None
+        if peer:
+            payload["identity_trust"] = self._identity_trust_report(peer, payload.get("card") or {})
+        return payload
+
+    def _stored_peer_card(self, peer_id: str) -> dict[str, Any] | None:
+        for item in self.store.list_peer_cards():
+            if str(item.get("peer_id") or "") == peer_id:
+                return item
+        return None
+
+    @staticmethod
+    def _set_peer_identity_material(
+        peer: PeerConfig,
+        *,
+        principal: str | None,
+        trusted_public_keys: list[str],
+        revoked_public_keys: list[str],
+    ) -> None:
+        filtered_revoked: list[str] = []
+        for key in revoked_public_keys:
+            normalized = str(key or "").strip()
+            if normalized and normalized not in filtered_revoked:
+                filtered_revoked.append(normalized)
+
+        filtered_trusted: list[str] = []
+        for key in trusted_public_keys:
+            normalized = str(key or "").strip()
+            if normalized and normalized not in filtered_revoked and normalized not in filtered_trusted:
+                filtered_trusted.append(normalized)
+
+        peer.identity_principal = str(principal or "").strip() or None
+        peer.identity_public_key = filtered_trusted[0] if filtered_trusted else None
+        peer.identity_public_keys = filtered_trusted[1:]
+        peer.identity_revoked_public_keys = filtered_revoked
+
+    def _candidate_peer_identity_state(
+        self,
+        peer: PeerConfig,
+        *,
+        principal: str | None,
+        trusted_public_keys: list[str],
+        revoked_public_keys: list[str],
+    ) -> PeerConfig:
+        candidate = PeerConfig(**peer.to_dict())
+        self._set_peer_identity_material(
+            candidate,
+            principal=principal,
+            trusted_public_keys=trusted_public_keys,
+            revoked_public_keys=revoked_public_keys,
+        )
+        return candidate
+
+    def apply_peer_identity_trust_update(
+        self,
+        *,
+        peer_id: str,
+        actions: list[str],
+        operator_id: str | None,
+        reason: str,
+        persist_to_config: bool = False,
+        preview_only: bool = False,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        allowed_actions = {
+            "apply-pending-trust",
+            "apply-pending-revocations",
+            "remove-stale-trusted",
+            "adopt-advertised-principal",
+        }
+        normalized_actions: list[str] = []
+        for action in actions:
+            normalized = str(action or "").strip().lower()
+            if normalized and normalized not in normalized_actions:
+                normalized_actions.append(normalized)
+        if not normalized_actions:
+            raise ValueError("actions are required")
+        invalid_actions = [action for action in normalized_actions if action not in allowed_actions]
+        if invalid_actions:
+            raise ValueError(f"unsupported identity trust actions: {', '.join(invalid_actions)}")
+
+        peer = self.config.resolve_peer(peer_id)
+        stored_card = self._stored_peer_card(peer_id)
+        if not stored_card:
+            raise ValueError("peer card not found; sync the peer first")
+        card = dict(stored_card.get("card") or {})
+        before_report = self._identity_trust_report(peer, card)
+        if not before_report:
+            raise ValueError("peer card does not expose identity trust data")
+
+        updated_principal = str(peer.identity_principal or "").strip() or None
+        updated_trusted = list(before_report.get("configured_trusted_public_keys") or [])
+        updated_revoked = list(before_report.get("configured_revoked_public_keys") or [])
+        applied_actions: list[str] = []
+        noop_actions: list[str] = []
+
+        for action in normalized_actions:
+            if action == "adopt-advertised-principal":
+                advertised_principal = str(before_report.get("advertised_principal") or "").strip() or None
+                if advertised_principal and advertised_principal != updated_principal:
+                    updated_principal = advertised_principal
+                    applied_actions.append(action)
+                else:
+                    noop_actions.append(action)
+                continue
+
+            if action == "apply-pending-trust":
+                pending_trust = list(before_report.get("pending_trust_public_keys") or [])
+                next_trusted = self._normalize_identity_keys(updated_trusted, pending_trust)
+                if next_trusted != updated_trusted:
+                    updated_trusted = next_trusted
+                    applied_actions.append(action)
+                else:
+                    noop_actions.append(action)
+                continue
+
+            if action == "apply-pending-revocations":
+                pending_revocations = list(before_report.get("pending_revocation_public_keys") or [])
+                next_revoked = self._normalize_identity_keys(updated_revoked, pending_revocations)
+                next_trusted = [key for key in updated_trusted if key not in next_revoked]
+                if next_revoked != updated_revoked or next_trusted != updated_trusted:
+                    updated_revoked = next_revoked
+                    updated_trusted = next_trusted
+                    applied_actions.append(action)
+                else:
+                    noop_actions.append(action)
+                continue
+
+            if action == "remove-stale-trusted":
+                stale_trusted = set(before_report.get("stale_trusted_public_keys") or [])
+                next_trusted = [key for key in updated_trusted if key not in stale_trusted]
+                if next_trusted != updated_trusted:
+                    updated_trusted = next_trusted
+                    applied_actions.append(action)
+                else:
+                    noop_actions.append(action)
+
+        candidate_peer = self._candidate_peer_identity_state(
+            peer,
+            principal=updated_principal,
+            trusted_public_keys=updated_trusted,
+            revoked_public_keys=updated_revoked,
+        )
+        after_report = self._identity_trust_report(candidate_peer, card)
+
+        config_preview: dict[str, Any] | None = None
+        if persist_to_config or preview_only:
+            config_path = str(self.config.config_path or "").strip()
+            if not config_path:
+                raise ValueError("config preview or persistence requires a node config file loaded via --config")
+            try:
+                config_preview = preview_peer_identity_config_update(
+                    config_path,
+                    peer_id=peer.peer_id,
+                    principal=updated_principal,
+                    trusted_public_keys=updated_trusted,
+                    revoked_public_keys=updated_revoked,
+                )
+            except KeyError as exc:
+                raise ValueError(f"peer {exc.args[0]} is not present in the loaded config file") from exc
+
+        if preview_only:
+            return {
+                "ok": True,
+                "preview_only": True,
+                "peer_id": peer.peer_id,
+                "requested_actions": normalized_actions,
+                "applied_actions": applied_actions,
+                "noop_actions": noop_actions,
+                "runtime_only": True,
+                "persisted_to_config": False,
+                "would_persist_to_config": bool(config_preview and config_preview.get("changed")),
+                "config_path": config_preview.get("config_path") if config_preview else None,
+                "before": before_report,
+                "after": after_report,
+                "config_preview": config_preview,
+                "peer": self._sanitize_peer(candidate_peer),
+            }
+
+        persisted_config: dict[str, Any] | None = None
+        if persist_to_config:
+            try:
+                persisted_config = persist_peer_identity_config(
+                    str(self.config.config_path or "").strip(),
+                    peer_id=peer.peer_id,
+                    principal=updated_principal,
+                    trusted_public_keys=updated_trusted,
+                    revoked_public_keys=updated_revoked,
+                )
+            except KeyError as exc:
+                raise ValueError(f"peer {exc.args[0]} is not present in the loaded config file") from exc
+
+        self._set_peer_identity_material(
+            peer,
+            principal=updated_principal,
+            trusted_public_keys=updated_trusted,
+            revoked_public_keys=updated_revoked,
+        )
+        receipt = self._governance_receipt(
+            action_type="peer-identity-trust-apply",
+            actor_id=peer.peer_id,
+            actor_type="peer",
+            operator_id=operator_id,
+            reason=reason,
+            payload={
+                "requested_actions": normalized_actions,
+                "applied_actions": applied_actions,
+                "noop_actions": noop_actions,
+                "before": before_report,
+                "after": after_report,
+                "runtime_only": not bool(persisted_config),
+                "persisted_to_config": bool(persisted_config),
+                "config_path": persisted_config.get("config_path") if persisted_config else None,
+                "config_preview": config_preview,
+                "context": dict(context or {}),
+            },
+        )
+        action = self.store.record_governance_action(
+            actor_id=peer.peer_id,
+            actor_type="peer",
+            action_type="peer-identity-trust-apply",
+            reason=reason,
+            payload={
+                "operator_id": operator_id,
+                "receipt": receipt,
+                "requested_actions": normalized_actions,
+                "applied_actions": applied_actions,
+                "noop_actions": noop_actions,
+                "before": before_report,
+                "after": after_report,
+                "runtime_only": not bool(persisted_config),
+                "persisted_to_config": bool(persisted_config),
+                "config_path": persisted_config.get("config_path") if persisted_config else None,
+                "config_preview": config_preview,
+                "context": dict(context or {}),
+            },
+        )
+        return {
+            "ok": True,
+            "peer_id": peer.peer_id,
+            "requested_actions": normalized_actions,
+            "applied_actions": applied_actions,
+            "noop_actions": noop_actions,
+            "runtime_only": not bool(persisted_config),
+            "persisted_to_config": bool(persisted_config),
+            "config_path": persisted_config.get("config_path") if persisted_config else None,
+            "before": before_report,
+            "after": after_report,
+            "config_preview": config_preview,
+            "peer": self._sanitize_peer(peer),
+            "action": action,
+        }
 
     def _sign_document(self, document: dict, *, hmac_scope: str, identity_namespace: str) -> dict:
         signed = dict(document)
@@ -114,7 +459,7 @@ class AgentCoinNode:
     def _peer_trust_required(peer: PeerConfig | None) -> bool:
         if not peer:
             return False
-        return bool(peer.signing_secret or (peer.identity_principal and peer.identity_public_key))
+        return bool(peer.signing_secret or (peer.identity_principal and peer.trusted_identity_public_keys))
 
     def _verify_signed_document(
         self,
@@ -128,10 +473,11 @@ class AgentCoinNode:
         results: dict[str, dict] = {}
         if peer and peer.signing_secret:
             results["hmac"] = verify_document(payload, secret=peer.signing_secret, expected_scope=hmac_scope, expected_key_id=peer.peer_id)
-        if peer and peer.identity_principal and peer.identity_public_key:
+        if peer and peer.identity_principal and peer.trusted_identity_public_keys:
             results["identity"] = verify_document_with_ssh(
                 payload,
-                public_key=peer.identity_public_key,
+                public_keys=peer.trusted_identity_public_keys,
+                revoked_public_keys=peer.revoked_identity_public_keys,
                 principal=peer.identity_principal,
                 expected_namespace=identity_namespace,
             )
@@ -227,6 +573,7 @@ class AgentCoinNode:
                         "signed": bool(verification),
                         "hmac_signed": isinstance(verification, dict) and ("scope" in verification or "hmac" in verification),
                         "identity_signed": isinstance(verification, dict) and ("namespace" in verification or "identity" in verification),
+                        "identity_trust": self._identity_trust_report(peer, card),
                         "peer_health": peer_health,
                     }
                 )
@@ -403,6 +750,144 @@ class AgentCoinNode:
             identity_namespace="agentcoin-onchain-settlement",
         )
 
+    def _task_settlement_ledger(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.onchain.enabled:
+            return None
+        if not task.get("payload", {}).get("_onchain"):
+            return None
+        audits = self.store.list_execution_audits(task_id=str(task.get("id") or ""), limit=200)
+        worker_id = ""
+        if audits:
+            worker_id = str(audits[0].get("worker_id") or "")
+        task_result = dict(task.get("result") or {})
+        if not worker_id:
+            worker_id = str(task_result.get("worker_id") or "")
+        reputation = self.store.get_actor_reputation(worker_id, actor_type="worker") if worker_id else {}
+        violations = self.store.list_policy_violations(actor_id=worker_id, limit=200) if worker_id else []
+        violations = [item for item in violations if item.get("task_id") == task.get("id")]
+        disputes = self.store.list_disputes(task_id=str(task.get("id") or ""), limit=200)
+        poaw_summary = self.store.summarize_score_events(task_id=str(task.get("id") or ""))
+        try:
+            preview = self.onchain.settlement_preview(
+                task,
+                poaw_summary=poaw_summary,
+                reputation=reputation,
+                violations=violations,
+                disputes=disputes,
+            )
+            ledger = self.onchain.settlement_ledger(
+                task,
+                poaw_summary=poaw_summary,
+                reputation=reputation,
+                violations=violations,
+                disputes=disputes,
+                settlement_preview=preview,
+            )
+        except ValueError:
+            return None
+        return self._sign_document(
+            ledger,
+            hmac_scope="onchain-settlement-ledger",
+            identity_namespace="agentcoin-onchain-settlement-ledger",
+        )
+
+    @staticmethod
+    def _dispute_escrow_alignment(dispute: dict[str, Any]) -> tuple[str | None, str | None]:
+        status = str(dispute.get("status") or "").strip().lower()
+        if status in {"open", "escalated"}:
+            return "challengeJob", "Challenged"
+        if status == "upheld":
+            return "slashJob", "Slashed"
+        if status == "dismissed":
+            return "completeJob", "Completed"
+        return None, None
+
+    @staticmethod
+    def _dispute_bond_projected_action(dispute: dict[str, Any]) -> str | None:
+        bond_status = str(dispute.get("bond_status") or "").strip().lower()
+        if bond_status == "locked":
+            return "lockChallengerBond"
+        if bond_status == "awarded":
+            return "awardChallengerBond"
+        if bond_status == "slashed":
+            return "slashChallengerBond"
+        return None
+
+    @staticmethod
+    def _dispute_committee_projected_action(dispute: dict[str, Any]) -> str | None:
+        status = str(dispute.get("status") or "").strip().lower()
+        committee_quorum = int(dispute.get("committee_quorum") or 0)
+        if committee_quorum <= 0 and status != "escalated":
+            return None
+        if status == "open":
+            return "collectCommitteeVotes"
+        if status in {"upheld", "dismissed"}:
+            return "finalizeCommitteeResolution"
+        if status == "escalated":
+            return "escalateDispute"
+        return None
+
+    def _dispute_contract_alignment(self, dispute: dict[str, Any], *, task: dict[str, Any] | None = None) -> dict[str, Any]:
+        task_record = task
+        if task_record is None:
+            task_id = str(dispute.get("task_id") or "").strip()
+            task_record = self.store.get_task(task_id) if task_id else None
+        onchain_context = dict(task_record.get("payload", {}).get("_onchain") or {}) if task_record else {}
+        escrow_action, projected_job_status = self._dispute_escrow_alignment(dispute)
+        bond_amount_wei = str(dispute.get("bond_amount_wei") or "0")
+        try:
+            bond_amount_int = int(bond_amount_wei)
+        except (TypeError, ValueError):
+            bond_amount_int = 0
+        committee_quorum = int(dispute.get("committee_quorum") or 0)
+        committee_future = committee_quorum > 0 or str(dispute.get("status") or "").strip().lower() == "escalated"
+        bond_future = bond_amount_int > 0 or str(dispute.get("bond_status") or "").strip().lower() in {"locked", "awarded", "slashed"}
+        escrow_supported_now = bool(self.onchain.enabled and onchain_context and escrow_action)
+
+        return {
+            "escrow": {
+                "contract": "BountyEscrow",
+                "job_id": onchain_context.get("job_id"),
+                "supported_now": escrow_supported_now,
+                "action": escrow_action,
+                "projected_job_status": projected_job_status,
+                "gap": None if escrow_supported_now or not escrow_action else "task is not attached to on-chain settlement",
+            },
+            "bond": {
+                "amount_wei": bond_amount_wei,
+                "status": str(dispute.get("bond_status") or "none"),
+                "current_mode": "local-ledger" if bond_future else "not-required",
+                "supported_now": not bond_future,
+                "current_contract": None,
+                "gap": (
+                    "current StakingPool only locks worker stake; challenger bond custody remains local until ChallengeManager exists"
+                    if bond_future
+                    else None
+                ),
+                "future_contract": "ChallengeManager" if bond_future else None,
+                "projected_action": self._dispute_bond_projected_action(dispute),
+            },
+            "committee": {
+                "quorum": committee_quorum,
+                "tally": dict(dispute.get("committee_tally") or {}),
+                "current_mode": "offchain" if committee_future else "not-required",
+                "supported_now": not committee_future,
+                "current_contract": None,
+                "gap": (
+                    "current BountyEscrow resolves challenge outcomes but does not store committee votes or escalation"
+                    if committee_future
+                    else None
+                ),
+                "future_contract": "ChallengeManager" if committee_future else None,
+                "projected_action": self._dispute_committee_projected_action(dispute),
+            },
+        }
+
+    def _decorate_dispute(self, dispute: dict[str, Any], *, task: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = dict(dispute)
+        payload["contract_alignment"] = self._dispute_contract_alignment(payload, task=task)
+        return payload
+
     @staticmethod
     def _decorate_task(task: dict[str, Any]) -> dict[str, Any]:
         payload = dict(task)
@@ -501,7 +986,13 @@ class AgentCoinNode:
         settlement = self._task_settlement_preview(task)
         if not settlement:
             raise ValueError("task is not bound to onchain settlement")
-        plan = self.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options or {})
+        settlement_ledger = self._task_settlement_ledger(task)
+        plan = self.onchain.settlement_rpc_plan(
+            task,
+            settlement_preview=settlement,
+            settlement_ledger=settlement_ledger,
+            rpc=rpc_options or {},
+        )
         bundle = self.onchain.settlement_raw_bundle(
             plan,
             raw_transactions=list(raw_transactions or []),
@@ -557,6 +1048,7 @@ class AgentCoinNode:
             "kind": "evm-settlement-relay",
             "task_id": task_id,
             "recommended_resolution": bundle.get("recommended_resolution"),
+            "settlement_ledger": dict(bundle.get("settlement_ledger") or {}),
             "step_count": bundle.get("step_count"),
             "resume_from_index": resume_from_index,
             "resumed": resume_from_index > 0,
@@ -587,8 +1079,10 @@ class AgentCoinNode:
 
     def process_settlement_relay_queue(self, *, max_items: int | None = None) -> list[dict[str, Any]]:
         processed: list[dict[str, Any]] = []
+        max_in_flight = int(self.config.settlement_relay_max_in_flight or 0)
+        claim_limit = max_in_flight if max_in_flight > 0 else None
         while max_items is None or len(processed) < max_items:
-            item = self.store.claim_next_settlement_relay_queue_item()
+            item = self.store.claim_next_settlement_relay_queue_item(max_in_flight=claim_limit)
             if not item:
                 break
 
@@ -680,6 +1174,40 @@ class AgentCoinNode:
             return "reverted"
         return "unknown"
 
+    @staticmethod
+    def _is_final_settlement_resolution(action: str) -> bool:
+        return str(action or "").strip() in {"completeJob", "rejectJob", "slashJob"}
+
+    def _auto_finalize_reconciled_workflow(self, relay_record: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(relay_record.get("task_id") or "").strip()
+        task = self.store.get_task(task_id) if task_id else None
+        if not task:
+            return {"attempted": False, "reason": "task-not-found"}
+
+        workflow_id = str(task.get("workflow_id") or "").strip()
+        if not workflow_id:
+            return {"attempted": False, "reason": "workflow-missing", "task_id": task_id}
+
+        recommended_resolution = str(relay_record.get("recommended_resolution") or "").strip()
+        if not self._is_final_settlement_resolution(recommended_resolution):
+            return {
+                "attempted": False,
+                "reason": "resolution-not-final",
+                "task_id": task_id,
+                "workflow_id": workflow_id,
+                "recommended_resolution": recommended_resolution,
+            }
+
+        finalized = self.store.finalize_workflow(workflow_id)
+        return {
+            "attempted": True,
+            "task_id": task_id,
+            "workflow_id": workflow_id,
+            "recommended_resolution": recommended_resolution,
+            "finalized": bool(finalized.get("ok")),
+            "result": finalized,
+        }
+
     def reconcile_settlement_relay(
         self,
         relay_id: str,
@@ -755,6 +1283,8 @@ class AgentCoinNode:
         )
         if not updated:
             raise ValueError("settlement relay not found")
+        updated = dict(updated)
+        updated["auto_finalize"] = self._auto_finalize_reconciled_workflow(updated)
         return updated
 
     def _task_settlement_reconciliation(self, task_id: str) -> dict[str, Any] | None:
@@ -1200,6 +1730,21 @@ class AgentCoinNode:
                         return
                     self._json_response(HTTPStatus.OK, {"settlement": preview})
                     return
+                if path == "/v1/onchain/settlement-ledger":
+                    task_id = (query.get("task_id") or [""])[0]
+                    if not task_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
+                        return
+                    task = node.store.get_task(task_id)
+                    if not task:
+                        self._json_response(HTTPStatus.NOT_FOUND, {"error": "task not found"})
+                        return
+                    ledger = node._task_settlement_ledger(task)
+                    if not ledger:
+                        self._json_response(HTTPStatus.CONFLICT, {"error": "task is not bound to onchain settlement"})
+                        return
+                    self._json_response(HTTPStatus.OK, {"ledger": ledger})
+                    return
                 if path == "/v1/onchain/settlement-rpc-plan":
                     self._json_response(
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -1330,16 +1875,15 @@ class AgentCoinNode:
                     challenger_id = (query.get("challenger_id") or [None])[0]
                     status_name = (query.get("status") or [None])[0]
                     limit = int((query.get("limit") or ["200"])[0])
+                    disputes = node.store.list_disputes(
+                        task_id=task_id,
+                        challenger_id=challenger_id,
+                        status=status_name,
+                        limit=limit,
+                    )
                     self._json_response(
                         HTTPStatus.OK,
-                        {
-                            "items": node.store.list_disputes(
-                                task_id=task_id,
-                                challenger_id=challenger_id,
-                                status=status_name,
-                                limit=limit,
-                            )
-                        },
+                        {"items": [node._decorate_dispute(item) for item in disputes]},
                     )
                     return
                 if path == "/v1/onchain/settlement-relays":
@@ -1462,7 +2006,10 @@ class AgentCoinNode:
                             "audits": node.store.list_execution_audits(task_id=task_id, limit=200),
                             "poaw_events": node.store.list_score_events(task_id=task_id, limit=200),
                             "poaw_summary": node.store.summarize_score_events(task_id=task_id),
-                            "disputes": node.store.list_disputes(task_id=task_id, limit=200),
+                            "disputes": [
+                                node._decorate_dispute(item, task=task)
+                                for item in node.store.list_disputes(task_id=task_id, limit=200)
+                            ],
                             "settlement_relays": node.store.list_settlement_relays(task_id=task_id, limit=200),
                             "settlement_relay_queue": node.store.list_settlement_relay_queue(task_id=task_id, limit=200),
                             "latest_settlement_relay": node.store.get_latest_settlement_relay(task_id),
@@ -1473,6 +2020,7 @@ class AgentCoinNode:
                             "onchain_receipt": dict(task.get("result") or {}).get("_onchain_receipt"),
                             "onchain_intent_preview": onchain_preview,
                             "onchain_settlement_preview": node._task_settlement_preview(task),
+                            "onchain_settlement_ledger": node._task_settlement_ledger(task),
                         },
                     )
                     return
@@ -1483,7 +2031,10 @@ class AgentCoinNode:
                     )
                     return
                 if path == "/v1/peer-cards":
-                    self._json_response(HTTPStatus.OK, {"items": node.store.list_peer_cards()})
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": [node._peer_card_view(item) for item in node.store.list_peer_cards()]},
+                    )
                     return
                 if path == "/v1/outbox":
                     self._json_response(HTTPStatus.OK, {"items": node.store.list_outbox()})
@@ -1733,8 +2284,14 @@ class AgentCoinNode:
                         settlement = node._task_settlement_preview(task)
                         if not settlement:
                             raise ValueError("task is not bound to onchain settlement")
+                        settlement_ledger = node._task_settlement_ledger(task)
                         rpc_options = dict(payload.get("rpc") or {})
-                        plan = node.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options)
+                        plan = node.onchain.settlement_rpc_plan(
+                            task,
+                            settlement_preview=settlement,
+                            settlement_ledger=settlement_ledger,
+                            rpc=rpc_options,
+                        )
                         resolve_live = bool(payload.get("resolve_live"))
                         if resolve_live:
                             steps: list[dict[str, Any]] = []
@@ -1781,8 +2338,14 @@ class AgentCoinNode:
                         settlement = node._task_settlement_preview(task)
                         if not settlement:
                             raise ValueError("task is not bound to onchain settlement")
+                        settlement_ledger = node._task_settlement_ledger(task)
                         rpc_options = dict(payload.get("rpc") or {})
-                        plan = node.onchain.settlement_rpc_plan(task, settlement_preview=settlement, rpc=rpc_options)
+                        plan = node.onchain.settlement_rpc_plan(
+                            task,
+                            settlement_preview=settlement,
+                            settlement_ledger=settlement_ledger,
+                            rpc=rpc_options,
+                        )
                         bundle = node.onchain.settlement_raw_bundle(
                             plan,
                             raw_transactions=list(payload.get("raw_transactions") or []),
@@ -2203,6 +2766,24 @@ class AgentCoinNode:
                         )
                         self._json_response(HTTPStatus.OK, state)
                         return
+                    if self.path == "/v1/peers/identity-trust/apply":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        peer_id = str(payload.get("peer_id") or "").strip()
+                        if not peer_id:
+                            raise ValueError("peer_id is required")
+                        result = node.apply_peer_identity_trust_update(
+                            peer_id=peer_id,
+                            actions=list(payload.get("actions") or []),
+                            operator_id=str(payload.get("operator_id") or "").strip() or None,
+                            reason=str(payload.get("reason") or "manual peer identity trust update"),
+                            persist_to_config=bool(payload.get("persist_to_config")),
+                            preview_only=bool(payload.get("preview_only")),
+                            context=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, result)
+                        return
                     if self.path == "/v1/bridges/export":
                         if not self._require_auth():
                             return
@@ -2365,7 +2946,10 @@ class AgentCoinNode:
                             committee_deadline=str(payload.get("committee_deadline") or "").strip() or None,
                             payload=dispute_payload,
                         )
-                        self._json_response(HTTPStatus.CREATED, result)
+                        task = task or node.store.get_task(task_id)
+                        response_payload = dict(result)
+                        response_payload["dispute"] = node._decorate_dispute(result["dispute"], task=task)
+                        self._json_response(HTTPStatus.CREATED, response_payload)
                         return
                     if self.path == "/v1/disputes/vote":
                         if not self._require_auth():
@@ -2386,7 +2970,7 @@ class AgentCoinNode:
                         if not result:
                             self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
                             return
-                        self._json_response(HTTPStatus.OK, {"ok": True, "dispute": result})
+                        self._json_response(HTTPStatus.OK, {"ok": True, "dispute": node._decorate_dispute(result)})
                         return
                     if self.path == "/v1/disputes/resolve":
                         if not self._require_auth():
@@ -2407,7 +2991,7 @@ class AgentCoinNode:
                         if not result:
                             self._json_response(HTTPStatus.NOT_FOUND, {"error": "dispute not found"})
                             return
-                        self._json_response(HTTPStatus.OK, {"ok": True, "dispute": result})
+                        self._json_response(HTTPStatus.OK, {"ok": True, "dispute": node._decorate_dispute(result)})
                         return
                     if self.path == "/v1/git/branch":
                         if not self._require_auth():

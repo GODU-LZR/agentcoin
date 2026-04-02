@@ -33,13 +33,18 @@ class NodeHarness:
                  local_dispatch_fallback: bool = True, outbox_max_attempts: int = 3, git_root: str | None = None,
                  signing_secret: str | None = None, require_signed_inbox: bool = False,
                  identity_principal: str | None = None, identity_private_key_path: str | None = None,
-                 identity_public_key: str | None = None, onchain: OnchainBindings | None = None,
+                 identity_public_key: str | None = None, identity_public_keys: list[str] | None = None,
+                 identity_revoked_public_keys: list[str] | None = None,
+                 config_path: str | None = None,
+                 onchain: OnchainBindings | None = None,
                  network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
                  challenge_bond_required_wei: int = 0,
                  poaw_policy_version: str = "0.2",
                  poaw_score_weights: dict[str, int] | None = None,
                  bridges: list[str] | None = None,
-                 settlement_relay_poll_seconds: float = 2.0) -> None:
+                 sync_interval_seconds: float = 3600,
+                 settlement_relay_poll_seconds: float = 2.0,
+                 settlement_relay_max_in_flight: int = 1) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -49,12 +54,16 @@ class NodeHarness:
             identity_principal=identity_principal,
             identity_private_key_path=identity_private_key_path,
             identity_public_key=identity_public_key,
+            identity_public_keys=identity_public_keys or [],
+            identity_revoked_public_keys=identity_revoked_public_keys or [],
+            config_path=config_path,
             host="127.0.0.1",
             port=self.port,
             database_path=db_path,
             git_root=git_root,
-            sync_interval_seconds=3600,
+            sync_interval_seconds=sync_interval_seconds,
             settlement_relay_poll_seconds=settlement_relay_poll_seconds,
+            settlement_relay_max_in_flight=settlement_relay_max_in_flight,
             capabilities=capabilities,
             runtimes=runtimes or ["python"],
             bridges=bridges or ["mcp", "a2a"],
@@ -412,6 +421,16 @@ class NodeIntegrationTests(unittest.TestCase):
             time.sleep(0.05)
         raise AssertionError(f"queue item {queue_id} did not reach status {status!r}; last_item={last_item!r}")
 
+    def _wait_until(self, predicate, *, timeout: float = 5.0, interval: float = 0.05, message: str = "condition not met"):
+        deadline = time.monotonic() + timeout
+        last_value = None
+        while time.monotonic() < deadline:
+            last_value = predicate()
+            if last_value:
+                return last_value
+            time.sleep(interval)
+        raise AssertionError(f"{message}; last_value={last_value!r}")
+
     def _complete_onchain_task(self, node: NodeHarness, token: str, task_id: str, worker_id: str) -> None:
         _, claim = self._post(
             f"{node.base_url}/v1/tasks/claim",
@@ -447,6 +466,16 @@ class NodeIntegrationTests(unittest.TestCase):
             text=True,
         )
         return str(key_path), Path(f"{key_path}.pub").read_text(encoding="utf-8").strip()
+
+    def _write_node_config_file(self, path: Path, *, node_id: str, auth_token: str, peers: list[dict]) -> str:
+        payload = {
+            "node_id": node_id,
+            "auth_token": auth_token,
+            "database_path": str(Path(self.tempdir.name) / f"{node_id}.db"),
+            "peers": peers,
+        }
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return str(path)
 
     def test_outbox_delivery_ack_and_inbox_dedupe(self) -> None:
         node_b = NodeHarness(
@@ -1133,6 +1162,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(received), 1)
             self.assertTrue(received[0]["payload"]["_verification"]["verified"])
             self.assertEqual(received[0]["payload"]["_verification"]["principal"], "node-a")
+            self.assertEqual(received[0]["payload"]["_verification"]["claimed_public_key"], pub_a)
+            self.assertEqual(received[0]["payload"]["_verification"]["matched_public_key"], pub_a)
+            self.assertEqual(received[0]["payload"]["_verification"]["trusted_key_count"], 1)
+            self.assertEqual(received[0]["payload"]["_verification"]["revoked_key_count"], 0)
 
             tampered = sign_document_with_ssh(
                 {"id": "ssh-bad-1", "kind": "notify", "payload": {"x": 8}, "sender": "node-a"},
@@ -1145,6 +1178,871 @@ class NodeIntegrationTests(unittest.TestCase):
             bad_status, bad_payload = self._post(f"{node_b.base_url}/v1/inbox", "token-b", tampered)
             self.assertEqual(bad_status, 400)
             self.assertIn("signature", bad_payload["error"])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_ssh_identity_rotation_accepts_additional_trusted_key(self) -> None:
+        key_a_old, pub_a_old = self._generate_identity(Path(self.tempdir.name) / "id_a_old", "node-a")
+        key_a_new, pub_a_new = self._generate_identity(Path(self.tempdir.name) / "id_a_new", "node-a")
+        key_b, pub_b = self._generate_identity(Path(self.tempdir.name) / "id_b_rot", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-rotate-b.db"),
+            capabilities=["worker"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-a",
+                    name="Node A",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-a",
+                    identity_principal="node-a",
+                    identity_public_key=pub_a_old,
+                    identity_public_keys=[pub_a_new],
+                )
+            ],
+            require_signed_inbox=True,
+            identity_principal="node-b",
+            identity_private_key_path=key_b,
+            identity_public_key=pub_b,
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-rotate-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b,
+                )
+            ],
+            identity_principal="node-a",
+            identity_private_key_path=key_a_new,
+            identity_public_key=pub_a_new,
+            identity_public_keys=[pub_a_old],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.config.peers[0].url = node_a.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_b.base_url}/v1/peers/sync", "token-b", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["status"], "ok")
+            self.assertTrue(sync_payload["items"][0]["identity_signed"])
+
+            _, card_payload = self._get(f"{node_a.base_url}/v1/card")
+            self.assertEqual(card_payload["identity"]["public_key"], pub_a_new)
+            self.assertEqual(card_payload["identity"]["public_keys"], [pub_a_new, pub_a_old])
+
+            self._post(
+                f"{node_a.base_url}/v1/tasks",
+                "token-a",
+                {"id": "ssh-rotate-1", "kind": "notify", "payload": {"x": 9}, "deliver_to": "node-b"},
+            )
+            flush_status, flushed = self._post(f"{node_a.base_url}/v1/outbox/flush", "token-a", {})
+            self.assertEqual(flush_status, 200)
+            self.assertEqual(flushed["flushed"], 1)
+
+            _, tasks = self._get(f"{node_b.base_url}/v1/tasks")
+            received = [item for item in tasks["items"] if item["id"] == "ssh-rotate-1"]
+            self.assertEqual(len(received), 1)
+            self.assertTrue(received[0]["payload"]["_verification"]["verified"])
+            self.assertEqual(received[0]["payload"]["_verification"]["claimed_public_key"], pub_a_new)
+            self.assertEqual(received[0]["payload"]["_verification"]["matched_public_key"], pub_a_new)
+            self.assertEqual(received[0]["payload"]["_verification"]["trusted_key_count"], 2)
+            self.assertEqual(received[0]["payload"]["_verification"]["revoked_key_count"], 0)
+
+            self.assertEqual(node_b.config.peers[0].trusted_identity_public_keys, [pub_a_old, pub_a_new])
+            self.assertEqual(node_a.config.card.identity["public_keys"], [pub_a_new, pub_a_old])
+            self.assertEqual(node_a.config.card.identity["revoked_public_keys"], [])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_ssh_identity_rotation_rejects_untrusted_new_key(self) -> None:
+        key_a_old, pub_a_old = self._generate_identity(Path(self.tempdir.name) / "id_a_old_reject", "node-a")
+        key_a_new, pub_a_new = self._generate_identity(Path(self.tempdir.name) / "id_a_new_reject", "node-a")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-rotate-reject-b.db"),
+            capabilities=["worker"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-a",
+                    name="Node A",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-a",
+                    identity_principal="node-a",
+                    identity_public_key=pub_a_old,
+                )
+            ],
+            require_signed_inbox=True,
+        )
+        node_b.start()
+        try:
+            rotated_payload = sign_document_with_ssh(
+                {"id": "ssh-rotate-reject-1", "kind": "notify", "payload": {"x": 10}, "sender": "node-a"},
+                private_key_path=key_a_new,
+                principal="node-a",
+                namespace="agentcoin-task",
+                public_key=pub_a_new,
+            )
+            bad_status, bad_payload = self._post(f"{node_b.base_url}/v1/inbox", "token-b", rotated_payload)
+            self.assertEqual(bad_status, 400)
+            self.assertIn("signature", bad_payload["error"])
+            self.assertEqual(node_b.config.peers[0].trusted_identity_public_keys, [pub_a_old])
+        finally:
+            node_b.stop()
+
+    def test_ssh_identity_revocation_rejects_explicitly_revoked_key(self) -> None:
+        key_a_old, pub_a_old = self._generate_identity(Path(self.tempdir.name) / "id_a_old_revoked", "node-a")
+        key_a_new, pub_a_new = self._generate_identity(Path(self.tempdir.name) / "id_a_new_revoked", "node-a")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-revoke-b.db"),
+            capabilities=["worker"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-a",
+                    name="Node A",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-a",
+                    identity_principal="node-a",
+                    identity_public_key=pub_a_old,
+                    identity_public_keys=[pub_a_new],
+                    identity_revoked_public_keys=[pub_a_old],
+                )
+            ],
+            require_signed_inbox=True,
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-revoke-a.db"),
+            capabilities=["planner"],
+            identity_principal="node-a",
+            identity_private_key_path=key_a_new,
+            identity_public_key=pub_a_new,
+            identity_public_keys=[pub_a_old],
+            identity_revoked_public_keys=[pub_a_old],
+        )
+        node_b.start()
+        node_a.start()
+        try:
+            revoked_payload = sign_document_with_ssh(
+                {"id": "ssh-revoke-1", "kind": "notify", "payload": {"x": 11}, "sender": "node-a"},
+                private_key_path=key_a_old,
+                principal="node-a",
+                namespace="agentcoin-task",
+                public_key=pub_a_old,
+            )
+            bad_status, bad_payload = self._post(f"{node_b.base_url}/v1/inbox", "token-b", revoked_payload)
+            self.assertEqual(bad_status, 400)
+            self.assertIn("revoked", bad_payload["error"])
+
+            accepted_payload = sign_document_with_ssh(
+                {"id": "ssh-revoke-2", "kind": "notify", "payload": {"x": 12}, "sender": "node-a"},
+                private_key_path=key_a_new,
+                principal="node-a",
+                namespace="agentcoin-task",
+                public_key=pub_a_new,
+            )
+            accepted_status, accepted = self._post(f"{node_b.base_url}/v1/inbox", "token-b", accepted_payload)
+            self.assertEqual(accepted_status, 201)
+            self.assertTrue(accepted["verified"])
+
+            _, tasks = self._get(f"{node_b.base_url}/v1/tasks")
+            received = [item for item in tasks["items"] if item["id"] == "ssh-revoke-2"]
+            self.assertEqual(len(received), 1)
+            self.assertTrue(received[0]["payload"]["_verification"]["verified"])
+            self.assertEqual(received[0]["payload"]["_verification"]["claimed_public_key"], pub_a_new)
+            self.assertEqual(received[0]["payload"]["_verification"]["matched_public_key"], pub_a_new)
+            self.assertEqual(received[0]["payload"]["_verification"]["trusted_key_count"], 1)
+            self.assertEqual(received[0]["payload"]["_verification"]["revoked_key_count"], 1)
+
+            self.assertEqual(node_b.config.peers[0].trusted_identity_public_keys, [pub_a_new])
+            self.assertEqual(node_b.config.peers[0].revoked_identity_public_keys, [pub_a_old])
+            self.assertEqual(node_a.config.card.identity["public_keys"], [pub_a_new])
+            self.assertEqual(node_a.config.card.identity["revoked_public_keys"], [pub_a_old])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_peer_sync_surfaces_pending_identity_trust_updates(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_pending", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_pending", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-pending-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-pending-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["status"], "ok")
+            report = sync_payload["items"][0]["identity_trust"]
+            self.assertFalse(report["aligned"])
+            self.assertTrue(report["requires_review"])
+            self.assertEqual(report["configured_trusted_public_keys"], [pub_b_old])
+            self.assertEqual(report["advertised_active_public_keys"], [pub_b_old, pub_b_new])
+            self.assertEqual(report["pending_trust_public_keys"], [pub_b_new])
+            self.assertEqual(report["pending_revocation_public_keys"], [])
+            self.assertEqual(report["stale_trusted_public_keys"], [])
+
+            _, peer_cards = self._get(f"{node_a.base_url}/v1/peer-cards")
+            stored = [item for item in peer_cards["items"] if item["peer_id"] == "node-b"]
+            self.assertEqual(len(stored), 1)
+            self.assertEqual(stored[0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+            self.assertEqual(stored[0]["identity_trust"]["advertised_public_keys"], [pub_b_old, pub_b_new])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_peer_sync_surfaces_pending_identity_revocation_updates(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_revoke_pending", "node-b")
+        key_b_new, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_revoke_pending", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-pending-revoke-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_new,
+            identity_public_key=pub_b_new,
+            identity_public_keys=[pub_b_old],
+            identity_revoked_public_keys=[pub_b_old],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-pending-revoke-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                    identity_public_keys=[pub_b_new],
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["status"], "ok")
+            report = sync_payload["items"][0]["identity_trust"]
+            self.assertFalse(report["aligned"])
+            self.assertTrue(report["requires_review"])
+            self.assertEqual(report["configured_trusted_public_keys"], [pub_b_old, pub_b_new])
+            self.assertEqual(report["advertised_active_public_keys"], [pub_b_new])
+            self.assertEqual(report["advertised_revoked_public_keys"], [pub_b_old])
+            self.assertEqual(report["pending_trust_public_keys"], [])
+            self.assertEqual(report["pending_revocation_public_keys"], [pub_b_old])
+            self.assertEqual(report["stale_trusted_public_keys"], [pub_b_old])
+
+            _, peer_cards = self._get(f"{node_a.base_url}/v1/peer-cards")
+            stored = [item for item in peer_cards["items"] if item["peer_id"] == "node-b"]
+            self.assertEqual(len(stored), 1)
+            self.assertEqual(stored[0]["identity_trust"]["pending_revocation_public_keys"], [pub_b_old])
+            self.assertEqual(stored[0]["identity_trust"]["stale_trusted_public_keys"], [pub_b_old])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_apply_pending_peer_identity_trust_update(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_apply", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_apply", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-apply-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-apply-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+
+            apply_status, applied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-1",
+                    "reason": "approve rotated peer key",
+                    "actions": ["apply-pending-trust"],
+                    "payload": {"ticket": "TRUST-101"},
+                },
+            )
+            self.assertEqual(apply_status, 200)
+            self.assertEqual(applied["applied_actions"], ["apply-pending-trust"])
+            self.assertEqual(applied["noop_actions"], [])
+            self.assertTrue(applied["runtime_only"])
+            self.assertFalse(applied["persisted_to_config"])
+            self.assertFalse(applied["before"]["aligned"])
+            self.assertTrue(applied["after"]["aligned"])
+            self.assertEqual(applied["after"]["pending_trust_public_keys"], [])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old, pub_b_new])
+            self.assertEqual(applied["action"]["operator_id"], "admin-1")
+            self.assertEqual(applied["action"]["receipt"]["action_type"], "peer-identity-trust-apply")
+            apply_verification = verify_document(
+                applied["action"]["receipt"],
+                secret="governance-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="node-a",
+            )
+            self.assertTrue(apply_verification["verified"])
+
+            _, peer_cards = self._get(f"{node_a.base_url}/v1/peer-cards")
+            stored = [item for item in peer_cards["items"] if item["peer_id"] == "node-b"]
+            self.assertEqual(len(stored), 1)
+            self.assertTrue(stored[0]["identity_trust"]["aligned"])
+
+            _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
+            self.assertEqual(actions["items"][0]["action_type"], "peer-identity-trust-apply")
+            self.assertEqual(actions["items"][0]["operator_id"], "admin-1")
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_apply_pending_peer_identity_revocation_update(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_apply_revoke", "node-b")
+        key_b_new, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_apply_revoke", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-apply-revoke-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_new,
+            identity_public_key=pub_b_new,
+            identity_public_keys=[pub_b_old],
+            identity_revoked_public_keys=[pub_b_old],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-apply-revoke-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                    identity_public_keys=[pub_b_new],
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_revocation_public_keys"], [pub_b_old])
+
+            apply_status, applied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-2",
+                    "reason": "apply revoked key report",
+                    "actions": ["apply-pending-revocations"],
+                },
+            )
+            self.assertEqual(apply_status, 200)
+            self.assertEqual(applied["applied_actions"], ["apply-pending-revocations"])
+            self.assertTrue(applied["after"]["aligned"])
+            self.assertEqual(applied["after"]["pending_revocation_public_keys"], [])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_new])
+            self.assertEqual(node_a.config.peers[0].revoked_identity_public_keys, [pub_b_old])
+
+            _, peer_cards = self._get(f"{node_a.base_url}/v1/peer-cards")
+            stored = [item for item in peer_cards["items"] if item["peer_id"] == "node-b"]
+            self.assertEqual(len(stored), 1)
+            self.assertTrue(stored[0]["identity_trust"]["aligned"])
+            self.assertEqual(stored[0]["identity_trust"]["advertised_revoked_public_keys"], [pub_b_old])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_adopt_advertised_peer_identity_principal_and_persist_to_config(self) -> None:
+        config_path = self._write_node_config_file(
+            Path(self.tempdir.name) / "node-a-principal-adopt.json",
+            node_id="node-a",
+            auth_token="token-a",
+            peers=[
+                {
+                    "peer_id": "node-b",
+                    "name": "Node B",
+                    "url": "http://127.0.0.1:1",
+                    "auth_token": "token-b",
+                    "identity_principal": "node-b-old",
+                }
+            ],
+        )
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-principal-adopt-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b-next",
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-principal-adopt-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            config_path=config_path,
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b-old",
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            report = sync_payload["items"][0]["identity_trust"]
+            self.assertFalse(report["aligned"])
+            self.assertFalse(report["principal_match"])
+            self.assertEqual(report["configured_principal"], "node-b-old")
+            self.assertEqual(report["advertised_principal"], "node-b-next")
+
+            apply_status, applied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-principal",
+                    "reason": "adopt peer principal rename",
+                    "actions": ["adopt-advertised-principal"],
+                    "persist_to_config": True,
+                },
+            )
+            self.assertEqual(apply_status, 200)
+            self.assertEqual(applied["applied_actions"], ["adopt-advertised-principal"])
+            self.assertEqual(applied["noop_actions"], [])
+            self.assertTrue(applied["persisted_to_config"])
+            self.assertEqual(applied["before"]["configured_principal"], "node-b-old")
+            self.assertEqual(applied["after"]["configured_principal"], "node-b-next")
+            self.assertTrue(applied["after"]["principal_match"])
+            self.assertTrue(applied["after"]["aligned"])
+            self.assertEqual(node_a.config.peers[0].identity_principal, "node-b-next")
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [])
+
+            persisted = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.assertEqual(persisted["peers"][0]["identity_principal"], "node-b-next")
+            self.assertNotIn("identity_public_key", persisted["peers"][0])
+
+            _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
+            self.assertEqual(actions["items"][0]["payload"]["applied_actions"], ["adopt-advertised-principal"])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_remove_stale_trusted_peer_identity_key_and_persist_to_config(self) -> None:
+        _, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_remove_stale", "node-b")
+        key_b_new, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_remove_stale", "node-b")
+        config_path = self._write_node_config_file(
+            Path(self.tempdir.name) / "node-a-remove-stale.json",
+            node_id="node-a",
+            auth_token="token-a",
+            peers=[
+                {
+                    "peer_id": "node-b",
+                    "name": "Node B",
+                    "url": "http://127.0.0.1:1",
+                    "auth_token": "token-b",
+                    "identity_principal": "node-b",
+                    "identity_public_key": pub_b_old,
+                    "identity_public_keys": [pub_b_new],
+                }
+            ],
+        )
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-remove-stale-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_new,
+            identity_public_key=pub_b_new,
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-remove-stale-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            config_path=config_path,
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                    identity_public_keys=[pub_b_new],
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            report = sync_payload["items"][0]["identity_trust"]
+            self.assertEqual(report["configured_trusted_public_keys"], [pub_b_old, pub_b_new])
+            self.assertEqual(report["advertised_active_public_keys"], [pub_b_new])
+            self.assertEqual(report["stale_trusted_public_keys"], [pub_b_old])
+            self.assertFalse(report["aligned"])
+
+            apply_status, applied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-stale",
+                    "reason": "drop stale rotated key",
+                    "actions": ["remove-stale-trusted"],
+                    "persist_to_config": True,
+                },
+            )
+            self.assertEqual(apply_status, 200)
+            self.assertEqual(applied["applied_actions"], ["remove-stale-trusted"])
+            self.assertEqual(applied["noop_actions"], [])
+            self.assertTrue(applied["persisted_to_config"])
+            self.assertEqual(applied["before"]["stale_trusted_public_keys"], [pub_b_old])
+            self.assertEqual(applied["after"]["configured_trusted_public_keys"], [pub_b_new])
+            self.assertEqual(applied["after"]["stale_trusted_public_keys"], [])
+            self.assertTrue(applied["after"]["aligned"])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_new])
+            self.assertEqual(node_a.config.peers[0].identity_public_key, pub_b_new)
+            self.assertEqual(node_a.config.peers[0].identity_public_keys, [])
+
+            persisted = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.assertEqual(persisted["peers"][0]["identity_public_key"], pub_b_new)
+            self.assertNotIn("identity_public_keys", persisted["peers"][0])
+
+            _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
+            self.assertEqual(actions["items"][0]["payload"]["applied_actions"], ["remove-stale-trusted"])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_persist_peer_identity_trust_update_to_config_file(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_persist", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_persist", "node-b")
+        config_path = self._write_node_config_file(
+            Path(self.tempdir.name) / "node-a-persist.json",
+            node_id="node-a",
+            auth_token="token-a",
+            peers=[
+                {
+                    "peer_id": "node-b",
+                    "name": "Node B",
+                    "url": "http://127.0.0.1:1",
+                    "auth_token": "token-b",
+                    "identity_principal": "node-b",
+                    "identity_public_key": pub_b_old,
+                }
+            ],
+        )
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-persist-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-persist-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            config_path=config_path,
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+
+            apply_status, applied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-persist",
+                    "reason": "persist rotated peer key",
+                    "actions": ["apply-pending-trust"],
+                    "persist_to_config": True,
+                    "payload": {"ticket": "TRUST-202"},
+                },
+            )
+            self.assertEqual(apply_status, 200)
+            self.assertFalse(applied["runtime_only"])
+            self.assertTrue(applied["persisted_to_config"])
+            self.assertEqual(applied["config_path"], str(Path(config_path).resolve()))
+            self.assertTrue(applied["after"]["aligned"])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old, pub_b_new])
+            self.assertTrue(applied["action"]["payload"]["persisted_to_config"])
+
+            persisted = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.assertEqual(len(persisted["peers"]), 1)
+            self.assertEqual(persisted["peers"][0]["identity_public_key"], pub_b_old)
+            self.assertEqual(persisted["peers"][0]["identity_public_keys"], [pub_b_new])
+            self.assertNotIn("identity_revoked_public_keys", persisted["peers"][0])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_persist_requires_loaded_config_path(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_no_persist", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_no_persist", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-no-persist-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-no-persist-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+
+            apply_status, applied = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-fail",
+                    "reason": "try persistence without config",
+                    "actions": ["apply-pending-trust"],
+                    "persist_to_config": True,
+                },
+            )
+            self.assertEqual(apply_status, 400)
+            self.assertIn("loaded via --config", applied["error"])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old])
+
+            _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
+            self.assertEqual(actions["items"], [])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_preview_peer_identity_trust_update_without_mutation(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_preview", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_preview", "node-b")
+        config_path = self._write_node_config_file(
+            Path(self.tempdir.name) / "node-a-preview.json",
+            node_id="node-a",
+            auth_token="token-a",
+            peers=[
+                {
+                    "peer_id": "node-b",
+                    "name": "Node B",
+                    "url": "http://127.0.0.1:1",
+                    "auth_token": "token-b",
+                    "identity_principal": "node-b",
+                    "identity_public_key": pub_b_old,
+                }
+            ],
+        )
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-preview-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-preview-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            config_path=config_path,
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, sync_payload = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+            self.assertEqual(sync_payload["items"][0]["identity_trust"]["pending_trust_public_keys"], [pub_b_new])
+
+            preview_status, preview = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/apply",
+                "token-a",
+                {
+                    "peer_id": "node-b",
+                    "operator_id": "admin-preview",
+                    "reason": "preview rotated peer key",
+                    "actions": ["apply-pending-trust"],
+                    "preview_only": True,
+                },
+            )
+            self.assertEqual(preview_status, 200)
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(preview["persisted_to_config"])
+            self.assertTrue(preview["would_persist_to_config"])
+            self.assertTrue(preview["after"]["aligned"])
+            self.assertEqual(preview["config_preview"]["after_peer"]["identity_public_keys"], [pub_b_new])
+            self.assertIn("identity_public_keys", preview["config_preview"]["diff"])
+
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old])
+            persisted = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            self.assertEqual(persisted["peers"][0]["identity_public_key"], pub_b_old)
+            self.assertNotIn("identity_public_keys", persisted["peers"][0])
+
+            _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
+            self.assertEqual(actions["items"], [])
         finally:
             node_a.stop()
             node_b.stop()
@@ -1205,6 +2103,107 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             fallback_node.stop()
             dead_node.stop()
+
+    def test_background_sync_loop_recovers_after_weak_network_peer_returns(self) -> None:
+        recovery_node = NodeHarness(
+            node_id="weak-network-peer-b",
+            token="token-weak-network-b",
+            db_path=str(Path(self.tempdir.name) / "weak-network-peer-b.db"),
+            capabilities=["worker"],
+        )
+        root_node = NodeHarness(
+            node_id="weak-network-root",
+            token="token-weak-network-root",
+            db_path=str(Path(self.tempdir.name) / "weak-network-root.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="weak-network-peer-b",
+                    name="Weak Network Peer",
+                    url=recovery_node.base_url,
+                    auth_token="token-weak-network-b",
+                )
+            ],
+            outbox_max_attempts=4,
+            sync_interval_seconds=0.2,
+        )
+        root_node.start()
+        try:
+            self._post(
+                f"{root_node.base_url}/v1/tasks/dispatch",
+                "token-weak-network-root",
+                {
+                    "id": "weak-network-remote-1",
+                    "kind": "code",
+                    "deliver_to": "weak-network-peer-b",
+                    "required_capabilities": ["worker"],
+                },
+            )
+
+            def weak_network_failures_ready():
+                health = root_node.node.store.get_peer_health("weak-network-peer-b")
+                outbox = root_node.node.store.list_outbox(limit=10)
+                task = root_node.node.store.get_task("weak-network-remote-1")
+                if not health or not outbox or not task:
+                    return None
+                item = outbox[0]
+                if health["sync_failures"] >= 2 and health["delivery_failures"] >= 1 and item["status"] == "retrying":
+                    return {"health": health, "outbox": item, "task": task}
+                return None
+
+            failed_state = self._wait_until(
+                weak_network_failures_ready,
+                timeout=4.0,
+                interval=0.1,
+                message="weak-network failure state did not materialize",
+            )
+            self.assertEqual(failed_state["task"]["delivery_status"], "pending")
+            self.assertEqual(failed_state["outbox"]["status"], "retrying")
+            self.assertGreaterEqual(int(failed_state["outbox"]["attempts"] or 0), 1)
+
+            recovery_node.start()
+
+            def weak_network_recovery_ready():
+                outbox_items = root_node.node.store.list_outbox(limit=10)
+                if not outbox_items:
+                    return None
+                state = {
+                    "task": root_node.node.store.get_task("weak-network-remote-1"),
+                    "outbox": outbox_items[0],
+                    "peer_cards": root_node.node.store.list_peer_cards(),
+                    "health": root_node.node.store.get_peer_health("weak-network-peer-b"),
+                }
+                if state["outbox"]["status"] != "delivered":
+                    return None
+                if not any(item["peer_id"] == "weak-network-peer-b" for item in state["peer_cards"]):
+                    return None
+                if int(state["health"]["delivery_successes"] or 0) < 1:
+                    return None
+                return state
+
+            delivered_state = self._wait_until(
+                weak_network_recovery_ready,
+                timeout=8.0,
+                interval=0.1,
+                message="background recovery did not deliver outbox and sync peer card",
+            )
+
+            _, tasks = self._get(f"{recovery_node.base_url}/v1/tasks")
+            delivered = [item for item in tasks["items"] if item["id"] == "weak-network-remote-1"]
+            self.assertEqual(len(delivered), 1)
+
+            task = root_node.node.store.get_task("weak-network-remote-1")
+            outbox = root_node.node.store.list_outbox(limit=10)[0]
+            health = root_node.node.store.get_peer_health("weak-network-peer-b")
+            self.assertIsNotNone(task)
+            self.assertEqual(task["delivery_status"], "remote-accepted")
+            self.assertEqual(outbox["status"], "delivered")
+            self.assertGreaterEqual(int(health["sync_successes"] or 0), 1)
+            self.assertGreaterEqual(int(health["delivery_successes"] or 0), 1)
+            self.assertEqual(root_node.node.store.outbox_backlog(recovery_node.base_url)["dead_letter"], 0)
+        finally:
+            root_node.stop()
+            recovery_node.stop()
 
     def test_workflow_merge_and_finalize_via_http(self) -> None:
         node = NodeHarness(
@@ -2300,6 +3299,22 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(preview_verification["verified"])
 
+            _, ledger_payload = self._get(f"{node.base_url}/v1/onchain/settlement-ledger?task_id=settlement-task-1")
+            ledger = ledger_payload["ledger"]
+            self.assertEqual(ledger["@type"], "agentcoin:SettlementLedgerReceipt")
+            self.assertEqual(ledger["schema_version"], "0.1")
+            self.assertEqual(ledger["settlement_summary"]["recommended_resolution"], "completeJob")
+            self.assertEqual(ledger["commit_projection"]["current_actions"], ["submitWork", "completeJob"])
+            self.assertIn("PoAWScorebook", ledger["commit_projection"]["future_contracts"])
+            self.assertIn("ReputationEventLedger", ledger["commit_projection"]["future_contracts"])
+            ledger_verification = verify_document(
+                ledger,
+                secret="settlement-secret",
+                expected_scope="onchain-settlement-ledger",
+                expected_key_id="onchain-settlement-node",
+            )
+            self.assertTrue(ledger_verification["verified"])
+
             node.node.store.record_policy_violation(
                 actor_id="worker-settlement-1",
                 actor_type="worker",
@@ -2317,6 +3332,8 @@ class NodeIntegrationTests(unittest.TestCase):
 
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-task-1")
             self.assertEqual(replay["onchain_settlement_preview"]["recommended_resolution"], "slashJob")
+            self.assertEqual(replay["onchain_settlement_ledger"]["settlement_summary"]["recommended_resolution"], "slashJob")
+            self.assertEqual(replay["onchain_settlement_ledger"]["violation_summary"]["count"], 1)
         finally:
             node.stop()
 
@@ -2392,12 +3409,24 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(dispute_payload["dispute"]["bond_status"], "locked")
             self.assertEqual(dispute_payload["dispute"]["challenge_evidence"]["@type"], "agentcoin:ChallengeEvidence")
             self.assertEqual(dispute_payload["dispute"]["challenge_evidence"]["evidence_hash"], "evidence-hash-1")
+            self.assertEqual(dispute_payload["dispute"]["contract_alignment"]["escrow"]["action"], "challengeJob")
+            self.assertEqual(dispute_payload["dispute"]["contract_alignment"]["escrow"]["job_id"], 88)
+            self.assertFalse(dispute_payload["dispute"]["contract_alignment"]["bond"]["supported_now"])
+            self.assertEqual(
+                dispute_payload["dispute"]["contract_alignment"]["bond"]["future_contract"],
+                "ChallengeManager",
+            )
+            self.assertEqual(
+                dispute_payload["dispute"]["contract_alignment"]["bond"]["projected_action"],
+                "lockChallengerBond",
+            )
 
             _, disputes = self._get(f"{node.base_url}/v1/disputes?task_id=challenge-task-1&status=open")
             self.assertEqual(len(disputes["items"]), 1)
             self.assertEqual(disputes["items"][0]["challenger_id"], "reviewer-challenge-1")
             self.assertEqual(disputes["items"][0]["bond_amount_wei"], "7000000000000000")
             self.assertEqual(disputes["items"][0]["challenge_evidence"]["@type"], "agentcoin:ChallengeEvidence")
+            self.assertEqual(disputes["items"][0]["contract_alignment"]["escrow"]["projected_job_status"], "Challenged")
 
             _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             settlement = preview["settlement"]
@@ -2426,6 +3455,11 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(resolve_status, 200)
             self.assertEqual(resolved["dispute"]["status"], "dismissed")
             self.assertEqual(resolved["dispute"]["bond_status"], "slashed")
+            self.assertEqual(resolved["dispute"]["contract_alignment"]["escrow"]["action"], "completeJob")
+            self.assertEqual(
+                resolved["dispute"]["contract_alignment"]["bond"]["projected_action"],
+                "slashChallengerBond",
+            )
 
             _, preview_after_dismiss = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             self.assertEqual(preview_after_dismiss["settlement"]["recommended_resolution"], "completeJob")
@@ -2458,6 +3492,11 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(resolve_status_2, 200)
             self.assertEqual(resolved_2["dispute"]["status"], "upheld")
             self.assertEqual(resolved_2["dispute"]["bond_status"], "awarded")
+            self.assertEqual(resolved_2["dispute"]["contract_alignment"]["escrow"]["action"], "slashJob")
+            self.assertEqual(
+                resolved_2["dispute"]["contract_alignment"]["bond"]["projected_action"],
+                "awardChallengerBond",
+            )
 
             _, preview_after_upheld = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=challenge-task-1")
             self.assertEqual(preview_after_upheld["settlement"]["recommended_resolution"], "slashJob")
@@ -2534,6 +3573,8 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             dispute_id = opened["dispute"]["id"]
             self.assertEqual(opened["dispute"]["committee_quorum"], 2)
+            self.assertEqual(opened["dispute"]["contract_alignment"]["committee"]["future_contract"], "ChallengeManager")
+            self.assertEqual(opened["dispute"]["contract_alignment"]["committee"]["projected_action"], "collectCommitteeVotes")
 
             _, vote_one = self._post(
                 f"{node.base_url}/v1/disputes/vote",
@@ -2550,6 +3591,8 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(vote_two["dispute"]["status"], "upheld")
             self.assertEqual(vote_two["dispute"]["resolution"]["operator_id"], "committee:committee-b")
+            self.assertEqual(vote_two["dispute"]["contract_alignment"]["committee"]["projected_action"], "finalizeCommitteeResolution")
+            self.assertEqual(vote_two["dispute"]["contract_alignment"]["escrow"]["action"], "slashJob")
 
             _, preview = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=committee-task-1")
             self.assertEqual(preview["settlement"]["recommended_resolution"], "slashJob")
@@ -2584,6 +3627,8 @@ class NodeIntegrationTests(unittest.TestCase):
             _, replay = self._get(f"{node.base_url}/v1/tasks/replay-inspect?task_id=committee-task-1")
             escalated = [item for item in replay["disputes"] if item["id"] == split_id][0]
             self.assertEqual(escalated["committee_tally"]["abstain"], 1)
+            self.assertEqual(escalated["contract_alignment"]["committee"]["projected_action"], "escalateDispute")
+            self.assertEqual(escalated["contract_alignment"]["escrow"]["action"], "challengeJob")
 
             _, preview_escalated = self._get(f"{node.base_url}/v1/onchain/settlement-preview?task_id=committee-task-1")
             self.assertEqual(preview_escalated["settlement"]["recommended_resolution"], "challengeJob")
@@ -2663,6 +3708,8 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(plan["recommended_resolution"], "completeJob")
             self.assertTrue(plan["resolved_live"])
             self.assertEqual([step["action"] for step in plan["steps"]], ["submitWork", "completeJob"])
+            self.assertTrue(plan["settlement_ledger"]["ledger_id"].startswith("settlement-ledger:settlement-plan-task-1:"))
+            self.assertEqual(plan["settlement_ledger"]["receipt_type"], "agentcoin:SettlementLedgerReceipt")
             self.assertEqual(plan["steps"][0]["rpc_payload"]["transaction"]["nonce"], "0xa")
             self.assertEqual(plan["steps"][1]["rpc_payload"]["transaction"]["gas"], "0x6000")
             verification = verify_document(
@@ -2747,6 +3794,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(plan["resolved_live"])
             self.assertEqual(plan["recommended_resolution"], "challengeJob")
             self.assertEqual([step["action"] for step in plan["steps"]], ["submitWork", "challengeJob"])
+            self.assertTrue(plan["settlement_ledger"]["ledger_hash"])
             self.assertEqual(plan["steps"][1]["intent"]["function"], "challengeJob")
         finally:
             node.stop()
@@ -2816,6 +3864,7 @@ class NodeIntegrationTests(unittest.TestCase):
             bundle = bundle_payload["bundle"]
             self.assertEqual(bundle["kind"], "evm-settlement-raw-bundle")
             self.assertEqual(bundle["recommended_resolution"], "completeJob")
+            self.assertTrue(bundle["settlement_ledger"]["ledger_hash"])
             self.assertEqual(bundle["step_count"], 2)
             self.assertEqual([step["action"] for step in bundle["steps"]], ["submitWork", "completeJob"])
             self.assertEqual(bundle["steps"][0]["raw_relay_payload"]["request"]["method"], "eth_sendRawTransaction")
@@ -2909,6 +3958,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(relay["@type"], "agentcoin:SettlementRelayReceipt")
             self.assertEqual(relay["schema_version"], "0.1")
             self.assertEqual(relay["recommended_resolution"], "completeJob")
+            self.assertTrue(relay["settlement_ledger"]["ledger_hash"])
             self.assertEqual(relay["completed_steps"], 2)
             self.assertFalse(relay["stopped_on_error"])
             self.assertEqual(relay["final_status"], "completed")
@@ -2931,6 +3981,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(relay_history["items"]), 1)
             self.assertEqual(relay_history["items"][0]["completed_steps"], 2)
             self.assertEqual(relay_history["items"][0]["final_status"], "completed")
+            self.assertEqual(
+                relay_history["items"][0]["relay"]["settlement_ledger"]["ledger_id"],
+                relay["settlement_ledger"]["ledger_id"],
+            )
             self.assertEqual(relay_history["items"][0]["relay"]["recommended_resolution"], "completeJob")
             latest_status, latest_relay = self._get(
                 f"{node.base_url}/v1/onchain/settlement-relays/latest?task_id=settlement-relay-task-1"
@@ -3253,6 +4307,215 @@ class NodeIntegrationTests(unittest.TestCase):
 
             receipt_calls = [item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]
             self.assertEqual(len(receipt_calls), 2)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_confirmed_final_settlement_reconciliation_auto_finalizes_workflow(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        def receipt_response(payload: dict[str, object]) -> dict[str, object]:
+            params = list(payload.get("params") or [])
+            tx_hash = str(params[0] if params else "")
+            return {"transactionHash": tx_hash, "status": "0x1", "blockNumber": "0x22"}
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": receipt_response,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-auto-finalize",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-auto-finalize-node",
+            token="token-settlement-auto-finalize",
+            db_path=str(Path(self.tempdir.name) / "settlement-auto-finalize.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-auto-finalize",
+                {
+                    "id": "settlement-auto-finalize-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "workflow_id": "wf-settlement-auto-finalize",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 104,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-auto-finalize",
+                "settlement-auto-finalize-task-1",
+                "worker-settlement-auto-finalize",
+            )
+
+            _, summary_before = self._get(f"{node.base_url}/v1/workflows/summary?workflow_id=wf-settlement-auto-finalize")
+            self.assertTrue(summary_before["finalizable"])
+            self.assertIsNone(summary_before["persisted_state"])
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-auto-finalize",
+                {
+                    "task_id": "settlement-auto-finalize-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+
+            _, reconciled_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relays/reconcile",
+                "token-settlement-auto-finalize",
+                {"relay_id": relay["relay_record_id"]},
+            )
+            reconciled = reconciled_payload["item"]
+            self.assertEqual(reconciled["reconciliation_status"], "confirmed")
+            self.assertTrue(reconciled["auto_finalize"]["attempted"])
+            self.assertTrue(reconciled["auto_finalize"]["finalized"])
+            self.assertEqual(reconciled["auto_finalize"]["workflow_id"], "wf-settlement-auto-finalize")
+            self.assertEqual(reconciled["auto_finalize"]["recommended_resolution"], "completeJob")
+
+            _, summary_after = self._get(f"{node.base_url}/v1/workflows/summary?workflow_id=wf-settlement-auto-finalize")
+            self.assertIsNotNone(summary_after["persisted_state"])
+            self.assertEqual(summary_after["persisted_state"]["status"], "completed")
+            self.assertIsNotNone(summary_after["persisted_state"]["finalized_at"])
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_confirmed_challenge_reconciliation_does_not_auto_finalize_workflow(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        def receipt_response(payload: dict[str, object]) -> dict[str, object]:
+            params = list(payload.get("params") or [])
+            tx_hash = str(params[0] if params else "")
+            return {"transactionHash": tx_hash, "status": "0x1", "blockNumber": "0x23"}
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": receipt_response,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-no-auto-finalize",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-no-auto-finalize-node",
+            token="token-settlement-no-auto-finalize",
+            db_path=str(Path(self.tempdir.name) / "settlement-no-auto-finalize.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            challenge_bond_required_wei=7000000000000000,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-no-auto-finalize",
+                {
+                    "id": "settlement-no-auto-finalize-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "workflow_id": "wf-settlement-no-auto-finalize",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 105,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-no-auto-finalize",
+                "settlement-no-auto-finalize-task-1",
+                "worker-settlement-no-auto-finalize",
+            )
+            self._post(
+                f"{node.base_url}/v1/disputes",
+                "token-settlement-no-auto-finalize",
+                {
+                    "task_id": "settlement-no-auto-finalize-task-1",
+                    "challenger_id": "reviewer-settlement-no-auto-finalize",
+                    "actor_id": "worker-settlement-no-auto-finalize",
+                    "actor_type": "worker",
+                    "reason": "deterministic mismatch",
+                    "evidence_hash": "settlement-no-auto-finalize-evidence",
+                    "severity": "high",
+                },
+            )
+
+            _, preview = self._get(
+                f"{node.base_url}/v1/onchain/settlement-preview?task_id=settlement-no-auto-finalize-task-1"
+            )
+            self.assertEqual(preview["settlement"]["recommended_resolution"], "challengeJob")
+
+            _, summary_before = self._get(f"{node.base_url}/v1/workflows/summary?workflow_id=wf-settlement-no-auto-finalize")
+            self.assertTrue(summary_before["finalizable"])
+            self.assertIsNone(summary_before["persisted_state"])
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-no-auto-finalize",
+                {
+                    "task_id": "settlement-no-auto-finalize-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "challengeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+            self.assertEqual(relay["recommended_resolution"], "challengeJob")
+
+            _, reconciled_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relays/reconcile",
+                "token-settlement-no-auto-finalize",
+                {"relay_id": relay["relay_record_id"]},
+            )
+            reconciled = reconciled_payload["item"]
+            self.assertEqual(reconciled["reconciliation_status"], "confirmed")
+            self.assertFalse(reconciled["auto_finalize"]["attempted"])
+            self.assertEqual(reconciled["auto_finalize"]["reason"], "resolution-not-final")
+            self.assertEqual(reconciled["auto_finalize"]["recommended_resolution"], "challengeJob")
+
+            _, summary_after = self._get(f"{node.base_url}/v1/workflows/summary?workflow_id=wf-settlement-no-auto-finalize")
+            self.assertIsNone(summary_after["persisted_state"])
         finally:
             node.stop()
             rpc.stop()
@@ -3624,6 +4887,99 @@ class NodeIntegrationTests(unittest.TestCase):
 
             completed = self._wait_for_queue_item_status(node, item["id"], status="completed", timeout=3.0)
             self.assertEqual(completed["attempts"], 1)
+            self.assertEqual(len(rpc.calls), 2)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_settlement_relay_queue_max_in_flight_blocks_extra_claims(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-max-in-flight",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-max-in-flight-node",
+            token="token-settlement-max-in-flight",
+            db_path=str(Path(self.tempdir.name) / "settlement-max-in-flight.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0,
+            settlement_relay_max_in_flight=1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-max-in-flight",
+                {
+                    "id": "settlement-max-in-flight-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 47,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-max-in-flight",
+                "settlement-max-in-flight-task-1",
+                "worker-settlement-max-in-flight",
+            )
+            _, first_queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-max-in-flight",
+                {
+                    "task_id": "settlement-max-in-flight-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                },
+            )
+            _, second_queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-max-in-flight",
+                {
+                    "task_id": "settlement-max-in-flight-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xcccc"},
+                        {"action": "completeJob", "raw_transaction": "0xdddd"},
+                    ],
+                    "rpc_url": rpc.url,
+                },
+            )
+
+            running = node.node.store.claim_next_settlement_relay_queue_item(max_in_flight=1)
+            assert running is not None
+            self.assertEqual(running["id"], first_queued["item"]["id"])
+            blocked = node.node.store.claim_next_settlement_relay_queue_item(max_in_flight=1)
+            self.assertIsNone(blocked)
+
+            processed = node.node.process_settlement_relay_queue(max_items=1)
+            self.assertEqual(processed, [])
+            self.assertEqual(len(rpc.calls), 0)
+
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["stats"]["settlement_relay_queue_running"], 1)
+            self.assertEqual(health["stats"]["settlement_relay_queue_queued"], 1)
+
+            node.node.store.complete_settlement_relay_queue_item(running["id"])
+            processed = node.node.process_settlement_relay_queue(max_items=1)
+            self.assertEqual(len(processed), 1)
+            completed = node.node.store.get_settlement_relay_queue_item(second_queued["item"]["id"])
+            assert completed is not None
+            self.assertEqual(completed["status"], "completed")
             self.assertEqual(len(rpc.calls), 2)
         finally:
             node.stop()

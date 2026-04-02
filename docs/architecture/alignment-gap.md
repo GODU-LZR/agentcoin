@@ -84,7 +84,7 @@ The current repository now has lightweight JSON-LD style `semantics` on cards an
 
 It now also has a first capability schema and alias/implied-role matching layer, so the gap is narrower than before, but still clearly not complete semantic interoperability.
 
-### 2. PoAW and economic settlement are still mostly conceptual
+### 2. PoAW and economic settlement are still partially local and not yet chain-native
 
 The blueprint expects:
 
@@ -94,16 +94,31 @@ The blueprint expects:
 - native reward issuance
 - staking and slashing
 
-The repository now has a first local PoAW-style score-event ledger, but it still has no real settlement engine, no token logic, no chain-backed PoAW evaluator, and no staking/slashing contract integration in the live runtime path.
+The repository now goes meaningfully beyond pure concept. It has:
 
-### 3. Decentralization is still MVP-grade, not full network-grade
+- a local PoAW-style score-event ledger
+- challenge-open / upheld / dismissed event flows
+- local challenger bond status transitions
+- dispute committee quorum and escalation logic
+- settlement relay queue, replay, and reconciliation
 
-The current runtime is still a practical local-first coordinator model. It now has a local reputation / policy-violation / quarantine skeleton, but it does not yet implement:
+What it still lacks is the chain-native authority layer:
+
+- no live staking or slashing contract integration in the runtime path
+- no on-chain challenger bond custody
+- no chain-native finality beyond the current reconciliation-driven workflow auto-finalize hook
+- no direct settlement-ledger commit into dedicated PoAW / reputation governance contracts
+- no token or vault-based reward issuance
+
+### 3. Decentralization and governance are still MVP-grade, not full network-grade
+
+The current runtime is still a practical local-first coordinator model. It now has a stronger governance lane than before, including local reputation, policy violations, challenge bonds, dispute committee voting, and escalated dispute state, but it does not yet implement:
 
 - decentralized leader election
 - hierarchical swarm topology
 - anti-cartel reputation logic
 - real distributed consensus
+- chain-native or DAO-native committee finality
 
 ### 4. Security execution layer is still software-first, not TEE-grade
 
@@ -138,16 +153,16 @@ If the goal is to converge back toward the original blueprint, the most importan
 
 1. JSON-LD / ontology-backed capability and task semantics
 2. stronger signed identity and envelope verification beyond the current HMAC MVP
-3. PoAW scoring and settlement pipeline
+3. move local challenge / bond / replay control loops into chain-backed settlement authority
 4. stronger execution isolation and attestation
 5. fuller MCP / A2A bridge adapters and additional protocol coverage
 
 ## Recommended Next Completion Path
 
-1. finish Git-native review and approval policy
+1. finish the remaining architecture and alignment docs around committee / bond / replay
 2. upgrade signed envelopes and peer identity from shared-secret HMAC to stronger asymmetric trust
 3. add protocol bridge layer for MCP / A2A-style agents
 4. add semantic capability schema
-5. then implement PoAW and settlement
+5. move from local PoAW and replay control loops into chain-backed settlement authority
 
 This keeps the current codebase on a realistic engineering path while remaining faithful to the original blueprint.

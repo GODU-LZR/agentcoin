@@ -151,6 +151,50 @@ def build_challenge_evidence(
     return evidence
 
 
+def build_settlement_ledger_receipt(
+    task: dict[str, Any],
+    *,
+    ledger_id: str,
+    ledger_hash: str,
+    chain_id: int,
+    job_id: int | None,
+    job_ref: str | None,
+    worker_id: str | None,
+    worker_did: str | None,
+    poaw_summary: dict[str, Any],
+    reputation: dict[str, Any],
+    violation_summary: dict[str, Any],
+    dispute_summary: dict[str, Any],
+    settlement_summary: dict[str, Any],
+    commit_projection: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = _base_receipt(
+        "agentcoin:SettlementLedgerReceipt",
+        task_id=str(task.get("id") or ""),
+        workflow_id=str(task.get("workflow_id") or ""),
+        worker_id=worker_id,
+        branch=str(task.get("branch") or ""),
+        revision=int(task.get("revision") or 0),
+    )
+    receipt.update(
+        {
+            "ledger_id": ledger_id,
+            "ledger_hash": ledger_hash,
+            "chain_id": chain_id,
+            "job_id": job_id,
+            "job_ref": job_ref,
+            "worker_did": worker_did,
+            "poaw_summary": dict(poaw_summary or {}),
+            "reputation": dict(reputation or {}),
+            "violation_summary": dict(violation_summary or {}),
+            "dispute_summary": dict(dispute_summary or {}),
+            "settlement_summary": dict(settlement_summary or {}),
+            "commit_projection": dict(commit_projection or {}),
+        }
+    )
+    return receipt
+
+
 def build_settlement_relay_receipt(
     relay: dict[str, Any],
     *,
@@ -180,6 +224,7 @@ def build_settlement_relay_receipt(
             "final_status": relay.get("final_status"),
             "submitted_steps": list(relay.get("submitted_steps") or []),
             "failures": list(relay.get("failures") or []),
+            "settlement_ledger": dict(relay.get("settlement_ledger") or {}),
             "transport": dict(relay.get("transport") or {}),
         }
     )
@@ -259,6 +304,37 @@ def receipt_examples() -> dict[str, Any]:
             severity="medium",
             dispute_id="dispute-1",
         ),
+        "settlement_ledger_receipt": build_settlement_ledger_receipt(
+            {
+                "id": "task-code-1",
+                "workflow_id": "wf-1",
+                "branch": "main",
+                "revision": 1,
+            },
+            ledger_id="settlement-ledger:task-code-1:abc123",
+            ledger_hash="abc123",
+            chain_id=97,
+            job_id=42,
+            job_ref="bnb:97:0xescrow:42",
+            worker_id="worker-1",
+            worker_did="did:agentcoin:worker-1",
+            poaw_summary={"event_count": 2, "total_points": 14},
+            reputation={"score": 100, "violations": 0},
+            violation_summary={"count": 0, "severity_counts": {}, "sources": []},
+            dispute_summary={"count": 0, "status_counts": {}, "items": []},
+            settlement_summary={
+                "recommended_resolution": "completeJob",
+                "recommended_sequence": ["submitWork", "completeJob"],
+                "score": 84,
+            },
+            commit_projection={
+                "supported_now": True,
+                "current_contract": "BountyEscrow",
+                "current_actions": ["submitWork", "completeJob"],
+                "future_contracts": ["PoAWScorebook", "ReputationEventLedger"],
+                "gaps": [],
+            },
+        ),
         "settlement_relay_receipt": build_settlement_relay_receipt(
             {
                 "task_id": "task-code-1",
@@ -277,6 +353,7 @@ def receipt_examples() -> dict[str, Any]:
                 "final_status": "completed",
                 "submitted_steps": [],
                 "failures": [],
+                "settlement_ledger": {"ledger_id": "settlement-ledger:task-code-1:abc123", "ledger_hash": "abc123"},
                 "transport": {"profile": "direct"},
             },
             node_id="agentcoin-local",

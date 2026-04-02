@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import difflib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -35,10 +37,31 @@ class PeerConfig:
     signing_secret: str | None = None
     identity_principal: str | None = None
     identity_public_key: str | None = None
+    identity_public_keys: list[str] = field(default_factory=list)
+    identity_revoked_public_keys: list[str] = field(default_factory=list)
     overlay_endpoint: str | None = None
     overlay_addresses: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     enabled: bool = True
+
+    @property
+    def revoked_identity_public_keys(self) -> list[str]:
+        keys: list[str] = []
+        for candidate in self.identity_revoked_public_keys:
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in keys:
+                keys.append(normalized)
+        return keys
+
+    @property
+    def trusted_identity_public_keys(self) -> list[str]:
+        revoked = set(self.revoked_identity_public_keys)
+        keys: list[str] = []
+        for candidate in [self.identity_public_key, *self.identity_public_keys]:
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in revoked and normalized not in keys:
+                keys.append(normalized)
+        return keys
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -58,10 +81,14 @@ class NodeConfig:
     identity_principal: str | None = None
     identity_private_key_path: str | None = None
     identity_public_key: str | None = None
+    identity_public_keys: list[str] = field(default_factory=list)
+    identity_revoked_public_keys: list[str] = field(default_factory=list)
+    config_path: str | None = field(default=None, repr=False, compare=False)
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
     sync_interval_seconds: int = 15
     settlement_relay_poll_seconds: float = 2.0
+    settlement_relay_max_in_flight: int = 1
     max_body_bytes: int = 262144
     outbox_max_attempts: int = 5
     task_retry_limit: int = 3
@@ -95,6 +122,25 @@ class NodeConfig:
     @property
     def resolved_identity_public_key(self) -> str | None:
         return resolve_public_key(private_key_path=self.identity_private_key_path, public_key=self.identity_public_key)
+
+    @property
+    def advertised_identity_public_keys(self) -> list[str]:
+        revoked = set(self.advertised_identity_revoked_public_keys)
+        keys: list[str] = []
+        for candidate in [self.resolved_identity_public_key, *self.identity_public_keys]:
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in revoked and normalized not in keys:
+                keys.append(normalized)
+        return keys
+
+    @property
+    def advertised_identity_revoked_public_keys(self) -> list[str]:
+        keys: list[str] = []
+        for candidate in self.identity_revoked_public_keys:
+            normalized = str(candidate or "").strip()
+            if normalized and normalized not in keys:
+                keys.append(normalized)
+        return keys
 
     @property
     def card(self) -> AgentCard:
@@ -135,6 +181,7 @@ class NodeConfig:
                 "peer_health_cooldown": f"{self.base_url}/v1/peer-health/cooldown",
                 "peer_health_blacklist": f"{self.base_url}/v1/peer-health/blacklist",
                 "peer_health_clear": f"{self.base_url}/v1/peer-health/clear",
+                "peer_identity_trust_apply": f"{self.base_url}/v1/peers/identity-trust/apply",
                 "disputes": f"{self.base_url}/v1/disputes",
                 "disputes_vote": f"{self.base_url}/v1/disputes/vote",
                 "git_status": f"{self.base_url}/v1/git/status" if self.git_root else "",
@@ -163,6 +210,8 @@ class NodeConfig:
                 "scheme": "ssh-ed25519" if self.resolved_identity_public_key and self.identity_principal else "",
                 "principal": self.identity_principal,
                 "public_key": self.resolved_identity_public_key,
+                "public_keys": self.advertised_identity_public_keys,
+                "revoked_public_keys": self.advertised_identity_revoked_public_keys,
                 "did": self.onchain.local_did,
                 "controller_address": self.onchain.local_controller_address,
             },
@@ -182,8 +231,146 @@ def load_config(path: str | None) -> NodeConfig:
     if not path:
         return NodeConfig()
 
+    resolved_path = str(Path(path).resolve())
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     data["peers"] = [PeerConfig(**peer) for peer in data.get("peers", [])]
     data["network"] = OutboundNetworkConfig(**data.get("network", {}))
     data["onchain"] = OnchainBindings(**data.get("onchain", {}))
-    return NodeConfig(**data)
+    return NodeConfig(config_path=resolved_path, **data)
+
+
+def _assign_optional_text(payload: dict[str, Any], key: str, value: str | None) -> None:
+    normalized = str(value or "").strip()
+    if normalized:
+        payload[key] = normalized
+    else:
+        payload.pop(key, None)
+
+
+def _assign_optional_list(payload: dict[str, Any], key: str, values: list[str]) -> None:
+    normalized_values = [str(value or "").strip() for value in values if str(value or "").strip()]
+    if normalized_values:
+        payload[key] = normalized_values
+    else:
+        payload.pop(key, None)
+
+
+def _render_config_payload(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def _update_peer_identity_payload(
+    payload: dict[str, Any],
+    *,
+    principal: str | None,
+    trusted_public_keys: list[str],
+    revoked_public_keys: list[str],
+) -> dict[str, Any]:
+    _assign_optional_text(payload, "identity_principal", principal)
+    _assign_optional_text(payload, "identity_public_key", trusted_public_keys[0] if trusted_public_keys else None)
+    _assign_optional_list(payload, "identity_public_keys", trusted_public_keys[1:])
+    _assign_optional_list(payload, "identity_revoked_public_keys", revoked_public_keys)
+    return dict(payload)
+
+
+def _build_peer_identity_config_update(
+    path: str,
+    *,
+    peer_id: str,
+    principal: str | None,
+    trusted_public_keys: list[str],
+    revoked_public_keys: list[str],
+) -> dict[str, Any]:
+    config_path = Path(path)
+    before_data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    peers = before_data.get("peers")
+    if not isinstance(peers, list):
+        raise ValueError("config file does not contain a peers list")
+
+    after_data = copy.deepcopy(before_data)
+    after_peers = after_data.get("peers")
+    if not isinstance(after_peers, list):
+        raise ValueError("config file does not contain a peers list")
+
+    for index, peer_payload in enumerate(after_peers):
+        if str(peer_payload.get("peer_id") or "").strip() != peer_id:
+            continue
+
+        before_peer = dict(peers[index])
+        after_peer = _update_peer_identity_payload(
+            peer_payload,
+            principal=principal,
+            trusted_public_keys=trusted_public_keys,
+            revoked_public_keys=revoked_public_keys,
+        )
+        before_text = _render_config_payload(before_data)
+        after_text = _render_config_payload(after_data)
+        resolved_path = str(config_path.resolve())
+        diff = "\n".join(
+            difflib.unified_diff(
+                before_text.splitlines(),
+                after_text.splitlines(),
+                fromfile=resolved_path,
+                tofile=resolved_path,
+                lineterm="",
+            )
+        )
+        return {
+            "config_path": resolved_path,
+            "before_peer": before_peer,
+            "after_peer": after_peer,
+            "changed": before_text != after_text,
+            "diff": diff,
+            "rendered_config": after_text,
+        }
+
+    raise KeyError(peer_id)
+
+
+def preview_peer_identity_config_update(
+    path: str,
+    *,
+    peer_id: str,
+    principal: str | None,
+    trusted_public_keys: list[str],
+    revoked_public_keys: list[str],
+) -> dict[str, Any]:
+    update = _build_peer_identity_config_update(
+        path,
+        peer_id=peer_id,
+        principal=principal,
+        trusted_public_keys=trusted_public_keys,
+        revoked_public_keys=revoked_public_keys,
+    )
+    return {
+        "config_path": update["config_path"],
+        "before_peer": update["before_peer"],
+        "after_peer": update["after_peer"],
+        "changed": update["changed"],
+        "diff": update["diff"],
+    }
+
+
+def persist_peer_identity_config(
+    path: str,
+    *,
+    peer_id: str,
+    principal: str | None,
+    trusted_public_keys: list[str],
+    revoked_public_keys: list[str],
+) -> dict[str, Any]:
+    config_path = Path(path)
+    update = _build_peer_identity_config_update(
+        path,
+        peer_id=peer_id,
+        principal=principal,
+        trusted_public_keys=trusted_public_keys,
+        revoked_public_keys=revoked_public_keys,
+    )
+    config_path.write_text(str(update["rendered_config"]), encoding="utf-8")
+    return {
+        "config_path": update["config_path"],
+        "peer": update["after_peer"],
+        "changed": update["changed"],
+        "diff": update["diff"],
+    }

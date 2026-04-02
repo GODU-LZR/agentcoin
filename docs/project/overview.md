@@ -36,12 +36,16 @@ The current repository contains:
 - `agentcoin/`: runtime source code
 - `configs/`: example configuration
 - `docs/architecture/`: architecture and connectivity notes
+- `docs/architecture/committee-bond-replay.md`: local governance, bond, replay, and reconciliation control-plane architecture
 - `docs/architecture/onchain-roadmap.md`: BNB Chain trust and settlement rollout plan
 - `docs/project/`: project-level documentation
+- `docs/project/blueprint-continuous-improvement-checklist.md`: long-horizon blueprint convergence checklist
+- `docs/project/multi-node-demo.md`: local Docker Compose topology for planner, peers, and worker loops
 - `docs/testing/`: testing strategy and verification notes
 - `docs/whitepaper/`: multilingual whitepapers
 - `contracts/`: Solidity scaffold for the BNB Chain trust and settlement layer
 - `compose.yaml`: local Docker Compose entrypoint
+- `compose.multi-node.yaml`: local multi-node demo compose for peer routing and worker loops
 
 ## Runtime Components
 
@@ -348,6 +352,8 @@ Best for development, debugging, and early adapter work.
 
 Run multiple nodes on loopback or LAN to test routing and workflow behavior.
 
+The repository now also includes a reproducible Docker Compose version of that topology with one planner node, two peer nodes, and dedicated worker loops for remote dispatch verification.
+
 ### Encrypted overlay network
 
 Recommended medium-term direction:
@@ -357,9 +363,11 @@ Recommended medium-term direction:
 - DERP fallback
 - AgentCoin protocol over overlay addresses
 
+The connectivity architecture doc now also includes a concrete Phase 14 deployment example: a minimal Headscale bootstrap, ACL skeleton, two-node overlay config shape, and smoke-test flow for AgentCoin over tailnet addresses.
+
 ## Current Limitations
 
-- no key rotation, revocation, or trust-chain management yet
+- SSH identity rotation now supports staged multi-key trust plus explicit revoked-key lists, peer sync surfaces trust drift for operator review, and operators can preview trust diffs, apply trust updates with governance receipts, and optionally persist them back to the loaded JSON config, but stronger trust bootstrap and richer trust-chain management are not implemented yet
 - no plugin adapter marketplace yet
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade
@@ -377,11 +385,11 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 
 ## Near-Term Roadmap
 
-1. Upgrade HMAC signatures to stronger asymmetric identity and key rotation
-2. Expand MCP / A2A bridges and add custom runtime adapters
-3. Expand workflow governance, rejection handling, and policy controls
-4. Harden authN/authZ, secret handling, and outbound ACLs
-5. Add PoAW, reputation, and settlement scaffolding
+1. Add stronger trust bootstrap and richer trust-chain management on top of the current staged SSH key rotation, explicit revocation, sync-time trust-drift visibility, and operator apply / config reconciliation flow
+2. Expand MCP / A2A bridge coverage and add more production-grade runtime adapters
+3. Harden authN/authZ, secret handling, and outbound ACL policy
+4. Move local challenge, PoAW, reputation, and settlement control loops toward chain-backed authority
+5. Add automated Docker smoke coverage for the local multi-node demo and related deployment paths
 
 ## Document Map
 

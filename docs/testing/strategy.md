@@ -15,6 +15,11 @@ The current test scope covers:
 - explicit message ACK validation
 - signed peer-card sync and inbox signature verification
 - SSH identity signed delivery receipt verification
+- staged SSH identity rotation via additional trusted peer public keys
+- explicit SSH identity key revocation via peer-side revoked-key lists
+- peer sync trust-drift reporting for pending trust and pending revocation updates
+- operator-applied peer identity trust updates with governance-action audit receipts and optional config persistence
+- trust-update preview and config diff generation without runtime mutation or governance audit writes
 - outbound proxy bypass and explicit proxy selection rules
 - bridge registry plus MCP / A2A import-export flow
 - MCP tool-call and tool-result schema normalization
@@ -26,8 +31,12 @@ The current test scope covers:
 - runtime adapter execution for Ollama chat and OpenAI-compatible gateways
 - settlement relay queue persistence and replay-inspect visibility
 - background settlement relay queue execution, delayed scheduling, and retry/dead-letter transitions
+- settlement relay queue max in-flight gating when another relay item is already running
 - operator pause / resume and dead-letter requeue for settlement relay queue items
-- settlement relay reconciliation via transaction receipt fetch and replay-inspect state exposure
+- dispute API and replay-inspect contract alignment projection for current `BountyEscrow` versus future `ChallengeManager` paths
+- signed settlement ledger generation from task PoAW summary, reputation, violations, disputes, and current on-chain receipt state
+- settlement RPC plan, raw bundle, and relay receipts now carry settlement ledger references for replay and commit inspection
+- settlement relay reconciliation via transaction receipt fetch, replay-inspect state exposure, and workflow auto-finalize on confirmed final settlement
 - OpenAI-compatible structured output forwarding and parsed JSON normalization
 - semantic card and task shape exposure
 - receipt schema examples and subjective review / challenge evidence receipts
@@ -57,6 +66,17 @@ Current automated checks include:
 - `python -m py_compile` syntax checks
 - GitHub Actions CI on macOS, Linux, and Windows
 
+Representative scenarios already exercised by the CI `unittest discover -s tests -v` run include:
+
+- committee vote resolution and escalation
+- settlement ledger endpoint, replay-inspect exposure, and ledger reference propagation across plan / bundle / relay
+- settlement relay replay from persisted failure history
+- settlement relay reconciliation via transaction receipt fetch
+- dispatch regression around blacklist / healthy-peer preference
+- weak-network long-run recovery where the background sync loop sees repeated peer failures, then later syncs cards and delivers queued outbox once the peer returns
+
+Phase 12 CI coverage is now closed by representative tests for committee, settlement replay, relay reconciliation, dispatch regression, and weak-network long-run recovery.
+
 Manual validation is still used for exploratory and design-phase scenarios that are not yet encoded as stable tests.
 
 ## Minimum Verification Matrix
@@ -72,6 +92,7 @@ Manual validation is still used for exploratory and design-phase scenarios that 
 
 - direct Python process
 - Docker Compose
+- multi-node Docker Compose demo
 - multi-node local loopback
 - overlay-network style peer addressing
 
@@ -91,6 +112,7 @@ The following behaviors are now covered either by automated tests or previously 
 
 - peer card sync and peer-id based delivery
 - signed card verification and signed inbox acceptance / rejection
+- staged SSH key rotation accepts pre-trusted replacement keys, rejects untrusted replacements, rejects explicitly revoked keys, surfaces sync-time trust drift for operator review, including principal mismatch and stale trusted-key cleanup, and allows operator trust preview, principal adoption, governance-audited apply, stale-key removal, and optional config persistence
 - lease queue prevents duplicate claim by multiple workers
 - inbox dedupe and explicit delivery ACK
 - planner dispatch to matching peer capability
@@ -101,11 +123,16 @@ The following behaviors are now covered either by automated tests or previously 
 - workflow finalization persistence
 - remote dispatch fallback to local execution after outbox dead-letter
 - remote dispatch dead-letter when no valid local fallback exists
+- background sync loop tolerates a temporarily offline peer and eventually delivers queued remote work after the peer returns
 - delayed retry and task dead-letter after retry exhaustion
 - queued settlement relay jobs run in the background and persist completed relay ids
+- settlement relay queue max-in-flight now blocks additional claims while another relay item is already running
 - settlement relay queue respects initial delay and retries failed jobs before dead-lettering them
 - operators can pause queued settlement relay jobs, resume them later, and requeue dead-lettered jobs with updated relay parameters
+- settlement ledger receipts are signed, exposed through the node API, reflected in replay-inspect, and attached to settlement plans, raw bundles, and relay receipts
 - persisted settlement relay history can now reconcile chain receipts into `confirmed`, `reverted`, or `unknown`
+- dispute responses and replay-inspect now expose contract alignment for dispute-driven `challengeJob` / `slashJob` settlement, challenger bond custody gaps, and committee escalation handoff
+- confirmed final settlement relays can now auto-finalize an associated workflow state, while `challengeJob` relays remain non-final and do not auto-finalize
 - replay-inspect now exposes the latest settlement reconciliation status and receipt count for a task
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
@@ -234,7 +261,23 @@ agentcoin-worker --node-url http://127.0.0.1:8080 --token change-me --worker-id 
 
 ```bash
 docker compose up --build
+docker compose -f compose.multi-node.yaml up --build
 ```
+
+### Multi-node demo compose
+
+The repository now also includes a reproducible local multi-node compose topology in `compose.multi-node.yaml`.
+
+Minimum manual verification for that stack:
+
+1. start the stack with `docker compose -f compose.multi-node.yaml up --build`
+2. wait for `agentcoin-node-a`, `agentcoin-node-b`, and `agentcoin-node-c` health checks to pass
+3. `POST /v1/peers/sync` against node A and verify peer cards are cached
+4. dispatch one `worker` task from node A and verify node B plus `agentcoin-worker-b` consume it
+5. dispatch one `reviewer` task from node A and verify node C plus `agentcoin-worker-c` consume it
+6. stop the stack with `docker compose -f compose.multi-node.yaml down`
+
+This scenario is currently a manual smoke path rather than an automated CI test because it depends on a local Docker engine being available.
 
 ## Exit Criteria For MVP
 
@@ -255,3 +298,4 @@ The MVP should not be considered stable until:
 5. Add performance and weak-network stress tests
 6. Add operator override and quarantine release coverage
 7. Add signed governance receipt coverage
+8. Add automated coverage for the multi-node compose topology once Docker-based CI jobs are introduced

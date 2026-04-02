@@ -109,7 +109,7 @@ Status legend:
 - `[x]` relay queue persistence
 - `[x]` background settlement relay worker
 - `[x]` relay queue pause / resume
-- `[ ]` relay queue max in-flight
+- `[x]` relay queue max in-flight
 - `[x]` relay queue dead-letter
 - `[x]` operator relay requeue
 
@@ -124,24 +124,24 @@ Status legend:
 
 ## Phase 12
 
-- `[ ]` CI coverage for committee
-- `[ ]` CI coverage for settlement replay
-- `[ ]` CI coverage for relay reconciliation
-- `[ ]` CI coverage for dispatch regression
-- `[ ]` CI coverage for weak-network long-run tests
+- `[x]` CI coverage for committee
+- `[x]` CI coverage for settlement replay
+- `[x]` CI coverage for relay reconciliation
+- `[x]` CI coverage for dispatch regression
+- `[x]` CI coverage for weak-network long-run tests
 
 ## Phase 13
 
-- `[~]` project docs refresh as features land
-- `[~]` testing docs refresh as features land
-- `[ ]` architecture docs for committee / bond / replay
-- `[~]` README multilingual sync
-- `[ ]` alignment-gap refresh
+- `[x]` project docs refresh as features land
+- `[x]` testing docs refresh as features land
+- `[x]` architecture docs for committee / bond / replay
+- `[x]` README multilingual sync
+- `[x]` alignment-gap refresh
 
 ## Phase 14
 
-- `[ ]` challenge bond / committee contract alignment
-- `[ ]` relay reconciliation -> auto finalize
-- `[ ]` `PoAW -> settlement ledger -> on-chain commit`
-- `[ ]` Headscale / overlay deployment examples
-- `[ ]` multi-node demo compose
+- `[x]` challenge bond / committee contract alignment
+- `[x]` relay reconciliation -> auto finalize
+- `[x]` `PoAW -> settlement ledger -> on-chain commit`
+- `[x]` Headscale / overlay deployment examples
+- `[x]` multi-node demo compose

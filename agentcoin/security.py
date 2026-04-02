@@ -165,7 +165,9 @@ def sign_document_with_ssh(
 def verify_document_with_ssh(
     document: dict[str, Any],
     *,
-    public_key: str,
+    public_key: str | None = None,
+    public_keys: list[str] | None = None,
+    revoked_public_keys: list[str] | None = None,
     principal: str,
     expected_namespace: str,
 ) -> dict[str, Any]:
@@ -177,28 +179,59 @@ def verify_document_with_ssh(
     signature_value = str(signature.get("value") or "").strip()
     algorithm = str(signature.get("alg") or IDENTITY_ALGORITHM).strip()
     signature_principal = str(signature.get("principal") or "").strip()
+    claimed_public_key = str(signature.get("public_key") or "").strip()
 
     if not namespace or not signature_value or not signature_principal:
         raise SignatureError("identity signature is incomplete")
+    if algorithm != IDENTITY_ALGORITHM:
+        raise SignatureError("unsupported identity signature algorithm")
     if namespace != expected_namespace:
         raise SignatureError(f"unexpected identity namespace: {namespace}")
     if signature_principal != principal:
         raise SignatureError(f"unexpected identity principal: {signature_principal}")
 
-    payload = _canonical_json(_unsigned_document(document)).encode("utf-8")
-    with tempfile.TemporaryDirectory(prefix="agentcoin-verify-") as temp_dir:
-        signature_path = Path(temp_dir) / "payload.sig"
-        allowed_signers_path = Path(temp_dir) / "allowed_signers"
-        signature_path.write_text(signature_value, encoding="utf-8")
-        allowed_signers_path.write_text(f"{principal} {public_key.strip()}\n", encoding="utf-8")
-        _run_ssh_keygen(
-            ["-Y", "verify", "-f", str(allowed_signers_path), "-I", principal, "-n", namespace, "-s", str(signature_path)],
-            input_bytes=payload,
-        )
+    revoked_keys: list[str] = []
+    for candidate in revoked_public_keys or []:
+        normalized = str(candidate or "").strip()
+        if normalized and normalized not in revoked_keys:
+            revoked_keys.append(normalized)
+    if claimed_public_key and claimed_public_key in revoked_keys:
+        raise SignatureError("identity signature uses a revoked public key")
 
-    return {
-        "verified": True,
-        "alg": algorithm,
-        "principal": principal,
-        "namespace": namespace,
-    }
+    trusted_keys: list[str] = []
+    for candidate in [public_key, *(public_keys or [])]:
+        normalized = str(candidate or "").strip()
+        if normalized and normalized not in revoked_keys and normalized not in trusted_keys:
+            trusted_keys.append(normalized)
+    if not trusted_keys:
+        if revoked_keys:
+            raise SignatureError("no non-revoked identity public keys are configured")
+        raise SignatureError("no trusted identity public keys are configured")
+
+    payload = _canonical_json(_unsigned_document(document)).encode("utf-8")
+    last_error: SignatureError | None = None
+    for trusted_key in trusted_keys:
+        try:
+            with tempfile.TemporaryDirectory(prefix="agentcoin-verify-") as temp_dir:
+                signature_path = Path(temp_dir) / "payload.sig"
+                allowed_signers_path = Path(temp_dir) / "allowed_signers"
+                signature_path.write_text(signature_value, encoding="utf-8")
+                allowed_signers_path.write_text(f"{principal} {trusted_key}\n", encoding="utf-8")
+                _run_ssh_keygen(
+                    ["-Y", "verify", "-f", str(allowed_signers_path), "-I", principal, "-n", namespace, "-s", str(signature_path)],
+                    input_bytes=payload,
+                )
+            return {
+                "verified": True,
+                "alg": algorithm,
+                "principal": principal,
+                "namespace": namespace,
+                "claimed_public_key": claimed_public_key,
+                "matched_public_key": trusted_key,
+                "trusted_key_count": len(trusted_keys),
+                "revoked_key_count": len(revoked_keys),
+            }
+        except SignatureError as exc:
+            last_error = exc
+
+    raise last_error or SignatureError("identity signature verification failed")

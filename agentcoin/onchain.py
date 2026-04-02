@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from agentcoin.models import utc_now
-from agentcoin.receipts import build_challenge_evidence, build_onchain_result_receipt
+from agentcoin.receipts import build_challenge_evidence, build_onchain_result_receipt, build_settlement_ledger_receipt
 
 
 def _canonical_json(document: dict[str, Any]) -> str:
@@ -398,6 +398,145 @@ class OnchainRuntime:
             intended_contract_action=action,
         )
 
+    @staticmethod
+    def _violation_summary(violations: list[dict[str, Any]]) -> dict[str, Any]:
+        severity_counts: dict[str, int] = {}
+        sources: set[str] = set()
+        for item in violations:
+            severity = str(item.get("severity") or "unknown").strip().lower() or "unknown"
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            source = str(item.get("source") or "").strip()
+            if source:
+                sources.add(source)
+        return {
+            "count": len(violations),
+            "severity_counts": severity_counts,
+            "sources": sorted(sources),
+        }
+
+    @staticmethod
+    def _dispute_summary(disputes: list[dict[str, Any]]) -> dict[str, Any]:
+        status_counts: dict[str, int] = {}
+        bonded_count = 0
+        committee_count = 0
+        items: list[dict[str, Any]] = []
+        for item in disputes:
+            status = str(item.get("status") or "unknown").strip().lower() or "unknown"
+            status_counts[status] = status_counts.get(status, 0) + 1
+            bond_amount = str(item.get("bond_amount_wei") or "0")
+            committee_quorum = int(item.get("committee_quorum") or 0)
+            if bond_amount != "0":
+                bonded_count += 1
+            if committee_quorum > 0:
+                committee_count += 1
+            items.append(
+                {
+                    "id": item.get("id"),
+                    "status": status,
+                    "bond_amount_wei": bond_amount,
+                    "bond_status": str(item.get("bond_status") or "none"),
+                    "committee_quorum": committee_quorum,
+                    "evidence_hash": item.get("evidence_hash"),
+                }
+            )
+        return {
+            "count": len(disputes),
+            "status_counts": status_counts,
+            "bonded_count": bonded_count,
+            "committee_count": committee_count,
+            "items": items,
+        }
+
+    def settlement_ledger(
+        self,
+        task: dict[str, Any],
+        *,
+        poaw_summary: dict[str, Any],
+        reputation: dict[str, Any] | None = None,
+        violations: list[dict[str, Any]] | None = None,
+        disputes: list[dict[str, Any]] | None = None,
+        settlement_preview: dict[str, Any],
+    ) -> dict[str, Any]:
+        reputation = dict(reputation or {})
+        violations = list(violations or [])
+        disputes = list(disputes or [])
+        onchain = dict(task.get("payload", {}).get("_onchain") or {})
+        result = dict(task.get("result") or {})
+        receipt = dict(result.get("_onchain_receipt") or {})
+        worker_id = str(result.get("worker_id") or task.get("locked_by") or "").strip() or None
+        worker_did = str(onchain.get("local_did") or self.bindings.local_did or "").strip() or None
+        violation_summary = self._violation_summary(violations)
+        dispute_summary = self._dispute_summary(disputes)
+        settlement_summary = {
+            "recommended_resolution": str(settlement_preview.get("recommended_resolution") or ""),
+            "recommended_sequence": list(settlement_preview.get("recommended_sequence") or []),
+            "score": int(settlement_preview.get("score") or 0),
+            "score_breakdown": dict(settlement_preview.get("score_breakdown") or {}),
+            "slash_amount_wei": str(settlement_preview.get("slash_amount_wei") or "0"),
+            "open_dispute_count": int(settlement_preview.get("open_dispute_count") or 0),
+            "escalated_dispute_count": int(settlement_preview.get("escalated_dispute_count") or 0),
+            "upheld_dispute_count": int(settlement_preview.get("upheld_dispute_count") or 0),
+            "dismissed_dispute_count": int(settlement_preview.get("dismissed_dispute_count") or 0),
+            "settlement_policy": dict(settlement_preview.get("settlement_policy") or {}),
+        }
+        future_contracts: list[str] = []
+        gaps: list[str] = []
+        if int(poaw_summary.get("event_count") or 0) > 0:
+            future_contracts.append("PoAWScorebook")
+            gaps.append("PoAW score events remain local until PoAWScorebook exists")
+        if reputation or violation_summary["count"] > 0:
+            future_contracts.append("ReputationEventLedger")
+            gaps.append("reputation and policy-violation deltas remain local until ReputationEventLedger exists")
+        if dispute_summary["count"] > 0 and (
+            dispute_summary["bonded_count"] > 0 or dispute_summary["committee_count"] > 0 or dispute_summary["status_counts"].get("escalated", 0) > 0
+        ):
+            future_contracts.append("ChallengeManager")
+            gaps.append("challenge bond custody and committee escalation remain local until ChallengeManager exists")
+        commit_projection = {
+            "supported_now": bool(self.enabled and onchain and receipt and settlement_summary["recommended_sequence"]),
+            "current_contract": "BountyEscrow" if onchain else None,
+            "current_actions": list(settlement_summary["recommended_sequence"]),
+            "result_receipt_uri": receipt.get("receipt_uri"),
+            "submission_hash": receipt.get("submission_hash"),
+            "future_contracts": future_contracts,
+            "gaps": gaps,
+        }
+        hash_basis = {
+            "task_id": str(task.get("id") or ""),
+            "workflow_id": str(task.get("workflow_id") or ""),
+            "branch": str(task.get("branch") or ""),
+            "revision": int(task.get("revision") or 0),
+            "chain_id": self.bindings.chain_id,
+            "job_id": onchain.get("job_id"),
+            "job_ref": onchain.get("job_ref"),
+            "worker_id": worker_id,
+            "worker_did": worker_did,
+            "poaw_summary": dict(poaw_summary or {}),
+            "reputation": reputation,
+            "violation_summary": violation_summary,
+            "dispute_summary": dispute_summary,
+            "settlement_summary": settlement_summary,
+            "commit_projection": commit_projection,
+        }
+        ledger_hash = sha256_hex(hash_basis)
+        ledger_id = f"settlement-ledger:{str(task.get('id') or 'task')}:{ledger_hash[:16]}"
+        return build_settlement_ledger_receipt(
+            task,
+            ledger_id=ledger_id,
+            ledger_hash=ledger_hash,
+            chain_id=self.bindings.chain_id,
+            job_id=onchain.get("job_id"),
+            job_ref=onchain.get("job_ref"),
+            worker_id=worker_id,
+            worker_did=worker_did,
+            poaw_summary=poaw_summary,
+            reputation=reputation,
+            violation_summary=violation_summary,
+            dispute_summary=dispute_summary,
+            settlement_summary=settlement_summary,
+            commit_projection=commit_projection,
+        )
+
     def _receipt_uri(self, task_id: str | None, submission_hash: str) -> str:
         if self.bindings.receipt_base_uri:
             return f"{self.bindings.receipt_base_uri.rstrip('/')}/{task_id or 'task'}/{submission_hash}.json"
@@ -573,6 +712,7 @@ class OnchainRuntime:
         task: dict[str, Any],
         *,
         settlement_preview: dict[str, Any],
+        settlement_ledger: dict[str, Any] | None = None,
         rpc: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         rpc_options = {
@@ -606,6 +746,13 @@ class OnchainRuntime:
             "workflow_id": task.get("workflow_id"),
             "job_id": task.get("payload", {}).get("_onchain", {}).get("job_id"),
             "recommended_resolution": resolution_action,
+            "settlement_ledger": {
+                "ledger_id": settlement_ledger.get("ledger_id"),
+                "ledger_hash": settlement_ledger.get("ledger_hash"),
+                "receipt_type": settlement_ledger.get("@type"),
+            }
+            if settlement_ledger
+            else None,
             "steps": steps,
             "generated_at": utc_now(),
         }
@@ -654,6 +801,7 @@ class OnchainRuntime:
             "workflow_id": plan.get("workflow_id"),
             "job_id": plan.get("job_id"),
             "recommended_resolution": plan.get("recommended_resolution"),
+            "settlement_ledger": dict(plan.get("settlement_ledger") or {}),
             "resolved_live": bool(plan.get("resolved_live")),
             "step_count": len(bundled_steps),
             "steps": bundled_steps,

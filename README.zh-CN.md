@@ -96,7 +96,9 @@ flowchart TB
 
 ## 当前阶段
 
-当前仓库处于白皮书与架构定义阶段。下一步实现目标是做出一个最小可行网络，先完成节点注册、任务路由、状态持久化、工具调用验证和工作量结算这五个核心闭环。
+当前仓库已经不只是白皮书与架构定义。它现在已经有一套可运行的 MVP 基线：参考节点、任务路由、状态持久化、工具调用验证、PoAW / reputation / dispute 本地控制环、链上 settlement 预览与 relay，以及 Headscale overlay 示例和本地 multi-node compose demo 都已经落地。
+
+当前阶段更准确的描述是：在已有可运行基线之上，继续补齐更强的身份与密钥轮换、更完整的协议桥接，以及把本地治理 / settlement 控制环逐步迁移到链原生 authority。
 
 ## 参考实现
 
@@ -107,7 +109,7 @@ flowchart TB
 - `离线优先`：基于 SQLite 持久化任务、inbox、outbox。
 - `默认安全`：默认仅绑定 `127.0.0.1`，写接口要求 Bearer Token。
 - `签名传输`：capability card 和 task envelope 现在可以带 `HMAC` 签名，供 peer 验签。
-- `非对称身份`：节点现在也可以用兼容 `ssh-keygen` 的 `Ed25519` 密钥为 card、任务和回执签名。
+- `非对称身份`：节点现在也可以用兼容 `ssh-keygen` 的 `Ed25519` 密钥为 card、任务和回执签名，peer 也可以在轮换期间预置信任替换公钥。
 - `兼容多 Agent`：通过通用任务信封和能力名片接口接入不同 Agent。
 
 仓库现在也加入了第一版面向 BNB Chain 的链上骨架：
@@ -188,7 +190,16 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - 预览现在也会暴露带版本号的 settlement policy，以及可配置的 complete/slash threshold
 - 预览现在也会拆出 `local_score`、`review_score`、`network_trust_score`，并可按可配置 challenge threshold 切到 `challengeJob`
 - 开放中的 dispute 现在会把推荐动作切到 `challengeJob`
+- dispute API 返回和 replay-inspect 现在也会暴露 `contract_alignment`，明确当前 `BountyEscrow` 动作，以及 challenger bond / committee outcome 未来切到 `ChallengeManager` 的交接点
 - 这仍然只是签名预览，不会自动广播交易
+
+节点现在也会在本地 PoAW 控制环和链上提交之间产出一个签名 settlement ledger：
+
+- `GET /v1/onchain/settlement-ledger?task_id=...` 会返回 `agentcoin:SettlementLedgerReceipt`
+- ledger 会把 task revision、worker 身份、本地 `PoAW` 汇总、reputation、policy violation、dispute，以及当前 settlement recommendation 固化成一个稳定的 commit artifact
+- `replay-inspect` 现在也会同时返回 `onchain_settlement_ledger`
+- settlement RPC plan、raw bundle 和 relay receipt 现在都会带上 ledger id / hash，便于追踪某次 relay 到底基于哪一份本地状态生成
+- ledger 里的 `commit_projection` 会明确当前可走的 `BountyEscrow` 路径，同时把未来 `PoAWScorebook`、`ReputationEventLedger` 和 `ChallengeManager` 的交接缺口标出来
 
 节点现在也把链上结算 relay 做成了可恢复记录：
 
@@ -197,9 +208,11 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `POST /v1/onchain/settlement-relay-queue` 可把 relay 作业持久化到队列，供后续执行
 - `GET /v1/onchain/settlement-relay-queue` 可查看持久化 relay 队列项
 - 后台 worker 现在会自动消费这些 relay 队列项，并在 `queued`、`running`、`retrying`、`completed`、`dead-letter` 之间推进状态
+- relay queue worker 现在也会遵守可配置的 `settlement_relay_max_in_flight` 上限，避免在共享队列里过量领取作业
 - 运营侧现在也可以暂停队列中的 relay 作业、稍后恢复执行，或把 dead-letter 项带着更新后的 relay 参数重新入队
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` 可查看某个任务的最新 relay 状态
 - `POST /v1/onchain/settlement-relays/reconcile` 现在会为已提交的 tx hash 拉取 `eth_getTransactionReceipt`，并把持久化 relay 历史标记为 `confirmed`、`reverted` 或 `unknown`
+- 当确认后的 relay 属于 `completeJob`、`rejectJob` 或 `slashJob` 这类最终结算动作时，reconciliation 现在也会自动持久化关联 workflow 的终态
 - replay-inspect 现在也会展示任务最新的 settlement reconciliation 状态以及逐步 receipt 快照
 - `POST /v1/onchain/settlement-relays/replay` 可从已记录的失败步继续重放
 - 持久化记录现在会保存 `final_status`、`last_successful_index`、`next_index`、`retry_count`、失败分类、reconciliation 状态和 `confirmed_at`
@@ -227,6 +240,14 @@ agentcoin-node --config configs/node.example.json
 ```bash
 docker compose up --build
 ```
+
+如果要直接跑本地多节点示例，可以使用：
+
+```bash
+docker compose -f compose.multi-node.yaml up --build
+```
+
+详见 [docs/project/multi-node-demo.md](docs/project/multi-node-demo.md)。
 
 自动化测试可以这样运行：
 
@@ -399,7 +420,9 @@ worker 执行层现在也已经感知 bridge：
 
 - 节点可以在 capability card 里公开 `identity_principal` 和公钥材料
 - 如果配置了 `identity_private_key_path`，节点会用 `ssh-keygen -Y sign` 为 card、task envelope 和 delivery receipt 签名
-- 可信 peer 可以用配置里的 `identity_principal` 和 `identity_public_key` 做验签
+- 可信 peer 可以用配置里的 `identity_principal`、轮换期的 `identity_public_keys` 以及显式 `identity_revoked_public_keys` 做验签与撤销控制
+- `POST /v1/peers/sync` 和 `GET /v1/peer-cards` 现在会暴露待信任 / 待撤销的身份漂移，但不会自动信任新上报的 key
+- `POST /v1/peers/identity-trust/apply` 现在还支持 `preview_only` 配置 diff 预览；operator 可以先预览，再应用选定的 trust update、写入 governance receipt，并在节点是通过 `--config` 启动时把结果回写到已加载的配置文件
 - 这样在不引入重依赖的前提下，已经不再只依赖共享密钥
 
 现在也开始正式处理弱网和异常情况：

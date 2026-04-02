@@ -8,6 +8,8 @@ AgentCoin is a proposed decentralized coordination layer for the next generation
 
 This whitepaper defines the core architecture, trust assumptions, and staged rollout path for AgentCoin. It treats interoperability, useful-work settlement, decentralized orchestration, and secure execution as one integrated system.
 
+Implementation note: this whitepaper is the blueprint, not a line-by-line description of the current repository state. The repository already includes an executable MVP baseline with a reference node, local PoAW / dispute / settlement control loops, Headscale overlay deployment examples, and a local multi-node Docker Compose demo. For the current implementation status, see `docs/architecture/implementation-roadmap.md` and `docs/project/overview.md`.
+
 ## 1. Problem Statement
 
 Modern agents are improving quickly, but the deployment model remains fragmented. Most systems are still trapped inside a single vendor stack, a single orchestration process, or a single private runtime. That creates four structural problems:

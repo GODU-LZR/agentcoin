@@ -2148,11 +2148,18 @@ class NodeStore:
         finally:
             conn.close()
 
-    def claim_next_settlement_relay_queue_item(self) -> dict[str, Any] | None:
+    def claim_next_settlement_relay_queue_item(self, *, max_in_flight: int | None = None) -> dict[str, Any] | None:
         now = utc_now()
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            if max_in_flight is not None and int(max_in_flight) > 0:
+                running = conn.execute(
+                    "SELECT COUNT(*) FROM settlement_relay_queue WHERE status = 'running'"
+                ).fetchone()[0]
+                if int(running or 0) >= int(max_in_flight):
+                    conn.commit()
+                    return None
             row = conn.execute(
                 """
                 SELECT id, task_id, status, attempts, max_attempts, next_attempt_at,
@@ -2988,6 +2995,30 @@ class NodeStore:
                     (limit,),
                 ).fetchall()
             return [self._governance_action_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
+    def record_governance_action(
+        self,
+        *,
+        actor_id: str,
+        actor_type: str,
+        action_type: str,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        conn = self._connect()
+        try:
+            action = self._insert_governance_action(
+                conn,
+                actor_id=actor_id,
+                actor_type=actor_type,
+                action_type=action_type,
+                reason=reason,
+                payload=payload,
+            )
+            conn.commit()
+            return action
         finally:
             conn.close()
 

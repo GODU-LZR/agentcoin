@@ -107,7 +107,7 @@ The repository now includes a minimal cross-platform reference node built with P
 - `Offline-first`: uses SQLite-backed local task, inbox, and outbox persistence.
 - `Secure-by-default`: binds to `127.0.0.1` and protects write endpoints with a bearer token.
 - `Signed transport`: capability cards and task envelopes can carry HMAC signatures for peer verification.
-- `Asymmetric identity`: nodes can also sign cards, task envelopes, and delivery receipts with `ssh-keygen` compatible Ed25519 keys.
+- `Asymmetric identity`: nodes can also sign cards, task envelopes, and delivery receipts with `ssh-keygen` compatible Ed25519 keys, and peers can trust staged replacement keys during rotation.
 - `Agent-friendly`: exposes generic task envelopes and capability-card endpoints that can front different agent runtimes.
 
 The repository now also includes a first on-chain scaffold for the BNB Chain track:
@@ -189,7 +189,16 @@ The runtime now also has a first on-chain settlement preview:
 - the preview now separates `local_score`, `review_score`, and `network_trust_score`, and can trigger `challengeJob` from configurable challenge thresholds
 - open disputes can now shift the recommendation toward `challengeJob`
 - resolved disputes now also feed back into local score events and reputation
+- dispute API responses and replay-inspect now expose `contract_alignment` showing the current `BountyEscrow` action plus the future `ChallengeManager` handoff for challenger bonds and committee outcomes
 - the result is a signed operator preview, not an auto-broadcasted settlement
+
+The node now also materializes a signed settlement ledger between local PoAW control loops and chain submission:
+
+- `GET /v1/onchain/settlement-ledger?task_id=...` emits an `agentcoin:SettlementLedgerReceipt`
+- the ledger hashes task revision, worker identity, local `PoAW` summary, reputation, policy violations, disputes, and the current settlement recommendation into one stable commit artifact
+- `replay-inspect` now includes `onchain_settlement_ledger` beside the signed preview
+- settlement RPC plans, raw bundles, and relay receipts now carry the ledger id / hash so operators can trace what exact local state a relay was derived from
+- the ledger's `commit_projection` makes the current `BountyEscrow` path explicit while still marking future `PoAWScorebook`, `ReputationEventLedger`, and `ChallengeManager` handoff gaps
 
 The node can now also expand that preview into a settlement RPC sequence:
 
@@ -209,9 +218,11 @@ It can now also relay that bundle sequentially:
 - `POST /v1/onchain/settlement-relay-queue` persists relay jobs for later execution
 - `GET /v1/onchain/settlement-relay-queue` lists persisted relay queue items
 - a background worker now drains queued relay jobs and moves them through `queued`, `running`, `retrying`, `completed`, and `dead-letter`
+- relay queue workers now honor a configurable `settlement_relay_max_in_flight` cap before claiming more jobs from the shared queue
 - operators can now pause queued relay jobs, resume them later, and requeue dead-lettered jobs with updated relay parameters
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` returns the latest persisted relay state for a task
 - `POST /v1/onchain/settlement-relays/reconcile` now fetches `eth_getTransactionReceipt` for submitted tx hashes and marks persisted relay history as `confirmed`, `reverted`, or `unknown`
+- confirmed relay reconciliation can now auto-finalize a linked workflow once the relay represents a final settlement action such as `completeJob`, `rejectJob`, or `slashJob`
 - replay-inspect now includes the latest settlement reconciliation state plus per-step receipt snapshots
 - `POST /v1/onchain/settlement-relays/replay` can resume a failed settlement relay from the stored failure index
 - persisted relay records now track `final_status`, `last_successful_index`, `next_index`, `retry_count`, failure category, reconciliation status, and `confirmed_at`
@@ -319,6 +330,14 @@ Docker Compose is also available:
 docker compose up --build
 ```
 
+For a local multi-node demo with one planner node, two peer nodes, and their worker loops:
+
+```bash
+docker compose -f compose.multi-node.yaml up --build
+```
+
+See [docs/project/multi-node-demo.md](docs/project/multi-node-demo.md).
+
 Automated tests can be run with:
 
 ```bash
@@ -414,7 +433,9 @@ The identity layer now also has a lightweight asymmetric option:
 
 - nodes can advertise `identity_principal` and public key material in the capability card
 - if `identity_private_key_path` is configured, the node signs cards, task envelopes, and delivery receipts with `ssh-keygen -Y sign`
-- trusted peers can verify those signatures with configured `identity_principal` and `identity_public_key`
+- trusted peers can verify those signatures with configured `identity_principal`, staged `identity_public_keys`, and explicit `identity_revoked_public_keys`
+- `POST /v1/peers/sync` and `GET /v1/peer-cards` now surface pending trust / revocation drift without auto-trusting newly advertised keys
+- `POST /v1/peers/identity-trust/apply` now also supports `preview_only` config diff preview; operators can review, then apply selected trust updates with a governance receipt, and optionally persist the new peer trust state back to the loaded config file when the node was started with `--config`
 - this keeps the runtime dependency-light while moving beyond shared-secret-only trust
 
 Weak-network handling is now more explicit too:
@@ -492,21 +513,17 @@ Protected merge is now supported:
 
 ## Status
 
-This repository is currently in the whitepaper and architecture-definition stage. The next implementation target is an MVP that can:
+This repository is no longer only in the whitepaper and architecture-definition stage. It already has an executable MVP baseline with a reference node, durable task and workflow state, bridge-aware worker execution, local PoAW / reputation / dispute control loops, on-chain settlement preview and relay paths, Headscale overlay deployment examples, and a local multi-node Docker Compose demo.
 
-- register agent nodes,
-- route tasks across multiple workers,
-- persist execution state,
-- verify tool usage,
-- and settle rewards based on delivered work.
+The more accurate near-term target is to harden that baseline: stronger identity and key rotation, fuller standards-complete bridges, tighter auth and policy controls, and a gradual move from local governance / settlement loops toward chain-native authority.
 
 Current implementation status:
 
 - whitepaper and language landing pages are in place;
 - a reference node can publish an agent card, accept tasks, persist local state, retry peer delivery, handle dead-letter lanes, and track Git-like workflow convergence;
 - automated `unittest` coverage and cross-platform GitHub Actions CI are in place for the current MVP surface;
-- peer routing, Git-native review policy, HMAC verification, SSH-key based node identity, and MCP / A2A bridge skeletons are implemented in the MVP;
-- ontology, stronger key rotation, full standards-complete bridges, attestation, and PoAW settlement are not implemented yet.
+- peer routing, Git-native review policy, HMAC verification, SSH-key based node identity, MCP / A2A bridge skeletons, signed settlement ledger propagation, and relay reconciliation auto-finalize are implemented in the MVP;
+- ontology, stronger trust bootstrap, operator-facing trust-chain management, full standards-complete bridges, attestation, and chain-native PoAW / settlement authority are not implemented yet.
 
 ## Connectivity Direction
 

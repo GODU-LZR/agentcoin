@@ -89,7 +89,9 @@ flowchart TB
 
 ## 現在の状態
 
-このリポジトリは現在、ホワイトペーパーとアーキテクチャ定義の段階です。次の実装目標は、ノード登録、タスク分配、状態永続化、ツール実行検証、報酬精算までを一連で成立させる MVP です。
+このリポジトリは、もはやホワイトペーパーと設計メモだけの段階ではありません。参照ノード、task routing、状態永続化、tool 実行検証、ローカル PoAW / reputation / dispute 制御ループ、on-chain settlement preview と relay、Headscale overlay 例、ローカル multi-node compose demo までを含む実行可能な MVP 基線がすでにあります。
+
+現在の段階を正確に言うなら、既存の実行可能基線の上で、より強い identity / key rotation、より完全な bridge 実装、そしてローカル governance / settlement 制御ループを chain-native authority へ移していくフェーズです。
 
 ## 参照実装
 
@@ -100,7 +102,7 @@ flowchart TB
 - `オフライン優先`: SQLite による task / inbox / outbox 永続化
 - `安全寄りの初期設定`: デフォルトで `127.0.0.1` に bind し、書き込み系 API は Bearer Token 保護
 - `署名付き transport`: capability card と task envelope に `HMAC` 署名を付けて peer 検証できます
-- `非対称 identity`: `ssh-keygen` 互換の `Ed25519` key で card, task, receipt を署名できます
+- `非対称 identity`: `ssh-keygen` 互換の `Ed25519` key で card, task, receipt を署名でき、rotation 期間は peer 側で置き換え key を事前信頼できます
 - `多様な Agent との互換性`: 汎用 task envelope と capability card を採用
 
 このリポジトリには、BNB Chain 向けの最初の on-chain scaffold も追加しました。
@@ -181,7 +183,16 @@ runtime には最小の on-chain settlement preview も追加しました。
 - preview は versioned settlement policy と configurable な complete/slash threshold も返します
 - preview は `local_score`、`review_score`、`network_trust_score` も分離して返し、configurable な challenge threshold で `challengeJob` に切り替えられます
 - open dispute がある場合は recommendation を `challengeJob` に寄せます
+- dispute API response と replay-inspect は `contract_alignment` も返し、現在の `BountyEscrow` action と challenger bond / committee outcome が将来 `ChallengeManager` へ渡る境界を示します
 - これは signed preview であり、自動送信ではありません
+
+node は local PoAW control loop と chain submission の間に signed settlement ledger も生成します。
+
+- `GET /v1/onchain/settlement-ledger?task_id=...` は `agentcoin:SettlementLedgerReceipt` を返します
+- ledger は task revision、worker identity、local `PoAW` summary、reputation、policy violation、dispute、current settlement recommendation をひとつの stable commit artifact にまとめます
+- `replay-inspect` には `onchain_settlement_ledger` も追加されます
+- settlement RPC plan、raw bundle、relay receipt は ledger id / hash を持ち、どの local state から relay が生成されたか追跡できます
+- ledger の `commit_projection` は現在の `BountyEscrow` path を明示しつつ、将来の `PoAWScorebook`、`ReputationEventLedger`、`ChallengeManager` handoff gap も示します
 
 on-chain settlement relay も復旧可能な記録として扱えるようになりました。
 
@@ -190,9 +201,11 @@ on-chain settlement relay も復旧可能な記録として扱えるようにな
 - `POST /v1/onchain/settlement-relay-queue` は relay job を後続実行用に永続キューへ保存します
 - `GET /v1/onchain/settlement-relay-queue` は永続化された relay queue item を返します
 - background worker が queued relay job を自動で処理し、`queued`、`running`、`retrying`、`completed`、`dead-letter` を遷移させます
+- relay queue worker は共有 queue から追加 job を claim する前に、設定可能な `settlement_relay_max_in_flight` 上限も尊重します
 - operator は queued relay job を pause / resume でき、dead-letter item を更新済み relay parameter 付きで requeue できます
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` は task ごとの最新 relay state を返します
 - `POST /v1/onchain/settlement-relays/reconcile` は送信済み tx hash に対して `eth_getTransactionReceipt` を取得し、永続 relay history を `confirmed`、`reverted`、`unknown` に更新します
+- 確認済み relay が `completeJob`、`rejectJob`、`slashJob` のような最終 settlement action を表す場合は、reconciliation が関連 workflow の終端 state も自動で永続化します
 - replay-inspect は task の最新 settlement reconciliation state と各 step の receipt snapshot を返します
 - `POST /v1/onchain/settlement-relays/replay` は記録済み failure index から relay を再開できます
 - 永続化 record には `final_status`、`last_successful_index`、`next_index`、`retry_count`、failure category、reconciliation status、`confirmed_at` が残ります
@@ -214,6 +227,15 @@ python -m venv .venv
 pip install -e .
 agentcoin-node --config configs/node.example.json
 ```
+
+Docker Compose:
+
+```bash
+docker compose up --build
+docker compose -f compose.multi-node.yaml up --build
+```
+
+Multi-node demo compose の使い方は [docs/project/multi-node-demo.md](docs/project/multi-node-demo.md) を参照してください。
 
 自動テスト:
 
@@ -385,7 +407,9 @@ identity layer には軽量な非対称経路も追加しました。
 
 - node は capability card に `identity_principal` と public key material を載せられます
 - `identity_private_key_path` があると `ssh-keygen -Y sign` で card, task envelope, delivery receipt を署名します
-- trusted peer は `identity_principal` と `identity_public_key` で検証できます
+- trusted peer は `identity_principal`、rotation 用の `identity_public_keys`、明示的な `identity_revoked_public_keys` で検証と revoke 制御ができます
+- `POST /v1/peers/sync` と `GET /v1/peer-cards` は pending trust / revoke drift を可視化しますが、新しく advertise された key を自動信頼しません
+- `POST /v1/peers/identity-trust/apply` は `preview_only` による config diff preview も扱えます。operator は preview 後に trust update を適用して governance receipt を残し、node が `--config` で起動していれば loaded config file にも反映できます
 - これにより shared-secret のみより強い trust bootstrap を追加できます
 
 弱いネットワークや失敗時の扱いも追加しました。

@@ -59,6 +59,11 @@ The outbound transport path is now centralized as well:
 - `no_proxy_hosts` supports hostnames, suffixes, and CIDR ranges for overlay and local bypass
 - loopback traffic is always kept direct so local development does not depend on proxy hairpin behavior
 
+The repository now also documents two concrete multi-node deployment shapes:
+
+- `docs/architecture/e2ee-connectivity.md` describes the recommended Headscale + Tailscale-compatible overlay path for encrypted real-network deployment
+- `compose.multi-node.yaml` and `docs/project/multi-node-demo.md` provide a reproducible local multi-node Docker Compose topology for peer sync and remote dispatch smoke validation
+
 ## Implemented Endpoints
 
 - `GET /healthz`
@@ -69,7 +74,9 @@ The outbound transport path is now centralized as well:
 - `GET /v1/poaw/events`
 - `GET /v1/poaw/summary`
 - `GET /v1/disputes`
+- `GET /v1/onchain/settlement-ledger?task_id=...`
 - `GET /v1/onchain/settlement-preview?task_id=...`
+- `GET /v1/onchain/settlement-relays/latest?task_id=...`
 - `GET /v1/tasks`
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
@@ -89,6 +96,7 @@ The outbound transport path is now centralized as well:
 - `POST /v1/tasks/dispatch`
 - `POST /v1/tasks/dispatch/evaluate`
 - `POST /v1/disputes`
+- `POST /v1/disputes/vote`
 - `POST /v1/disputes/resolve`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`
@@ -109,6 +117,14 @@ The outbound transport path is now centralized as well:
 - `POST /v1/inbox`
 - `GET /v1/onchain/settlement-relay-queue`
 - `POST /v1/onchain/settlement-relay-queue`
+- `POST /v1/onchain/settlement-relay-queue/pause`
+- `POST /v1/onchain/settlement-relay-queue/resume`
+- `POST /v1/onchain/settlement-relay-queue/requeue`
+- `POST /v1/onchain/settlement-rpc-plan`
+- `POST /v1/onchain/settlement-raw-bundle`
+- `POST /v1/onchain/settlement-relay`
+- `POST /v1/onchain/settlement-relays/reconcile`
+- `POST /v1/onchain/settlement-relays/replay`
 - `POST /v1/outbox/flush`
 - `POST /v1/outbox/requeue`
 - `POST /v1/onchain/rpc-payload`
@@ -213,17 +229,22 @@ The runtime now also exposes a first receipt schema layer:
 - settlement relay responses now use a dedicated relay receipt schema
 - schema examples expose these receipt shapes through `GET /v1/schema/examples`
 
-The runtime now also exposes a first settlement-preview layer:
+The runtime now exposes a settlement preview, ledger, and relay pipeline:
 
 - a completed task can be mapped into a signed `submitWork` + resolution sequence
 - the resolution path can resolve to `completeJob`, `rejectJob`, `challengeJob`, or `slashJob`
 - the preview uses local PoAW summaries, task-scoped violations, and worker reputation
+- a signed settlement ledger can now materialize task revision, worker identity, PoAW summary, reputation, violations, disputes, and current settlement recommendation into one stable commit artifact
+- settlement RPC plans, raw bundles, and relay receipts now carry settlement ledger references for replay and commit traceability
+- the settlement relay queue now supports background execution, pause / resume, dead-letter requeue, and max-in-flight gating
+- receipt reconciliation now records `confirmed`, `reverted`, or `unknown` chain state and can auto-finalize linked workflows for final settlement actions
 
 The runtime now also has a first dispute lane:
 
 - operators or reviewers can open task-scoped disputes with evidence hashes
 - open disputes are persisted locally and visible over HTTP
 - dispute resolution is persisted as governance history
+- dispute responses and replay-inspect now also expose contract-alignment projections for the current `BountyEscrow` path and future `ChallengeManager` handoff gaps
 
 The runtime now also has a first local governance loop:
 
@@ -295,7 +316,7 @@ The next coordination layer should be built on top of these primitives:
 
 ## Next Milestones
 
-1. Replace the current mixed HMAC / SSH MVP with key rotation, stronger trust bootstrap, and richer receipt semantics.
+1. Add stronger trust bootstrap, operator-facing trust-chain management, and richer receipt semantics on top of the current HMAC plus staged SSH key-rotation MVP with explicit revoked-key lists.
 2. Add task state transitions and worker execution adapters.
 3. Add encrypted local secrets and stricter outbound policy controls.
 4. Expand the current MCP / A2A bridge skeleton into fuller protocol coverage and custom adapters.

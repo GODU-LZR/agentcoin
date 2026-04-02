@@ -42,6 +42,7 @@
   },
   "sync_interval_seconds": 15,
   "settlement_relay_poll_seconds": 2,
+  "settlement_relay_max_in_flight": 1,
   "max_body_bytes": 262144,
   "outbox_max_attempts": 5,
   "task_retry_limit": 3,
@@ -80,6 +81,12 @@
       "signing_secret": "replace-with-peer-b-shared-secret",
       "identity_principal": "agentcoin-peer-b",
       "identity_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEPEERPUBLICKEY agentcoin-peer-b",
+      "identity_public_keys": [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLENEXTPUBLICKEY agentcoin-peer-b-next"
+      ],
+      "identity_revoked_public_keys": [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLERETIREDPUBLICKEY agentcoin-peer-b-old"
+      ],
       "overlay_endpoint": "agentcoin-b.tailnet.internal:8080",
       "overlay_addresses": [
         "100.64.0.2"
