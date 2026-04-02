@@ -109,7 +109,7 @@ flowchart TB
 - `离线优先`：基于 SQLite 持久化任务、inbox、outbox。
 - `默认安全`：默认仅绑定 `127.0.0.1`，写接口要求 Bearer Token。
 - `签名传输`：capability card 和 task envelope 现在可以带 `HMAC` 签名，供 peer 验签。
-- `非对称身份`：节点现在也可以用兼容 `ssh-keygen` 的 `Ed25519` 密钥为 card、任务和回执签名，peer 也可以在轮换期间预置信任替换公钥。
+- `非对称身份`：节点现在也可以用兼容 `ssh-keygen` 的 `Ed25519` 密钥为 card、任务和回执签名，peer 也可以在轮换期间预置信任替换公钥，operator 还可以导出 trust reconciliation 结果，并查看建议动作及 runtime 或 config diff 预览。
 - `兼容多 Agent`：通过通用任务信封和能力名片接口接入不同 Agent。
 
 仓库现在也加入了第一版面向 BNB Chain 的链上骨架：

@@ -241,6 +241,76 @@ class AgentCoinNode:
         )
         return candidate
 
+    @staticmethod
+    def _suggested_peer_identity_trust_actions(report: dict[str, Any] | None) -> list[str]:
+        if not report:
+            return []
+        actions: list[str] = []
+        advertised_principal = str(report.get("advertised_principal") or "").strip()
+        if advertised_principal and not bool(report.get("principal_match", True)):
+            actions.append("adopt-advertised-principal")
+        if report.get("pending_trust_public_keys"):
+            actions.append("apply-pending-trust")
+        if report.get("pending_revocation_public_keys"):
+            actions.append("apply-pending-revocations")
+        if report.get("stale_trusted_public_keys"):
+            actions.append("remove-stale-trusted")
+        return actions
+
+    def export_peer_identity_trust_reconciliation(
+        self,
+        *,
+        peer_id: str | None = None,
+        actions: list[str] | None = None,
+        include_preview: bool = True,
+    ) -> dict[str, Any]:
+        if peer_id:
+            peers = [self.config.resolve_peer(peer_id)]
+        else:
+            peers = list(self.config.peers)
+
+        items: list[dict[str, Any]] = []
+        for peer in peers:
+            stored_card = self._stored_peer_card(peer.peer_id)
+            card = dict(stored_card.get("card") or {}) if stored_card else {}
+            report = self._identity_trust_report(peer, card) if stored_card else None
+            suggested_actions = self._suggested_peer_identity_trust_actions(report)
+            requested_actions = [str(item or "").strip().lower() for item in (actions or []) if str(item or "").strip()]
+            preview_actions = requested_actions or suggested_actions
+
+            item: dict[str, Any] = {
+                "peer_id": peer.peer_id,
+                "peer": self._sanitize_peer(peer),
+                "has_peer_card": bool(stored_card),
+                "card_source_url": str(stored_card.get("source_url") or "") if stored_card else "",
+                "identity_trust": report,
+                "suggested_actions": suggested_actions,
+                "requested_actions": requested_actions,
+                "actionable": bool(suggested_actions),
+                "preview": None,
+            }
+
+            if include_preview and stored_card and report and preview_actions:
+                item["preview"] = self.apply_peer_identity_trust_update(
+                    peer_id=peer.peer_id,
+                    actions=preview_actions,
+                    operator_id=None,
+                    reason="peer identity trust reconciliation export preview",
+                    persist_to_config=bool(self.config.config_path),
+                    preview_only=True,
+                    context={"export": True},
+                )
+
+            items.append(item)
+
+        return {
+            "ok": True,
+            "generated_at": utc_now(),
+            "config_path": str(self.config.config_path or "").strip() or None,
+            "include_preview": include_preview,
+            "items": items,
+        }
+
     def apply_peer_identity_trust_update(
         self,
         *,
@@ -334,10 +404,10 @@ class AgentCoinNode:
         after_report = self._identity_trust_report(candidate_peer, card)
 
         config_preview: dict[str, Any] | None = None
-        if persist_to_config or preview_only:
-            config_path = str(self.config.config_path or "").strip()
-            if not config_path:
-                raise ValueError("config preview or persistence requires a node config file loaded via --config")
+        config_path = str(self.config.config_path or "").strip()
+        if persist_to_config and not config_path:
+            raise ValueError("config preview or persistence requires a node config file loaded via --config")
+        if (persist_to_config or preview_only) and config_path:
             try:
                 config_preview = preview_peer_identity_config_update(
                     config_path,
@@ -2781,6 +2851,18 @@ class AgentCoinNode:
                             persist_to_config=bool(payload.get("persist_to_config")),
                             preview_only=bool(payload.get("preview_only")),
                             context=dict(payload.get("payload") or {}),
+                        )
+                        self._json_response(HTTPStatus.OK, result)
+                        return
+                    if self.path == "/v1/peers/identity-trust/export":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        peer_id = str(payload.get("peer_id") or "").strip() or None
+                        result = node.export_peer_identity_trust_reconciliation(
+                            peer_id=peer_id,
+                            actions=list(payload.get("actions") or []),
+                            include_preview=bool(payload.get("include_preview", True)),
                         )
                         self._json_response(HTTPStatus.OK, result)
                         return

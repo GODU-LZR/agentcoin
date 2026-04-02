@@ -404,6 +404,14 @@ class NodeIntegrationTests(unittest.TestCase):
         with request.urlopen(url, timeout=10) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
 
+    def _get_auth(self, url: str, token: str) -> tuple[int, dict]:
+        req = request.Request(url, headers={"Authorization": f"Bearer {token}"})
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def _wait_for_queue_item_status(
         self,
         node: NodeHarness,
@@ -2043,6 +2051,140 @@ class NodeIntegrationTests(unittest.TestCase):
 
             _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
             self.assertEqual(actions["items"], [])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_export_peer_identity_trust_reconciliation_with_preview(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_export_preview", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_export_preview", "node-b")
+        config_path = self._write_node_config_file(
+            Path(self.tempdir.name) / "node-a-export-preview.json",
+            node_id="node-a",
+            auth_token="token-a",
+            peers=[
+                {
+                    "peer_id": "node-b",
+                    "name": "Node B",
+                    "url": "http://127.0.0.1:1",
+                    "auth_token": "token-b",
+                    "identity_principal": "node-b",
+                    "identity_public_key": pub_b_old,
+                }
+            ],
+        )
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-preview-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-preview-a.db"),
+            capabilities=["planner"],
+            signing_secret="governance-secret",
+            config_path=config_path,
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+
+            export_status, exported = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/export",
+                "token-a",
+                {"peer_id": "node-b"},
+            )
+            self.assertEqual(export_status, 200)
+            self.assertTrue(exported["ok"])
+            self.assertEqual(exported["config_path"], str(Path(config_path).resolve()))
+            self.assertEqual(len(exported["items"]), 1)
+            item = exported["items"][0]
+            self.assertTrue(item["has_peer_card"])
+            self.assertTrue(item["actionable"])
+            self.assertEqual(item["suggested_actions"], ["apply-pending-trust"])
+            self.assertEqual(item["preview"]["applied_actions"], ["apply-pending-trust"])
+            self.assertTrue(item["preview"]["would_persist_to_config"])
+            self.assertEqual(item["preview"]["after"]["configured_trusted_public_keys"], [pub_b_old, pub_b_new])
+            self.assertIn("identity_public_keys", item["preview"]["config_preview"]["diff"])
+
+            _, actions = self._get(f"{node_a.base_url}/v1/governance-actions?actor_id=node-b")
+            self.assertEqual(actions["items"], [])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old])
+        finally:
+            node_a.stop()
+            node_b.stop()
+
+    def test_operator_can_export_peer_identity_trust_reconciliation_without_loaded_config(self) -> None:
+        key_b_old, pub_b_old = self._generate_identity(Path(self.tempdir.name) / "id_b_old_export_runtime", "node-b")
+        _, pub_b_new = self._generate_identity(Path(self.tempdir.name) / "id_b_new_export_runtime", "node-b")
+
+        node_b = NodeHarness(
+            node_id="node-b",
+            token="token-b",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-runtime-b.db"),
+            capabilities=["worker"],
+            identity_principal="node-b",
+            identity_private_key_path=key_b_old,
+            identity_public_key=pub_b_old,
+            identity_public_keys=[pub_b_new],
+        )
+        node_a = NodeHarness(
+            node_id="node-a",
+            token="token-a",
+            db_path=str(Path(self.tempdir.name) / "ssh-export-runtime-a.db"),
+            capabilities=["planner"],
+            peers=[
+                PeerConfig(
+                    peer_id="node-b",
+                    name="Node B",
+                    url="http://127.0.0.1:1",
+                    auth_token="token-b",
+                    identity_principal="node-b",
+                    identity_public_key=pub_b_old,
+                )
+            ],
+        )
+        node_a.config.peers[0].url = node_b.base_url
+        node_b.start()
+        node_a.start()
+        try:
+            sync_status, _ = self._post(f"{node_a.base_url}/v1/peers/sync", "token-a", {})
+            self.assertEqual(sync_status, 200)
+
+            export_status, exported = self._post(
+                f"{node_a.base_url}/v1/peers/identity-trust/export",
+                "token-a",
+                {"peer_id": "node-b"},
+            )
+            self.assertEqual(export_status, 200)
+            item = exported["items"][0]
+            self.assertIsNone(exported["config_path"])
+            self.assertEqual(item["suggested_actions"], ["apply-pending-trust"])
+            self.assertFalse(item["preview"]["would_persist_to_config"])
+            self.assertIsNone(item["preview"]["config_path"])
+            self.assertIsNone(item["preview"]["config_preview"])
+            self.assertEqual(item["preview"]["after"]["configured_trusted_public_keys"], [pub_b_old, pub_b_new])
+            self.assertEqual(node_a.config.peers[0].trusted_identity_public_keys, [pub_b_old])
         finally:
             node_a.stop()
             node_b.stop()

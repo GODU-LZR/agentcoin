@@ -181,6 +181,7 @@ class NodeConfig:
                 "peer_health_cooldown": f"{self.base_url}/v1/peer-health/cooldown",
                 "peer_health_blacklist": f"{self.base_url}/v1/peer-health/blacklist",
                 "peer_health_clear": f"{self.base_url}/v1/peer-health/clear",
+                "peer_identity_trust_export": f"{self.base_url}/v1/peers/identity-trust/export",
                 "peer_identity_trust_apply": f"{self.base_url}/v1/peers/identity-trust/apply",
                 "disputes": f"{self.base_url}/v1/disputes",
                 "disputes_vote": f"{self.base_url}/v1/disputes/vote",

@@ -102,7 +102,7 @@ flowchart TB
 - `オフライン優先`: SQLite による task / inbox / outbox 永続化
 - `安全寄りの初期設定`: デフォルトで `127.0.0.1` に bind し、書き込み系 API は Bearer Token 保護
 - `署名付き transport`: capability card と task envelope に `HMAC` 署名を付けて peer 検証できます
-- `非対称 identity`: `ssh-keygen` 互換の `Ed25519` key で card, task, receipt を署名でき、rotation 期間は peer 側で置き換え key を事前信頼できます
+- `非対称 identity`: `ssh-keygen` 互換の `Ed25519` key で card, task, receipt を署名でき、rotation 期間は peer 側で置き換え key を事前信頼でき、operator は suggested action と runtime / config diff preview 付きの trust reconciliation export も取得できます
 - `多様な Agent との互換性`: 汎用 task envelope と capability card を採用
 
 このリポジトリには、BNB Chain 向けの最初の on-chain scaffold も追加しました。

@@ -20,6 +20,7 @@ The current test scope covers:
 - peer sync trust-drift reporting for pending trust and pending revocation updates
 - operator-applied peer identity trust updates with governance-action audit receipts and optional config persistence
 - trust-update preview and config diff generation without runtime mutation or governance audit writes
+- trust reconciliation export with suggested actions and previewed runtime or config diffs
 - outbound proxy bypass and explicit proxy selection rules
 - bridge registry plus MCP / A2A import-export flow
 - MCP tool-call and tool-result schema normalization
@@ -112,7 +113,7 @@ The following behaviors are now covered either by automated tests or previously 
 
 - peer card sync and peer-id based delivery
 - signed card verification and signed inbox acceptance / rejection
-- staged SSH key rotation accepts pre-trusted replacement keys, rejects untrusted replacements, rejects explicitly revoked keys, surfaces sync-time trust drift for operator review, including principal mismatch and stale trusted-key cleanup, and allows operator trust preview, principal adoption, governance-audited apply, stale-key removal, and optional config persistence
+- staged SSH key rotation accepts pre-trusted replacement keys, rejects untrusted replacements, rejects explicitly revoked keys, surfaces sync-time trust drift for operator review, including principal mismatch and stale trusted-key cleanup, and allows operator trust reconciliation export, trust preview, principal adoption, governance-audited apply, stale-key removal, and optional config persistence
 - lease queue prevents duplicate claim by multiple workers
 - inbox dedupe and explicit delivery ACK
 - planner dispatch to matching peer capability
