@@ -879,6 +879,53 @@ class AgentCoinNode:
         )
         return self._sign_document(document, hmac_scope="governance-receipt", identity_namespace="agentcoin-governance")
 
+    def _record_workflow_governance_action(
+        self,
+        *,
+        workflow_id: str,
+        action_type: str,
+        operator_id: str | None,
+        reason: str,
+        payload: dict[str, Any] | None = None,
+        reason_codes: list[str] | None = None,
+        target: dict[str, Any] | None = None,
+        mutation: dict[str, Any] | None = None,
+        auth_context: dict[str, Any] | None = None,
+        evidence: dict[str, Any] | None = None,
+        before_state: dict[str, Any] | None = None,
+        after_state: dict[str, Any] | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        stored_payload = dict(payload or {})
+        receipt = self._governance_receipt(
+            action_type=action_type,
+            actor_id=workflow_id,
+            actor_type="workflow",
+            operator_id=operator_id,
+            reason=reason,
+            payload=stored_payload,
+            reason_codes=reason_codes,
+            target=target,
+            mutation=mutation,
+            auth_context=auth_context,
+            evidence=evidence,
+            before_state=before_state,
+            after_state=after_state,
+            task_id=task_id,
+            workflow_id=workflow_id,
+        )
+        return self.store.record_governance_action(
+            actor_id=workflow_id,
+            actor_type="workflow",
+            action_type=action_type,
+            reason=reason,
+            payload={
+                **stored_payload,
+                "operator_id": operator_id,
+                "receipt": receipt,
+            },
+        )
+
     def _bind_onchain_context(self, task: TaskEnvelope, *, job_id: int | None = None) -> TaskEnvelope:
         if not self.onchain.enabled:
             return task
@@ -1866,6 +1913,26 @@ class AgentCoinNode:
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         node = self
         operator_endpoint_policies: dict[str, dict[str, Any]] = {
+            "/v1/workflows/fanout": {
+                "policy_tier": "workflow-admin",
+                "policy_level": 2,
+                "required_scopes": ["workflow-admin"],
+            },
+            "/v1/workflows/review-gate": {
+                "policy_tier": "workflow-admin",
+                "policy_level": 2,
+                "required_scopes": ["workflow-admin"],
+            },
+            "/v1/workflows/merge": {
+                "policy_tier": "workflow-admin",
+                "policy_level": 2,
+                "required_scopes": ["workflow-admin"],
+            },
+            "/v1/workflows/finalize": {
+                "policy_tier": "workflow-admin",
+                "policy_level": 2,
+                "required_scopes": ["workflow-admin"],
+            },
             "/v1/peers/identity-trust/apply": {
                 "policy_tier": "trust-admin",
                 "policy_level": 3,
@@ -3367,23 +3434,74 @@ class AgentCoinNode:
                         self._json_response(HTTPStatus.OK, {"relay": signed_relay})
                         return
                     if self.path == "/v1/workflows/fanout":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         parent_task_id = str(payload.get("parent_task_id") or "")
                         if not parent_task_id:
                             raise ValueError("parent_task_id is required")
+                        parent_task = node.store.get_task(parent_task_id)
+                        if not parent_task:
+                            raise ValueError("parent task not found")
+                        workflow_id = str(parent_task.get("workflow_id") or parent_task.get("id") or parent_task_id)
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
+                        reason = str(payload.get("reason") or "workflow fanout")
+                        operator_payload = dict(payload.get("payload") or {})
+                        before_summary = node.store.summarize_workflow(workflow_id)
                         subtasks = [TaskEnvelope.from_dict(item) for item in list(payload.get("subtasks") or [])]
                         created = node.store.create_subtasks(parent_task_id, subtasks)
-                        self._json_response(HTTPStatus.CREATED, {"items": created})
+                        after_summary = node.store.summarize_workflow(workflow_id)
+                        action = node._record_workflow_governance_action(
+                            workflow_id=workflow_id,
+                            action_type="workflow-fanout",
+                            operator_id=operator_id,
+                            reason=reason,
+                            payload={
+                                "parent_task_id": parent_task_id,
+                                "spawned_task_ids": [item["id"] for item in created],
+                                "subtasks": [
+                                    {"id": item["id"], "branch": item["branch"], "role": item["role"]}
+                                    for item in created
+                                ],
+                                "context": operator_payload,
+                            },
+                            reason_codes=node._ordered_unique_strings("workflow-fanout", f"subtasks-{len(created)}"),
+                            target={
+                                "kind": "workflow-fanout",
+                                "workflow_id": workflow_id,
+                                "parent_task_id": parent_task_id,
+                            },
+                            mutation={
+                                "subtask_count": len(created),
+                                "spawned_task_ids": [item["id"] for item in created],
+                                "parent_completed": bool(parent_task.get("status") in {"queued", "leased"}),
+                            },
+                            auth_context=auth_context,
+                            before_state=before_summary,
+                            after_state=after_summary,
+                            task_id=parent_task_id,
+                        )
+                        self._json_response(HTTPStatus.CREATED, {"items": created, "action": action})
                         return
                     if self.path == "/v1/workflows/review-gate":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         workflow_id = str(payload.get("workflow_id") or "")
                         if not workflow_id:
                             raise ValueError("workflow_id is required")
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
+                        reason = str(payload.get("reason") or "workflow review gate update")
+                        operator_payload = dict(payload.get("payload") or {})
+                        before_summary = node.store.summarize_workflow(workflow_id)
                         reviews: list[TaskEnvelope] = []
                         attach_git_context = bool(payload.get("attach_git_context"))
                         git_base_ref = str(payload.get("git_base_ref") or "HEAD")
@@ -3399,15 +3517,47 @@ class AgentCoinNode:
                                 review.payload["_review"].setdefault("head_sha", review.payload["_git"].get("target_sha"))
                             reviews.append(review)
                         created = node.store.create_review_tasks(workflow_id, reviews)
-                        self._json_response(HTTPStatus.CREATED, {"items": created})
+                        after_summary = node.store.summarize_workflow(workflow_id)
+                        action = node._record_workflow_governance_action(
+                            workflow_id=workflow_id,
+                            action_type="workflow-review-gate",
+                            operator_id=operator_id,
+                            reason=reason,
+                            payload={
+                                "review_task_ids": [item["id"] for item in created],
+                                "target_task_ids": [
+                                    str(item.get("payload", {}).get("_review", {}).get("target_task_id") or "")
+                                    for item in created
+                                ],
+                                "context": operator_payload,
+                            },
+                            reason_codes=node._ordered_unique_strings("workflow-review-gate", f"reviews-{len(created)}"),
+                            target={"kind": "workflow-review-gate", "workflow_id": workflow_id},
+                            mutation={
+                                "review_count": len(created),
+                                "review_task_ids": [item["id"] for item in created],
+                            },
+                            auth_context=auth_context,
+                            before_state=before_summary,
+                            after_state=after_summary,
+                        )
+                        self._json_response(HTTPStatus.CREATED, {"items": created, "action": action})
                         return
                     if self.path == "/v1/workflows/merge":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         workflow_id = str(payload.get("workflow_id") or "")
                         if not workflow_id:
                             raise ValueError("workflow_id is required")
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
+                        reason = str(payload.get("reason") or "workflow merge task created")
+                        operator_payload = dict(payload.get("payload") or {})
+                        before_summary = node.store.summarize_workflow(workflow_id)
                         parent_task_ids = list(payload.get("parent_task_ids") or [])
                         raw_task = dict(payload.get("task") or {})
                         if "kind" not in raw_task:
@@ -3446,17 +3596,84 @@ class AgentCoinNode:
                                 parent_task_ids=parent_task_ids,
                             )
                         created = node.store.create_merge_task(workflow_id, parent_task_ids, task)
-                        self._json_response(HTTPStatus.CREATED, {"task": created})
+                        after_summary = node.store.summarize_workflow(workflow_id)
+                        action = node._record_workflow_governance_action(
+                            workflow_id=workflow_id,
+                            action_type="workflow-merge",
+                            operator_id=operator_id,
+                            reason=reason,
+                            payload={
+                                "merge_task_id": created["id"],
+                                "parent_task_ids": list(parent_task_ids),
+                                "protected_branches": list(protected_branches),
+                                "context": operator_payload,
+                            },
+                            reason_codes=node._ordered_unique_strings(
+                                "workflow-merge",
+                                f"parents-{len(parent_task_ids)}",
+                                "merge-policy-protected" if protected_branches else None,
+                            ),
+                            target={
+                                "kind": "workflow-merge-task",
+                                "workflow_id": workflow_id,
+                                "merge_task_id": created["id"],
+                            },
+                            mutation={
+                                "parent_count": len(parent_task_ids),
+                                "merge_task_id": created["id"],
+                                "protected_branches": list(protected_branches),
+                            },
+                            auth_context=auth_context,
+                            before_state=before_summary,
+                            after_state=after_summary,
+                            task_id=created["id"],
+                        )
+                        self._json_response(HTTPStatus.CREATED, {"task": created, "action": action})
                         return
                     if self.path == "/v1/workflows/finalize":
-                        if not self._require_auth():
+                        auth_context = self._require_auth()
+                        if not auth_context:
                             return
                         payload = self._read_json()
                         workflow_id = str(payload.get("workflow_id") or "")
                         if not workflow_id:
                             raise ValueError("workflow_id is required")
+                        operator_id = self._effective_operator_id(
+                            str(payload.get("operator_id") or "").strip() or None,
+                            auth_context,
+                        )
+                        reason = str(payload.get("reason") or "workflow finalized")
+                        operator_payload = dict(payload.get("payload") or {})
+                        before_summary = node.store.summarize_workflow(workflow_id)
                         finalized = node.store.finalize_workflow(workflow_id)
                         status = HTTPStatus.OK if finalized.get("ok") else HTTPStatus.CONFLICT
+                        if finalized.get("ok"):
+                            action = node._record_workflow_governance_action(
+                                workflow_id=workflow_id,
+                                action_type="workflow-finalize",
+                                operator_id=operator_id,
+                                reason=reason,
+                                payload={
+                                    "final_status": finalized.get("status"),
+                                    "finalized_at": finalized.get("finalized_at"),
+                                    "context": operator_payload,
+                                },
+                                reason_codes=node._ordered_unique_strings(
+                                    "workflow-finalize",
+                                    f"status-{finalized.get('status')}",
+                                ),
+                                target={"kind": "workflow-state", "workflow_id": workflow_id},
+                                mutation={
+                                    "finalized": True,
+                                    "status": finalized.get("status"),
+                                    "finalizable_before": bool(before_summary.get("finalizable")),
+                                },
+                                auth_context=auth_context,
+                                before_state=before_summary,
+                                after_state=finalized.get("summary"),
+                            )
+                            self._json_response(status, {**finalized, "action": action})
+                            return
                         self._json_response(status, finalized)
                         return
                     if self.path == "/v1/tasks/dispatch":

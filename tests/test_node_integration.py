@@ -2701,6 +2701,203 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_signed_operator_request_is_required_for_workflow_admin_endpoints(self) -> None:
+        node = NodeHarness(
+            node_id="workflow-auth-node",
+            token="token-workflow-auth",
+            db_path=str(Path(self.tempdir.name) / "workflow-auth.db"),
+            capabilities=["planner", "worker", "reviewer"],
+            signing_secret="workflow-governance-secret",
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="workflow-admin:ops-1",
+                    shared_secret="workflow-operator-secret",
+                    scopes=["workflow-admin"],
+                )
+            ],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-workflow-auth",
+                {"id": "root-workflow-auth", "kind": "plan", "role": "planner"},
+            )
+
+            denied_status, denied = self._post(
+                f"{node.base_url}/v1/workflows/fanout",
+                "token-workflow-auth",
+                {
+                    "parent_task_id": "root-workflow-auth",
+                    "operator_id": "workflow-admin:ops-1",
+                    "subtasks": [
+                        {"id": "branch-a-auth", "kind": "code", "role": "worker", "branch": "feature/a"},
+                        {"id": "branch-b-auth", "kind": "code", "role": "worker", "branch": "feature/b"},
+                    ],
+                },
+            )
+            self.assertEqual(denied_status, 401)
+            self.assertEqual(denied["policy_receipt"]["reason_code"], "signed-request-required")
+
+            fanout_status, fanout = self._signed_post(
+                f"{node.base_url}/v1/workflows/fanout",
+                "token-workflow-auth",
+                {
+                    "parent_task_id": "root-workflow-auth",
+                    "operator_id": "workflow-admin:ops-1",
+                    "reason": "spawn protected workflow branches",
+                    "payload": {"ticket": "WF-101"},
+                    "subtasks": [
+                        {"id": "branch-a-auth", "kind": "code", "role": "worker", "branch": "feature/a"},
+                        {"id": "branch-b-auth", "kind": "code", "role": "worker", "branch": "feature/b"},
+                    ],
+                },
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-operator-secret",
+            )
+            self.assertEqual(fanout_status, 201)
+            self.assertEqual(fanout["action"]["action_type"], "workflow-fanout")
+            self.assertEqual(fanout["action"]["operator_id"], "workflow-admin:ops-1")
+            self.assertEqual(fanout["action"]["receipt"]["auth_context"]["policy_tier"], "workflow-admin")
+            self.assertEqual(fanout["action"]["receipt"]["auth_context"]["mode"], "signed-hmac")
+            self.assertEqual(len(fanout["items"]), 2)
+            fanout_verification = verify_document(
+                fanout["action"]["receipt"],
+                secret="workflow-governance-secret",
+                expected_scope="governance-receipt",
+                expected_key_id="workflow-auth-node",
+            )
+            self.assertTrue(fanout_verification["verified"])
+
+            review_status, review_gate = self._signed_post(
+                f"{node.base_url}/v1/workflows/review-gate",
+                "token-workflow-auth",
+                {
+                    "workflow_id": "root-workflow-auth",
+                    "operator_id": "workflow-admin:ops-1",
+                    "reason": "add approval tasks",
+                    "reviews": [
+                        {"id": "review-a-auth", "kind": "review", "role": "reviewer", "payload": {"_review": {"target_task_id": "branch-a-auth"}}},
+                        {"id": "review-b-auth", "kind": "review", "role": "reviewer", "payload": {"_review": {"target_task_id": "branch-b-auth"}}},
+                    ],
+                },
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-operator-secret",
+            )
+            self.assertEqual(review_status, 201)
+            self.assertEqual(review_gate["action"]["action_type"], "workflow-review-gate")
+            self.assertEqual(review_gate["action"]["receipt"]["auth_context"]["policy_tier"], "workflow-admin")
+
+            merge_status, merge = self._signed_post(
+                f"{node.base_url}/v1/workflows/merge",
+                "token-workflow-auth",
+                {
+                    "workflow_id": "root-workflow-auth",
+                    "operator_id": "workflow-admin:ops-1",
+                    "reason": "open protected merge task",
+                    "parent_task_ids": ["branch-a-auth", "branch-b-auth"],
+                    "protected_branches": ["feature/a", "feature/b"],
+                    "required_approvals_per_branch": 1,
+                    "task": {"id": "merge-auth", "kind": "merge", "role": "reviewer", "branch": "main"},
+                },
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-operator-secret",
+            )
+            self.assertEqual(merge_status, 201)
+            self.assertEqual(merge["action"]["action_type"], "workflow-merge")
+            self.assertEqual(merge["action"]["receipt"]["auth_context"]["policy_tier"], "workflow-admin")
+
+            for task_id in ["branch-a-auth", "branch-b-auth"]:
+                _, claim = self._post(
+                    f"{node.base_url}/v1/tasks/claim",
+                    "token-workflow-auth",
+                    {"worker_id": f"{task_id}-worker", "worker_capabilities": ["worker"], "lease_seconds": 30},
+                )
+                self.assertEqual(claim["task"]["id"], task_id)
+                self._post(
+                    f"{node.base_url}/v1/tasks/ack",
+                    "token-workflow-auth",
+                    {
+                        "task_id": task_id,
+                        "worker_id": claim["task"]["locked_by"],
+                        "lease_token": claim["task"]["lease_token"],
+                        "success": True,
+                        "result": {"done": task_id},
+                    },
+                )
+
+            seen_reviews: set[str] = set()
+            for reviewer_id in ["reviewer-auth-a", "reviewer-auth-b"]:
+                _, claim = self._post(
+                    f"{node.base_url}/v1/tasks/claim",
+                    "token-workflow-auth",
+                    {"worker_id": reviewer_id, "worker_capabilities": ["reviewer"], "lease_seconds": 30},
+                )
+                review_task_id = claim["task"]["id"]
+                self.assertIn(review_task_id, {"review-a-auth", "review-b-auth"})
+                self.assertNotIn(review_task_id, seen_reviews)
+                seen_reviews.add(review_task_id)
+                self._post(
+                    f"{node.base_url}/v1/tasks/ack",
+                    "token-workflow-auth",
+                    {
+                        "task_id": review_task_id,
+                        "worker_id": claim["task"]["locked_by"],
+                        "lease_token": claim["task"]["lease_token"],
+                        "success": True,
+                        "result": {"approved": True},
+                    },
+                )
+
+            _, merge_claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-workflow-auth",
+                {"worker_id": "merge-auth-reviewer", "worker_capabilities": ["reviewer"], "lease_seconds": 30},
+            )
+            self.assertEqual(merge_claim["task"]["id"], "merge-auth")
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-workflow-auth",
+                {
+                    "task_id": "merge-auth",
+                    "worker_id": merge_claim["task"]["locked_by"],
+                    "lease_token": merge_claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"merged": ["branch-a-auth", "branch-b-auth"]},
+                },
+            )
+
+            finalize_status, finalized = self._signed_post(
+                f"{node.base_url}/v1/workflows/finalize",
+                "token-workflow-auth",
+                {
+                    "workflow_id": "root-workflow-auth",
+                    "operator_id": "workflow-admin:ops-1",
+                    "reason": "finalize approved workflow",
+                    "payload": {"ticket": "WF-101"},
+                },
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-operator-secret",
+            )
+            self.assertEqual(finalize_status, 200)
+            self.assertTrue(finalized["ok"])
+            self.assertEqual(finalized["action"]["action_type"], "workflow-finalize")
+            self.assertEqual(finalized["action"]["receipt"]["auth_context"]["policy_tier"], "workflow-admin")
+
+            _, workflow_actions = self._get(f"{node.base_url}/v1/governance-actions?actor_id=root-workflow-auth")
+            action_types = [item["action_type"] for item in workflow_actions["items"][:4]]
+            self.assertEqual(
+                action_types,
+                ["workflow-finalize", "workflow-merge", "workflow-review-gate", "workflow-fanout"],
+            )
+
+            audits = node.node.store.list_operator_auth_audits(endpoint="/v1/workflows/fanout", limit=10)
+            self.assertEqual([item["decision"] for item in audits[:2]], ["allowed", "denied"])
+            self.assertEqual(audits[0]["key_id"], "workflow-admin:ops-1")
+            self.assertEqual(audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",

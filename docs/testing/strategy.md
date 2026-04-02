@@ -47,7 +47,7 @@ The current test scope covers:
 - execution audit trail and replay inspector endpoints
 - policy violation tracking, local reputation scoring, and quarantine blocking
 - operator-driven quarantine and release flows
-- signed Tier 3 and Tier 4 operator request verification, nonce replay rejection, and denial auth-receipt persistence
+- signed workflow-admin, Tier 3, and Tier 4 operator request verification, nonce replay rejection, denial auth-receipt persistence, and workflow governance receipt persistence
 - lease-based task claiming
 - workflow fanout and merge behavior
 - review gate and protected merge behavior
@@ -115,7 +115,7 @@ The following behaviors are now covered either by automated tests or previously 
 
 - peer card sync and peer-id based delivery
 - signed card verification and signed inbox acceptance / rejection
-- signed operator request enforcement for trust-admin and settlement-admin endpoints, including denial receipts, auth audit persistence, and nonce replay rejection
+- signed operator request enforcement for workflow-admin, trust-admin, and settlement-admin endpoints, including denial receipts, auth audit persistence, nonce replay rejection, and workflow governance receipt persistence
 - staged SSH key rotation accepts pre-trusted replacement keys, rejects untrusted replacements, rejects explicitly revoked keys, surfaces sync-time trust drift for operator review, including principal mismatch and stale trusted-key cleanup, and allows operator trust reconciliation export, trust preview, principal adoption, governance-audited apply, stale-key removal, and optional config persistence
 - lease queue prevents duplicate claim by multiple workers
 - inbox dedupe and explicit delivery ACK
