@@ -1454,6 +1454,186 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_local_agent_acp_task_request_dispatch_writes_prompt_candidate_frame(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_acp_task",
+            "frontend-local-agent-acp-task",
+        )
+        initialize_capture_path = Path(self.tempdir.name) / "acp_initialize_capture_task.json"
+        task_capture_path = Path(self.tempdir.name) / "acp_task_capture.json"
+        sleeper = Path(self.tempdir.name) / "fake_acp_agent_task.py"
+        sleeper.write_text(
+            "import json, sys, time\n"
+            f"initialize_capture_path = r'''{initialize_capture_path}'''\n"
+            f"task_capture_path = r'''{task_capture_path}'''\n"
+            "line1 = sys.stdin.readline()\n"
+            "with open(initialize_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line1)\n"
+            "request1 = json.loads(line1)\n"
+            "response1 = {\n"
+            "    'id': request1.get('id'),\n"
+            "    'result': {\n"
+            "        'protocolVersion': request1.get('params', {}).get('protocolVersion'),\n"
+            "        'serverInfo': {'name': 'fake-acp-server', 'version': '0.1-test'},\n"
+            "        'serverCapabilities': {'tasks': True},\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response1) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "line2 = sys.stdin.readline()\n"
+            "with open(task_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line2)\n"
+            "request2 = json.loads(line2)\n"
+            "response2 = {\n"
+            "    'id': request2.get('id'),\n"
+            "    'result': {\n"
+            "        'stopReason': 'end_turn',\n"
+            "        'content': [{'type': 'text', 'text': 'task-ok'}],\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response2) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": False,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-acp-task-node",
+            token="token-local-agent-acp-task",
+            db_path=str(Path(self.tempdir.name) / "local-agent-acp-task.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "acp-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "payload": {"input": {"prompt": "Review this ACP task request"}},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-task",
+                public_key=public_key,
+            )
+            _, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-task",
+                public_key=public_key,
+            )
+            registration = register_payload["item"]
+            _, open_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-task",
+                public_key=public_key,
+            )
+            session_id = open_payload["session"]["session_id"]
+            self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/initialize",
+                {
+                    "session_id": session_id,
+                    "protocol_version": "0.1-preview",
+                    "client_capabilities": {"tasks": True},
+                    "client_info": {"name": "agentcoin-test", "version": "0.1-test"},
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-task",
+                public_key=public_key,
+            )
+
+            task_request_status, task_request_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/task-request",
+                {
+                    "session_id": session_id,
+                    "task_id": "acp-task-1",
+                    "server_session_id": "server-session-123",
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-task",
+                public_key=public_key,
+            )
+            self.assertEqual(task_request_status, HTTPStatus.OK)
+            self.assertTrue(task_request_payload["dispatched"])
+            self.assertEqual(task_request_payload["task_request_intent"]["request"]["method"], "prompt")
+            self.assertEqual(
+                task_request_payload["task_request_intent"]["request"]["params"]["sessionId"],
+                "server-session-123",
+            )
+            self.assertEqual(
+                task_request_payload["task_request_intent"]["request"]["params"]["prompt"][0]["text"],
+                "Review this ACP task request",
+            )
+            self.assertEqual(task_request_payload["session"]["protocol_state"], "task-response-pending")
+            self.assertEqual(
+                task_request_payload["protocol_boundary"]["task_semantics_implemented"],
+                "prompt-request-skeleton-only",
+            )
+
+            deadline = time.time() + 5
+            while time.time() < deadline and not task_capture_path.exists():
+                time.sleep(0.1)
+            self.assertTrue(task_capture_path.exists())
+            captured = json.loads(task_capture_path.read_text(encoding="utf-8"))
+            self.assertEqual(captured["method"], "prompt")
+            self.assertEqual(captured["params"]["sessionId"], "server-session-123")
+            self.assertEqual(captured["params"]["prompt"][0]["text"], "Review this ACP task request")
+
+            poll_deadline = time.time() + 5
+            poll_payload: dict[str, object] = {}
+            while time.time() < poll_deadline:
+                _, polled = self._identity_signed_post(
+                    f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                    {"session_id": session_id},
+                    private_key_path=key_path,
+                    principal="frontend-local-agent-acp-task",
+                    public_key=public_key,
+                )
+                poll_payload = polled
+                latest = polled.get("latest_server_frame") or {}
+                parsed = latest.get("parsed") if isinstance(latest, dict) else None
+                if isinstance(parsed, dict) and parsed.get("result", {}).get("content"):
+                    break
+                time.sleep(0.1)
+            latest_server_frame = poll_payload["latest_server_frame"]
+            self.assertEqual(poll_payload["session"]["protocol_state"], "task-response-captured")
+            self.assertEqual(latest_server_frame["parsed"]["result"]["content"][0]["text"], "task-ok")
+        finally:
+            node.stop()
+
     def test_workflow_execute_returns_402_without_payment_receipt(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_payment_402", "frontend-local-payment-402")
         onchain = OnchainBindings(

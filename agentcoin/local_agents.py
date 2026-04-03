@@ -141,6 +141,12 @@ class LocalAgentManager:
                 record["initialize_response_captured"] = True
                 if not record.get("initialize_response_received_at"):
                     record["initialize_response_received_at"] = latest_frame.get("received_at")
+            if bool(record.get("task_request_sent")):
+                record["protocol_state"] = "task-response-captured"
+                record["task_response_captured"] = True
+                record["latest_task_response_frame"] = latest_frame
+                if not record.get("task_response_received_at"):
+                    record["task_response_received_at"] = latest_frame.get("received_at")
         return dict(record)
 
     def _build_acp_initialize_intent(
@@ -224,6 +230,90 @@ class LocalAgentManager:
             stored["handshake_state"] = "initialize-prepared"
             stored["protocol_state"] = "initialize-dispatch-pending"
         return {"session": dict(stored), "initialize_intent": intent, "dispatched": bool(dispatch)}
+
+    def _build_acp_task_request_intent(
+        self,
+        session_id: str,
+        *,
+        server_session_id: str,
+        prompt_text: str,
+        task_ref: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        request_id = str(uuid4())
+        request = {
+            "id": request_id,
+            "method": "prompt",
+            "params": {
+                "sessionId": server_session_id,
+                "prompt": [{"type": "text", "text": prompt_text}],
+            },
+        }
+        return {
+            "kind": "agentcoin-acp-task-request-intent",
+            "session_id": session_id,
+            "server_session_id": server_session_id,
+            "transport": "stdio",
+            "wire_format": "ndjson-json-candidate",
+            "task_ref": dict(task_ref or {}),
+            "request": request,
+            "mapping": {
+                "agentcoin_kind": str((task_ref or {}).get("kind") or ""),
+                "agentcoin_role": str((task_ref or {}).get("role") or ""),
+                "agentcoin_task_id": str((task_ref or {}).get("task_id") or ""),
+                "prompt_text_source": "task",
+            },
+            "notes": [
+                "AgentCoin currently maps a local task into a best-effort ACP prompt request candidate.",
+                "This is an ACP task-request skeleton and does not yet validate or interpret full ACP task semantics.",
+            ],
+            "generated_at": utc_now(),
+        }
+
+    def prepare_acp_task_request(
+        self,
+        session_id: str,
+        *,
+        server_session_id: str,
+        prompt_text: str,
+        task_ref: dict[str, Any] | None = None,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        session = self.get_acp_session(session_id)
+        if not session:
+            raise ValueError("acp session not found")
+        if str(session.get("status") or "") != "open":
+            raise ValueError("acp session is not open")
+        registration_id = str(session.get("registration_id") or "")
+        process = self._processes.get(registration_id)
+        if process is None or process.stdin is None:
+            raise ValueError("acp session transport is not writable")
+        normalized_server_session_id = str(server_session_id or "").strip()
+        if not normalized_server_session_id:
+            raise ValueError("server_session_id is required")
+        normalized_prompt_text = str(prompt_text or "").strip()
+        if not normalized_prompt_text:
+            raise ValueError("prompt_text is required")
+        intent = self._build_acp_task_request_intent(
+            session_id,
+            server_session_id=normalized_server_session_id,
+            prompt_text=normalized_prompt_text,
+            task_ref=task_ref,
+        )
+        stored = self._acp_sessions[session_id]
+        stored["last_task_request_intent"] = intent
+        stored["last_client_frame"] = dict(intent.get("request") or {})
+        stored["updated_at"] = utc_now()
+        if dispatch:
+            encoded = json.dumps(intent["request"], ensure_ascii=False, separators=(",", ":")) + "\n"
+            process.stdin.write(encoded)
+            process.stdin.flush()
+            stored["task_request_sent"] = True
+            stored["task_request_sent_at"] = utc_now()
+            stored["protocol_state"] = "task-response-pending"
+        else:
+            stored["task_request_sent"] = False
+            stored["protocol_state"] = "task-request-dispatch-pending"
+        return {"session": dict(stored), "task_request_intent": intent, "dispatched": bool(dispatch)}
 
     def poll_acp_session(self, session_id: str) -> dict[str, Any]:
         session = self.get_acp_session(session_id)

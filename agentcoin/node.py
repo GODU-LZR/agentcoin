@@ -139,6 +139,7 @@ class AgentCoinNode:
                 "local_agent_acp_session_close_url": card.get("endpoints", {}).get("local_agent_acp_session_close"),
                 "local_agent_acp_session_initialize_url": card.get("endpoints", {}).get("local_agent_acp_session_initialize"),
                 "local_agent_acp_session_poll_url": card.get("endpoints", {}).get("local_agent_acp_session_poll"),
+                "local_agent_acp_session_task_request_url": card.get("endpoints", {}).get("local_agent_acp_session_task_request"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -1063,6 +1064,63 @@ class AgentCoinNode:
         ):
             raise ValueError("discovered local agent is not launchable")
         return self.local_agents.register_discovered_agent(discovered)
+
+    @staticmethod
+    def _acp_prompt_text_from_task(task: dict[str, Any]) -> str:
+        payload = dict(task.get("payload") or {})
+        runtime = dict(payload.get("_runtime") or {})
+        input_value = payload.get("input")
+        if isinstance(input_value, str) and input_value.strip():
+            return input_value.strip()
+        if isinstance(input_value, dict):
+            for key in ("prompt", "content", "text", "query", "instruction"):
+                candidate = input_value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            serialized_input = json.dumps(input_value, ensure_ascii=False, sort_keys=True)
+            if serialized_input.strip():
+                return serialized_input
+        runtime_prompt = runtime.get("prompt")
+        if isinstance(runtime_prompt, str) and runtime_prompt.strip():
+            return runtime_prompt.strip()
+        return json.dumps(
+            {
+                "task_id": task.get("id"),
+                "kind": task.get("kind"),
+                "role": task.get("role"),
+                "payload": payload,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def prepare_local_acp_task_request(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        server_session_id: str,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            raise ValueError("task_id is required")
+        task = self.store.get_task(normalized_task_id)
+        if not task:
+            raise ValueError("task not found")
+        task_ref = {
+            "task_id": task.get("id"),
+            "kind": task.get("kind"),
+            "role": task.get("role"),
+        }
+        prompt_text = self._acp_prompt_text_from_task(task)
+        return self.local_agents.prepare_acp_task_request(
+            session_id,
+            server_session_id=server_session_id,
+            prompt_text=prompt_text,
+            task_ref=task_ref,
+            dispatch=dispatch,
+        )
 
     def payment_ops_summary(self, *, receipt_id: str | None = None, relay_limit: int = 5) -> dict[str, Any]:
         normalized_receipt_id = str(receipt_id or "").strip() or None
@@ -4869,6 +4927,7 @@ class AgentCoinNode:
                                 "/v1/discovery/local-agents/acp-session/close",
                                 "/v1/discovery/local-agents/acp-session/initialize",
                                 "/v1/discovery/local-agents/acp-session/poll",
+                                "/v1/discovery/local-agents/acp-session/task-request",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
@@ -5224,6 +5283,34 @@ class AgentCoinNode:
                                     "transport_ready": True,
                                     "protocol_messages_implemented": False,
                                     "server_response_parsing_implemented": "best-effort-json-frame-capture-only",
+                                },
+                            },
+                        )
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/task-request":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/task-request"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        session_id = str(payload.get("session_id") or "").strip()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        server_session_id = str(payload.get("server_session_id") or "").strip()
+                        prepared = node.prepare_local_acp_task_request(
+                            session_id=session_id,
+                            task_id=task_id,
+                            server_session_id=server_session_id,
+                            dispatch=bool(payload.get("dispatch")),
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                **prepared,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                    "task_semantics_implemented": "prompt-request-skeleton-only",
                                 },
                             },
                         )
