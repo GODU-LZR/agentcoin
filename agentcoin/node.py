@@ -2284,12 +2284,35 @@ class AgentCoinNode:
                 except ValueError:
                     return remote_address.lower() == "localhost"
 
-            def _has_valid_bearer_auth(self) -> bool:
-                configured = node.config.auth_token.strip()
-                if not configured:
-                    return True
+            def _resolve_bearer_auth(self) -> dict[str, Any] | None:
                 header = self.headers.get("Authorization", "")
-                return header == f"Bearer {configured}"
+                if not header.startswith("Bearer "):
+                    return None
+                token = str(header[7:] or "").strip()
+                if not token:
+                    return None
+
+                configured = node.config.auth_token.strip()
+                if configured and token == configured:
+                    return {
+                        "kind": "shared",
+                        "token_id": "shared-bearer",
+                        "granted_scopes": ["local-admin"],
+                        "source_restrictions": [],
+                    }
+                try:
+                    scoped = node.config.resolve_scoped_bearer_token(token)
+                except KeyError:
+                    return None
+                return {
+                    "kind": "scoped",
+                    "token_id": scoped.token_id,
+                    "granted_scopes": node._expand_operator_scopes(scoped.normalized_scopes),
+                    "source_restrictions": scoped.normalized_source_restrictions,
+                }
+
+            def _has_valid_bearer_auth(self) -> bool:
+                return self._resolve_bearer_auth() is not None
 
             @staticmethod
             def _parse_signed_timestamp(value: str) -> datetime:
@@ -2476,8 +2499,26 @@ class AgentCoinNode:
                             policy_level=int(default_policy.get("policy_level") or 0),
                             required_scopes=list(default_policy.get("required_scopes") or []),
                         )
-                    if self._has_valid_bearer_auth():
+                    bearer_auth = self._resolve_bearer_auth()
+                    if bearer_auth and str(bearer_auth.get("kind") or "") == "shared":
                         return self._auth_context(policy_tier="local-admin")
+                    if bearer_auth and str(bearer_auth.get("kind") or "") == "scoped":
+                        auth_context = self._auth_context(
+                            policy_tier="local-admin",
+                            mode="scoped-bearer",
+                            key_id=str(bearer_auth.get("token_id") or "").strip() or None,
+                            operator_id=str(bearer_auth.get("token_id") or "").strip() or None,
+                            granted_scopes=list(bearer_auth.get("granted_scopes") or []),
+                            downgraded=True,
+                        )
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="scoped bearer token cannot access endpoint without explicit scope policy",
+                            reason="scoped bearer token requires an explicit endpoint scope policy",
+                            reason_code="scoped-bearer-policy-missing",
+                            auth_context=auth_context,
+                        )
+                        return None
                     self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                     return None
 
@@ -2486,7 +2527,8 @@ class AgentCoinNode:
                     policy_level=policy_level,
                     required_scopes=normalized_scopes,
                 )
-                if not self._has_valid_bearer_auth():
+                bearer_auth = self._resolve_bearer_auth()
+                if not bearer_auth:
                     self._deny_operator_auth(
                         status=HTTPStatus.UNAUTHORIZED,
                         error_message="unauthorized",
@@ -2729,6 +2771,53 @@ class AgentCoinNode:
                         reason="signed operator request verified",
                         auth_context=auth_context,
                         payload={"signed_headers_present": True},
+                    )
+                    return auth_context
+
+                if str(bearer_auth.get("kind") or "") == "scoped":
+                    auth_context = self._auth_context(
+                        policy_tier=policy_tier,
+                        policy_level=policy_level,
+                        required_scopes=normalized_scopes,
+                        mode="scoped-bearer",
+                        key_id=str(bearer_auth.get("token_id") or "").strip() or None,
+                        operator_id=str(bearer_auth.get("token_id") or "").strip() or None,
+                        granted_scopes=list(bearer_auth.get("granted_scopes") or []),
+                        downgraded=True,
+                    )
+                    if not self._is_loopback_request():
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="scoped bearer tokens are restricted to loopback access",
+                            reason="scoped bearer downgrade is only allowed from loopback",
+                            reason_code="non-loopback-downgrade-denied",
+                            auth_context=auth_context,
+                        )
+                        return None
+                    source_restrictions = list(bearer_auth.get("source_restrictions") or [])
+                    if "loopback-only" in source_restrictions and not self._is_loopback_request():
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="scoped bearer source restriction denied request",
+                            reason="scoped bearer token is restricted to loopback sources",
+                            reason_code="source-restriction-denied",
+                            auth_context=auth_context,
+                        )
+                        return None
+                    if normalized_scopes and not set(normalized_scopes).intersection(auth_context["granted_scopes"]):
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="scoped bearer scope is not allowed for this endpoint",
+                            reason="scoped bearer scopes do not authorize this endpoint",
+                            reason_code="scope-denied",
+                            auth_context=auth_context,
+                        )
+                        return None
+                    self._record_operator_auth_audit(
+                        decision="allowed",
+                        reason="loopback scoped bearer accepted",
+                        auth_context=auth_context,
+                        payload={"fallback": True, "token_kind": "scoped"},
                     )
                     return auth_context
 

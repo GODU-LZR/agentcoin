@@ -169,6 +169,12 @@ Each identity should map to:
 - map existing operator endpoints to scopes
 - add auth-failure audit records
 
+Current implementation status:
+
+- loopback-only scoped bearer tokens now exist for explicitly scoped endpoints
+- scoped bearer requests are audited and scope-checked
+- scoped bearer tokens are treated as an explicit downgraded local-automation path, not the preferred high-risk steady state
+
 ### Phase 3: Signed operator requests
 
 - add canonical request signing and verification

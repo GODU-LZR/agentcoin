@@ -132,6 +132,37 @@ class OperatorIdentityConfig:
 
 
 @dataclass(slots=True)
+class ScopedBearerTokenConfig:
+    token_id: str
+    token: str
+    name: str | None = None
+    scopes: list[str] = field(default_factory=list)
+    source_restrictions: list[str] = field(default_factory=list)
+    enabled: bool = True
+
+    @property
+    def normalized_scopes(self) -> list[str]:
+        scopes: list[str] = []
+        for candidate in self.scopes:
+            normalized = str(candidate or "").strip().lower()
+            if normalized and normalized not in scopes:
+                scopes.append(normalized)
+        return scopes
+
+    @property
+    def normalized_source_restrictions(self) -> list[str]:
+        restrictions: list[str] = []
+        for candidate in self.source_restrictions:
+            normalized = str(candidate or "").strip().lower()
+            if normalized and normalized not in restrictions:
+                restrictions.append(normalized)
+        return restrictions
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class NodeConfig:
     node_id: str = "agentcoin-local"
     name: str = "AgentCoin Reference Node"
@@ -148,6 +179,7 @@ class NodeConfig:
     identity_public_keys: list[str] = field(default_factory=list)
     identity_revoked_public_keys: list[str] = field(default_factory=list)
     operator_identities: list[OperatorIdentityConfig] = field(default_factory=list)
+    scoped_bearer_tokens: list[ScopedBearerTokenConfig] = field(default_factory=list)
     operator_allow_loopback_bearer_fallback: bool = False
     operator_auth_timestamp_skew_seconds: int = 300
     operator_auth_nonce_ttl_seconds: int = 900
@@ -299,11 +331,21 @@ class NodeConfig:
                 return operator
         raise KeyError(normalized_key_id)
 
+    def resolve_scoped_bearer_token(self, token: str) -> ScopedBearerTokenConfig:
+        normalized_token = str(token or "").strip()
+        for bearer in self.scoped_bearer_tokens:
+            if bearer.enabled and str(bearer.token or "").strip() == normalized_token:
+                return bearer
+        raise KeyError(normalized_token)
+
     def peers_view(self) -> list[dict[str, Any]]:
         return [peer.to_dict() for peer in self.peers]
 
     def operator_identities_view(self) -> list[dict[str, Any]]:
         return [operator.to_dict() for operator in self.operator_identities]
+
+    def scoped_bearer_tokens_view(self) -> list[dict[str, Any]]:
+        return [bearer.to_dict() for bearer in self.scoped_bearer_tokens]
 
 
 def load_config(path: str | None) -> NodeConfig:
@@ -315,6 +357,9 @@ def load_config(path: str | None) -> NodeConfig:
     data["peers"] = [PeerConfig(**peer) for peer in data.get("peers", [])]
     data["operator_identities"] = [
         OperatorIdentityConfig(**operator) for operator in data.get("operator_identities", [])
+    ]
+    data["scoped_bearer_tokens"] = [
+        ScopedBearerTokenConfig(**bearer) for bearer in data.get("scoped_bearer_tokens", [])
     ]
     data["network"] = OutboundNetworkConfig(**data.get("network", {}))
     data["onchain"] = OnchainBindings(**data.get("onchain", {}))

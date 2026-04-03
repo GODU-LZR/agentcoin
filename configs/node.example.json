@@ -13,6 +13,32 @@
   "operator_allow_loopback_bearer_fallback": false,
   "operator_auth_timestamp_skew_seconds": 300,
   "operator_auth_nonce_ttl_seconds": 900,
+  "scoped_bearer_tokens": [
+    {
+      "token_id": "bearer:observer-local",
+      "name": "Local Read-Only Automation Token",
+      "token": "replace-with-read-only-bearer-token",
+      "scopes": [
+        "read-only"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    },
+    {
+      "token_id": "bearer:workflow-local",
+      "name": "Local Workflow Automation Token",
+      "token": "replace-with-workflow-admin-bearer-token",
+      "scopes": [
+        "workflow-admin"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    }
+  ],
   "operator_identities": [
     {
       "key_id": "read-only:observer-1",

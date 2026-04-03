@@ -140,6 +140,7 @@ The following behaviors are now covered either by automated tests or previously 
 - replay-inspect now exposes the latest settlement reconciliation status and receipt count for a task
 - signed `read-only` operator auth now also covers Git observability endpoints such as `GET /v1/git/status` and `GET /v1/git/diff`, including inherited scope acceptance and denial audit persistence
 - signed `read-only` operator auth now also covers dispatch and PoAW observability endpoints such as `GET /v1/tasks/dispatch/preview`, `GET /v1/poaw/events`, and `GET /v1/poaw/summary`
+- loopback-only scoped bearer tokens now have targeted integration coverage for `read-only` observability and `workflow-admin` local automation, including scope-denied audit persistence
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

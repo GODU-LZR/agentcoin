@@ -374,6 +374,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 - worker execution is still a skeleton
 - review policy and branch protection are still MVP-grade rather than production-grade
 - operator auth is still not production-complete, but a Tier 1 read-only slice now covers preview POST endpoints plus selected replay, dispute, settlement, governance, and operational observability GET endpoints when `operator_identities` are configured, while Tier 2 workflow-admin and bridge-admin plus Tier 3 and Tier 4 write paths support signed operator requests, nonce replay rejection, denial policy receipts, durable auth audit records, and workflow / bridge governance receipts; broader diagnostic and operator-only coverage, scoped bearer tokens, and deployment hardening remain unfinished
+- operator auth now also supports loopback-only scoped bearer tokens for local automation on explicitly scoped endpoints, while signed requests remain the intended steady-state control for higher-risk operator flows
 
 ## Current Verification
 

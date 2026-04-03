@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from urllib import error, request
 
 from agentcoin.adapters import AdapterPolicy
-from agentcoin.config import NodeConfig, OperatorIdentityConfig, PeerConfig
+from agentcoin.config import NodeConfig, OperatorIdentityConfig, PeerConfig, ScopedBearerTokenConfig
 from agentcoin.net import OutboundNetworkConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.onchain import OnchainBindings
@@ -37,6 +37,7 @@ class NodeHarness:
                  identity_public_key: str | None = None, identity_public_keys: list[str] | None = None,
                  identity_revoked_public_keys: list[str] | None = None,
                  operator_identities: list[OperatorIdentityConfig] | None = None,
+                 scoped_bearer_tokens: list[ScopedBearerTokenConfig] | None = None,
                  operator_allow_loopback_bearer_fallback: bool = False,
                  operator_auth_timestamp_skew_seconds: int = 300,
                  operator_auth_nonce_ttl_seconds: int = 900,
@@ -62,6 +63,7 @@ class NodeHarness:
             identity_public_keys=identity_public_keys or [],
             identity_revoked_public_keys=identity_revoked_public_keys or [],
             operator_identities=operator_identities or [],
+            scoped_bearer_tokens=scoped_bearer_tokens or [],
             operator_allow_loopback_bearer_fallback=operator_allow_loopback_bearer_fallback,
             operator_auth_timestamp_skew_seconds=operator_auth_timestamp_skew_seconds,
             operator_auth_nonce_ttl_seconds=operator_auth_nonce_ttl_seconds,
@@ -4053,6 +4055,161 @@ class NodeIntegrationTests(unittest.TestCase):
                 {"read-only:observer-1", "workflow-admin:ops-1"},
             )
             self.assertEqual(summary_audits[2]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+        finally:
+            node.stop()
+
+    def test_scoped_bearer_token_can_access_read_only_observability_on_loopback(self) -> None:
+        node = NodeHarness(
+            node_id="scoped-bearer-read-only-node",
+            token="token-scoped-bearer-read-only",
+            db_path=str(Path(self.tempdir.name) / "scoped-bearer-read-only.db"),
+            capabilities=["planner", "worker"],
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="workflow-admin:ops-1",
+                    shared_secret="workflow-admin-secret",
+                    scopes=["workflow-admin"],
+                ),
+            ],
+            scoped_bearer_tokens=[
+                ScopedBearerTokenConfig(
+                    token_id="bearer:observer-1",
+                    token="read-only-bearer-token",
+                    scopes=["read-only"],
+                    source_restrictions=["loopback-only"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-scoped-bearer-read-only",
+                {"id": "scoped-bearer-poaw-task", "kind": "generic", "role": "worker", "payload": {"goal": "observe"}},
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-scoped-bearer-read-only",
+                {"worker_id": "worker-scoped-bearer", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-scoped-bearer-read-only",
+                {
+                    "task_id": "scoped-bearer-poaw-task",
+                    "worker_id": "worker-scoped-bearer",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True},
+                },
+            )
+
+            summary_status, summary = self._get_auth(
+                f"{node.base_url}/v1/poaw/summary?task_id=scoped-bearer-poaw-task",
+                "read-only-bearer-token",
+            )
+            self.assertEqual(summary_status, 200)
+            self.assertEqual(summary["task_id"], "scoped-bearer-poaw-task")
+            self.assertGreaterEqual(int(summary["total_points"] or 0), 1)
+
+            preview_status, preview = self._get_auth(
+                f"{node.base_url}/v1/tasks/dispatch/preview?required_capabilities=worker",
+                "read-only-bearer-token",
+            )
+            self.assertEqual(preview_status, 200)
+            self.assertEqual(preview["required_capabilities"], ["worker"])
+
+            denied_fanout_status, denied_fanout = self._post(
+                f"{node.base_url}/v1/workflows/fanout",
+                "read-only-bearer-token",
+                {"parent_task_id": "missing-parent", "subtasks": [{"id": "child-x", "kind": "code", "role": "worker"}]},
+            )
+            self.assertEqual(denied_fanout_status, 403)
+            self.assertEqual(denied_fanout["policy_receipt"]["reason_code"], "scope-denied")
+
+            summary_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/poaw/summary", limit=10)
+            self.assertEqual(summary_audits[0]["decision"], "allowed")
+            self.assertEqual(summary_audits[0]["key_id"], "bearer:observer-1")
+            self.assertEqual(summary_audits[0]["auth_mode"], "scoped-bearer")
+            self.assertTrue(summary_audits[0]["payload"]["downgraded"])
+
+            fanout_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/workflows/fanout", limit=10)
+            self.assertEqual(fanout_audits[0]["decision"], "denied")
+            self.assertEqual(fanout_audits[0]["key_id"], "bearer:observer-1")
+            self.assertEqual(fanout_audits[0]["payload"]["policy_receipt"]["reason_code"], "scope-denied")
+        finally:
+            node.stop()
+
+    def test_scoped_bearer_token_can_access_matching_workflow_admin_scope_on_loopback(self) -> None:
+        node = NodeHarness(
+            node_id="scoped-bearer-workflow-node",
+            token="token-scoped-bearer-workflow",
+            db_path=str(Path(self.tempdir.name) / "scoped-bearer-workflow.db"),
+            capabilities=["planner", "worker"],
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="workflow-admin:ops-1",
+                    shared_secret="workflow-admin-secret",
+                    scopes=["workflow-admin"],
+                ),
+            ],
+            scoped_bearer_tokens=[
+                ScopedBearerTokenConfig(
+                    token_id="bearer:workflow-1",
+                    token="workflow-admin-bearer-token",
+                    scopes=["workflow-admin"],
+                    source_restrictions=["loopback-only"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-scoped-bearer-workflow",
+                {"id": "scoped-bearer-root", "kind": "plan", "role": "planner", "payload": {}},
+            )
+
+            fanout_status, fanout = self._post(
+                f"{node.base_url}/v1/workflows/fanout",
+                "workflow-admin-bearer-token",
+                {
+                    "parent_task_id": "scoped-bearer-root",
+                    "subtasks": [{"id": "scoped-bearer-child", "kind": "code", "role": "worker"}],
+                },
+            )
+            self.assertEqual(fanout_status, 201)
+            self.assertEqual(fanout["action"]["action_type"], "workflow-fanout")
+            self.assertEqual(fanout["action"]["operator_id"], "bearer:workflow-1")
+            self.assertEqual(len(fanout["items"]), 1)
+            self.assertEqual(fanout["items"][0]["id"], "scoped-bearer-child")
+
+            denied_bridge_status, denied_bridge = self._post(
+                f"{node.base_url}/v1/bridges/import",
+                "workflow-admin-bearer-token",
+                {
+                    "protocol": "mcp",
+                    "message": {
+                        "id": "scoped-bearer-bridge-denied-1",
+                        "method": "tools/call",
+                        "params": {"name": "reviewer", "arguments": {"path": "README.md"}},
+                        "sender": "bridge-client",
+                    },
+                    "task_overrides": {"id": "scoped-bearer-bridge-denied-task", "role": "worker"},
+                },
+            )
+            self.assertEqual(denied_bridge_status, 403)
+            self.assertEqual(denied_bridge["policy_receipt"]["reason_code"], "scope-denied")
+
+            fanout_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/workflows/fanout", limit=10)
+            self.assertEqual(fanout_audits[0]["decision"], "allowed")
+            self.assertEqual(fanout_audits[0]["key_id"], "bearer:workflow-1")
+            self.assertEqual(fanout_audits[0]["auth_mode"], "scoped-bearer")
+
+            bridge_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/bridges/import", limit=10)
+            self.assertEqual(bridge_audits[0]["decision"], "denied")
+            self.assertEqual(bridge_audits[0]["key_id"], "bearer:workflow-1")
+            self.assertEqual(bridge_audits[0]["payload"]["policy_receipt"]["reason_code"], "scope-denied")
         finally:
             node.stop()
 
