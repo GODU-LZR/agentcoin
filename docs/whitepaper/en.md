@@ -4,22 +4,37 @@
 
 ## Abstract
 
+For first-time participants, this whitepaper should be read as AgentCoin's statement of intent, value system, and trust model before entering the network.
+
+This is not a neutral product brief. It is a position paper. AgentCoin starts from a simple conviction: the next valuable primitive is not an isolated model endpoint, but machine work that can be discovered, composed, verified, priced, rented, and traded.
+
 AgentCoin is a proposed decentralized coordination layer for the next generation of AI systems. It is designed to turn isolated agents into a cross-node swarm network where heterogeneous runtimes can discover one another, negotiate work, execute tasks inside controlled environments, produce verifiable evidence, and settle rewards according to delivered value. The goal is not to replace existing agent frameworks, but to make them interoperable inside a shared protocol and runtime model.
 
-This whitepaper defines the core architecture, trust assumptions, and staged rollout path for AgentCoin. It treats interoperability, useful-work settlement, decentralized orchestration, and secure execution as one integrated system.
+This whitepaper defines the core architecture, trust assumptions, and staged rollout path for AgentCoin. It treats interoperability, useful-work settlement, decentralized orchestration, and secure execution as one integrated system. Beyond task execution, AgentCoin aims to make high-value industry workflows, reusable skills, and idle agent compute rentable, leasable, and tradable network assets.
 
 Implementation note: this whitepaper is the blueprint, not a line-by-line description of the current repository state. The repository already includes an executable MVP baseline with a reference node, local PoAW / dispute / settlement control loops, Headscale overlay deployment examples, and a local multi-node Docker Compose demo. For the current implementation status, see `docs/architecture/implementation-roadmap.md` and `docs/project/overview.md`.
 
 ## 1. Problem Statement
 
-Modern agents are improving quickly, but the deployment model remains fragmented. Most systems are still trapped inside a single vendor stack, a single orchestration process, or a single private runtime. That creates four structural problems:
+Modern agents are improving quickly, but the deployment model remains fragmented. Most systems are still trapped inside a single vendor stack, a single orchestration process, or a single private runtime. That creates five structural problems:
 
 - agents cannot reliably collaborate across frameworks or organizations;
 - useful work is hard to verify and price;
 - centralized supervisors become bottlenecks and single points of failure;
 - high-permission agents are often executed without strong runtime isolation.
+- valuable workflows, specialized skills, and spare agent capacity remain trapped inside private stacks and cannot be safely monetized or reused.
 
 AgentCoin starts from the premise that these are protocol problems, not merely application problems.
+
+## Why AgentCoin Must Exist
+
+If software delivery, research, operations, and knowledge work are increasingly becoming agent-mediated, then the strategic question is no longer only who owns the model. It is who can turn workflows, skills, and compute into liquid network assets.
+
+Today, high-value capability is trapped inside private stacks. Domain experts cannot safely lease their workflows. Specialized skills cannot be standardized and licensed cleanly. Nodes with spare capacity cannot efficiently connect to real demand. Capability stays illiquid, markets stay thin, and know-how fails to compound into durable economic infrastructure.
+
+AgentCoin must exist because the ecosystem needs a new base layer where capability can be published, discovered, combined, rented, traded, and settled without forcing owners to leak proprietary data, internal reasoning paths, or operational control.
+
+The goal is not another closed agent platform. The goal is a peer-to-peer P2P production network where high-value workflows, specialized skills, and idle agent compute can circulate as productive assets.
 
 ## 2. Design Principles
 
@@ -47,6 +62,10 @@ Runtime control, network permissions, and tool access must be enforced by archit
 
 The system should launch as a practical MVP before expanding into a fully open decentralized network.
 
+### 2.7 Capability liquidity
+
+AgentCoin should not only match one-off tasks. It should also let high-value workflows, specialized skills, and idle agent capacity become publishable, discoverable, licensable, rentable, and tradable assets without forcing owners to leak proprietary logic, data, or operating details. Reusable know-how should be able to earn continuously, not only through custom engagements.
+
 ## 3. Four-Layer Architecture
 
 ### 3.1 Interoperability Layer
@@ -70,6 +89,14 @@ The settlement model combines:
 - latency and waste penalties.
 
 The system separates usage pricing from the volatile network asset. Employers pay with usage credits or stable pricing units. Worker nodes receive network-native rewards based on verified contribution. This separation keeps the buyer experience stable while preserving network-level incentives.
+
+In the long run, AgentCoin is not just a task marketplace. It supports three overlapping markets:
+
+- an on-demand execution market;
+- a workflow and skills licensing / rental / trading market;
+- an idle agent compute and execution-capacity rental market.
+
+That means a node can do more than execute jobs. It can publish valuable workflows, rent out invocation rights to specialized skills, or lease unused capacity during off-peak periods. Buyers can then compose compute, skills, workflows, and agent teams into higher-value delivery systems.
 
 ### 3.3 Swarm Orchestration Layer
 
@@ -100,6 +127,7 @@ Each participating node is defined by a standard runtime shape.
 | `Capability Card` | Declares model family, tools, task types, supported policies, and pricing hints |
 | `Gateway` | Controls ingress, egress, permissions, receipts, and protocol translation |
 | `Runtime` | Executes the local agent framework or specialized worker logic |
+| `Skill / Workflow Catalog` | Publishes rentable workflows, reusable skills, license terms, and invocation boundaries |
 | `Checkpoint Store` | Persists task graph state, intermediate outputs, and replay artifacts |
 | `Wallet / Stake` | Supports rewards, collateral, and slashing |
 | `Reputation Record` | Tracks completion history, validation outcomes, and dispute events |
@@ -147,6 +175,38 @@ Where:
 
 Verification can evolve in stages. The early network can rely on execution receipts, cross-checking, replay, sampled re-execution, and deterministic tool logs. Later phases can introduce optimistic dispute games, formal attestations, and selective zero-knowledge proofs where they are economically justified.
 
+### 6.1 Market Mechanisms and Pricing Principles
+
+AgentCoin does not only trade one-off execution outcomes. It supports three asset classes in parallel: workflows, skills, and compute.
+
+- `workflows` are traded as licensed delivery systems and are best priced by duration, domain scope, invocation boundary, or exclusivity;
+- `skills` are traded as capability-access rights and are best priced per call, per quota, per subscription, or through outcome-based revenue share;
+- `compute` is traded as execution time, concurrency, and availability, and is best priced by time window, load profile, and reliability.
+
+This market should follow five pricing principles:
+
+- buyers purchase usage and delivery rights, not the underlying proprietary logic by default;
+- pricing should reflect delivered value, scarcity, trust, and risk before raw token expenditure alone;
+- assets with stronger verification, higher reliability, and stronger exclusivity should earn premiums;
+- breach, low-quality delivery, false claims, and resource waste must feed directly into discounts and penalties;
+- spot execution, recurring leases, and long-term licenses should coexist so participants can choose the right economic form.
+
+In the mature form of the network, a buyer should be able to place a composite order that rents a workflow, accesses specialized skills, and reserves compute capacity in one settlement path. On the supply side, nodes should be able to decompose capability into standardized products and list them across multiple markets to improve reuse and income stability.
+
+### 6.2 How Suppliers Publish Workflow, Skills, and Compute Assets
+
+Inside AgentCoin, a supplier is not merely bringing a node online. A supplier is packaging capability into standardized assets that the market can understand, verify, and purchase.
+
+A mature publication flow should include at least five steps:
+
+- `identify the asset class`: clarify whether the offer is a workflow, a skill, or compute, instead of mixing delivery systems, invocation rights, and raw capacity together;
+- `define delivery boundaries`: state what the asset solves, what it does not solve, what invocation limits apply, and whether exclusivity or domain restrictions exist;
+- `declare verification and acceptance rules`: specify success criteria, evidence format, failure conditions, refund logic, and dispute handling;
+- `choose the supply and pricing model`: decide whether the asset is sold per call, per period, per subscription, per time slot, or through outcome-based revenue share;
+- `compound reputation and repackage`: turn repeatedly successful offers into higher-trust, higher-premium products.
+
+Over time, the strongest suppliers will not behave only as contractors. They will behave as asset issuers. They will turn scattered domain expertise into standardized workflows, reusable skills, and reliable compute supply that can earn across multiple markets at once.
+
 ## 7. Trust, Security, and Governance
 
 Trust in AgentCoin is not binary. It is layered.
@@ -186,9 +246,15 @@ Support broader participation, staking, slashing, and progressively stronger tru
 - enterprise workflow automation where agents need role separation and auditability;
 - research swarms that combine retrieval, reasoning, analysis, and synthesis;
 - cross-organization task markets for specialized AI services.
+- workflow and skills exchanges where high-value industry know-how is packaged as licensable, rentable, tradable capability;
+- idle agent compute markets where spare node time and execution bandwidth can be leased to network demand.
 
 ## 10. Conclusion
 
 AgentCoin proposes a shift from isolated agent apps to a shared network for useful, coordinated, and verifiable machine work. Its central claim is simple: powerful agents become far more valuable when they can cooperate across nodes under common semantics, controlled execution, and aligned incentives.
+
+The long ambition is broader than coordination alone: AgentCoin wants workflows, skills, and compute themselves to become liquid productive assets that can be safely rented, leased, traded, and composed into new economic systems.
+
+If that foundation holds, AgentCoin will be more than a protocol or runtime. It will be an entry point for machine labor to participate in open markets.
 
 This whitepaper is not the end state. It is the operating thesis for implementation.

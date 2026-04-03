@@ -1,0 +1,87 @@
+{
+  "Index": {
+    "title": "AgentCoin 工作站",
+    "boot_sequence": [
+      "正在初始化神经链接...",
+      "验证本地密钥对...",
+      "建立安全连接...",
+      "同步点对点状态...",
+      "系统就绪。等待输入指令。"
+    ],
+    "input_placeholder": "输入 'connect' 继续...",
+    "error_unrecognized": "未识别的指令。输入 'help' 查看可用指令。"
+  },
+  "Workspace": {
+    "title": "AgentCoin 链上运行时",
+    "welcome": "系统已激活。",
+    "status_offline": "状态：离线 (等待连接)",
+    "status_online": "状态：在线 (节点已同步)",
+    "theme": "外观",
+    "language": "语言",
+    "disconnect": "断开连接",
+    "relay_queue": "中继队列",
+    "empty_queue": "暂无执行中的中继任务...",
+    "terminal_label": "互动终端 (A-SH)",
+    "sys_info_label": "节点状态",
+    "discover_agents": "[发现本地智能体]",
+    "add_remote_agent": "[添加远端节点]",
+    "add_remote_prompt": "启动 Headscale 隧道...\n请输入远端节点的 Overlay Endpoint (例如: agent-b.tailnet.internal:8080):",
+    "remote_endpoint": "终端地址 (Overlay Endpoint)",
+    "remote_peer_id": "节点 ID (Peer ID)",
+    "remote_name": "节点名称 (Peer Name)",
+    "btn_connect": "[ 建立连接 ]",
+    "btn_cancel": "[ 取消 ]",
+    "btn_rescan": "[ 重新扫描 ]",
+    "btn_confirm_join": "[ 确认加入 ]",
+    "btn_enter_workspace": "[ 初始化控制台 ]",
+    "radar_scanning": "雷达扫描中... 发现 [{found}/{total}]",
+    "radar_complete": "扫描完成。发现 [{found}/{total}]",
+    "radar_found": "已发现",
+    "radar_join_network": "加入网络",
+    "ai_subsystem": "AI 子系统",
+    "light_mode": "白天模式",
+    "dark_mode": "暗黑模式",
+    "lang_en": "英文",
+    "lang_zh": "中文",
+    "lang_ja": "日文",
+    "clear_hint_prefix": "在终端中输入 ",
+    "clear_hint_suffix": " 返回初始状态。",
+    "vision_text": "今天，高价值工作流、skills 与闲置 agent 算力\n仍被锁在孤立平台里，难以安全复用，\n也难以形成真正市场。\n\nAgentCoin 用点对点 P2P 网络，\n让这些能力在不泄露私有 know-how 的前提下\n被发现、被租用、被交易、被结算。\n\n未来，机器工作将像能源与带宽一样自由流动。"
+  },
+  "Commands": {
+    "aliases_help": [
+      "help",
+      "帮助",
+      "选项",
+      "sos"
+    ],
+    "aliases_ping": [
+      "ping",
+      "延迟",
+      "测试",
+      "网络"
+    ],
+    "aliases_whoami": [
+      "whoami",
+      "身份",
+      "信息",
+      "我是谁"
+    ],
+    "aliases_queue": [
+      "queue",
+      "relay list",
+      "队列",
+      "中继"
+    ],
+    "aliases_clear": [
+      "clear",
+      "cls",
+      "清空",
+      "清屏",
+      "清除"
+    ],
+    "help": "可用指令:\n  帮助 (help)    - 显示此帮助信息\n  测试 (ping)    - 测试节点延迟\n  身份 (whoami)  - 显示当前操作者身份\n  队列 (queue)   - 显示中继队列\n  清空 (clear)   - 清除终端日志",
+    "ping": "PONG! 节点延迟: {ms}ms",
+    "whoami": "当前身份: did:agentcoin:local:admin\n权限: [root, bridge-admin, workflow]"
+  }
+}

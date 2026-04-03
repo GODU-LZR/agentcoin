@@ -1,0 +1,86 @@
+{
+  "Index": {
+    "title": "AgentCoin ワークスペース",
+    "boot_sequence": [
+      "ニューラルリンクを初期化中...",
+      "ローカルキーペアを検証中...",
+      "安全な接続を確立中...",
+      "P2Pステートを同期中...",
+      "システム準備完了。コマンドを待機中。"
+    ],
+    "input_placeholder": "'connect' と入力して続行...",
+    "error_unrecognized": "認識されないコマンドです。'help' を入力して確認してください。"
+  },
+  "Workspace": {
+    "title": "AgentCoin オンチェーン ランタイム",
+    "welcome": "システムがアクティブです。",
+    "status_offline": "待機中 (オフライン)",
+    "status_online": "オンライン (同期済)",
+    "theme": "テーマ",
+    "language": "言語",
+    "disconnect": "切断",
+    "relay_queue": "リレーキュー",
+    "empty_queue": "キューは空です...",
+    "terminal_label": "ターミナル (A-SH)",
+    "sys_info_label": "ノードステータス",
+    "discover_agents": "[ローカルAIを探索]",
+    "add_remote_agent": "[リモートAIを追加]",
+    "add_remote_prompt": "Headscaleトンネルを初期化中...\nリモートのOverlay Endpointを入力してください (例: agent-b.tailnet.internal:8080):",
+    "remote_endpoint": "エンドポイント (Overlay Endpoint)",
+    "remote_peer_id": "ピア ID (Peer ID)",
+    "remote_name": "ピア名 (Peer Name)",
+    "btn_connect": "[ 接続する ]",
+    "btn_cancel": "[ キャンセル ]",
+    "btn_rescan": "[ 再スキャン ]",
+    "btn_confirm_join": "[ 参加を確定 ]",
+    "btn_enter_workspace": "[ ワークスペースを初期化 ]",
+    "radar_scanning": "レーダー走査中... [{found}/{total}] 発見",
+    "radar_complete": "走査完了。[{found}/{total}] 発見",
+    "radar_found": "発見済",
+    "radar_join_network": "ネットワークに参加",
+    "ai_subsystem": "AI サブシステム",
+    "light_mode": "ライトモード",
+    "dark_mode": "ダークモード",
+    "lang_en": "英語",
+    "lang_zh": "中国語",
+    "lang_ja": "日本語",
+    "clear_hint_prefix": "ログを消去するには ",
+    "clear_hint_suffix": " と入力します。",
+    "vision_text": "今日、高価値な workflow、skills、遊休 agent 算力は\n孤立したプラットフォームに閉じ込められ、\n本当の市場を持てていません。\n\nAgentCoin は点対点 P2P ネットワークによって、\nそれらを機密の know-how を漏らさずに\n発見・賃貸・売買・精算できるようにします。\n\n未来、機械労働はエネルギーや帯域のように流通します。"
+  },
+  "Commands": {
+    "aliases_help": [
+      "help",
+      "ヘルプ",
+      "たすけて",
+      "sos"
+    ],
+    "aliases_ping": [
+      "ping",
+      "テスト",
+      "通信"
+    ],
+    "aliases_whoami": [
+      "whoami",
+      "情報",
+      "身元",
+      "id"
+    ],
+    "aliases_queue": [
+      "queue",
+      "relay list",
+      "キュー",
+      "中継",
+      "リレー"
+    ],
+    "aliases_clear": [
+      "clear",
+      "cls",
+      "クリア",
+      "消去"
+    ],
+    "help": "利用可能なコマンド:\n  ヘルプ (help)    - ヘルプを表示\n  テスト (ping)    - レイテンシを確認\n  情報 (whoami)    - 現在の操作者を表示\n  キュー (queue)   - リレーキューを確認\n  クリア (clear)   - ログを消去",
+    "ping": "PONG! レイテンシ: {ms}ms",
+    "whoami": "現在のID: did:agentcoin:local:admin\n権限: [root, bridge-admin, workflow]"
+  }
+}

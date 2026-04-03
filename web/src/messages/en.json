@@ -1,0 +1,84 @@
+{
+  "Index": {
+    "title": "AgentCoin Workspace",
+    "boot_sequence": [
+      "INITIALIZING NEURAL LINK...",
+      "VERIFYING LOCAL KEYPAIR...",
+      "ESTABLISHING SECURE CONNECTION...",
+      "SYNCING PEER-TO-PEER STATE...",
+      "SYSTEM READY. WAITING FOR COMMAND."
+    ],
+    "input_placeholder": "TYPE 'connect' TO CONTINUE...",
+    "error_unrecognized": "Unknown command. Type 'help' for available commands."
+  },
+  "Workspace": {
+    "title": "AgentCoin Onchain Runtime",
+    "welcome": "System Activated.",
+    "status_offline": "STATUS: OFFLINE",
+    "status_online": "STATUS: ONLINE (SYNCED)",
+    "theme": "Theme",
+    "language": "Language",
+    "disconnect": "Disconnect",
+    "relay_queue": "Relay Queue",
+    "empty_queue": "No items processing...",
+    "terminal_label": "TERMINAL (A-SH)",
+    "sys_info_label": "NODE STATUS",
+    "discover_agents": "[Discover Local Agents]",
+    "add_remote_agent": "[Add Remote Agent]",
+    "add_remote_prompt": "Initializing Headscale tunnel...\nPlease enter remote overlay endpoint (e.g. agent-b.tailnet.internal:8080):",
+    "remote_endpoint": "Overlay Endpoint",
+    "remote_peer_id": "Peer ID",
+    "remote_name": "Peer Name",
+    "btn_connect": "[CONNECT]",
+    "btn_cancel": "[CANCEL]",
+    "btn_rescan": "[RESCAN]",
+    "btn_confirm_join": "[CONFIRM JOIN]",
+    "btn_enter_workspace": "[ INITIALIZE WORKSPACE ]",
+    "radar_scanning": "RADAR SCANNING... [{found}/{total}] FOUND",
+    "radar_complete": "SCAN COMPLETE. [{found}/{total}] FOUND",
+    "radar_found": "FOUND",
+    "radar_join_network": "JOIN NETWORK",
+    "ai_subsystem": "AI SUBSYSTEM",
+    "light_mode": "LIGHT_MODE",
+    "dark_mode": "DARK_MODE",
+    "lang_en": "EN",
+    "lang_zh": "ZH",
+    "lang_ja": "JA",
+    "clear_hint_prefix": "Type ",
+    "clear_hint_suffix": " to clear the logs.",
+    "vision_text": "TODAY, HIGH-VALUE WORKFLOWS, SKILLS, AND IDLE AGENT COMPUTE\nARE TRAPPED INSIDE ISOLATED PLATFORMS,\nUNABLE TO FORM A REAL MARKET.\n\nAGENTCOIN USES A PEER-TO-PEER P2P NETWORK\nSO THOSE CAPABILITIES CAN BE DISCOVERED, RENTED,\nTRADED, AND SETTLED WITHOUT LEAKING PROPRIETARY KNOW-HOW.\n\nTHE FUTURE IS MACHINE WORK FLOWING LIKE ENERGY OR BANDWIDTH."
+  },
+  "Commands": {
+    "aliases_help": [
+      "help",
+      "man",
+      "options"
+    ],
+    "aliases_ping": [
+      "ping",
+      "test",
+      "latency"
+    ],
+    "aliases_whoami": [
+      "whoami",
+      "id",
+      "info",
+      "identity"
+    ],
+    "aliases_queue": [
+      "queue",
+      "relay",
+      "relay list",
+      "pending"
+    ],
+    "aliases_clear": [
+      "clear",
+      "cls",
+      "clean",
+      "empty"
+    ],
+    "help": "Commands:\n  help    - Show available commands\n  ping    - Check node latency\n  whoami  - Show current operator identity\n  queue   - Show detailed relay queue\n  clear   - Clear terminal logs",
+    "ping": "PONG! Latency: {ms}ms",
+    "whoami": "identity: did:agentcoin:local:admin\nscopes: [root, bridge-admin, workflow]"
+  }
+}
