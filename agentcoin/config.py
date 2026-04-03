@@ -289,6 +289,7 @@ class NodeConfig:
                 "payment_receipt_onchain_relays": f"{self.base_url}/v1/payments/receipts/onchain-relays",
                 "payment_receipt_onchain_relay_latest": f"{self.base_url}/v1/payments/receipts/onchain-relays/latest",
                 "payment_receipt_onchain_relay_latest_failed": f"{self.base_url}/v1/payments/receipts/onchain-relays/latest-failed",
+                "payment_ops_summary": f"{self.base_url}/v1/payments/ops/summary",
                 "payment_receipt_onchain_relay_queue": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue",
                 "payment_receipt_onchain_relay_queue_summary": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/summary",
                 "payment_receipt_onchain_relay_queue_pause": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/pause",

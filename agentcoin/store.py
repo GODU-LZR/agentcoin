@@ -2580,24 +2580,36 @@ class NodeStore:
         finally:
             conn.close()
 
-    def get_latest_payment_relay(self, receipt_id: str) -> dict[str, Any] | None:
+    def get_latest_payment_relay(self, receipt_id: str | None = None) -> dict[str, Any] | None:
         items = self.list_payment_relays(receipt_id=receipt_id, limit=1)
         return items[0] if items else None
 
-    def get_latest_failed_payment_relay(self, receipt_id: str) -> dict[str, Any] | None:
+    def get_latest_failed_payment_relay(self, receipt_id: str | None = None) -> dict[str, Any] | None:
         conn = self._connect()
         try:
-            row = conn.execute(
-                """
-                SELECT id, receipt_id, workflow_name, completed_steps, step_count,
-                       stopped_on_error, final_status, failure_category, relay_json, created_at
-                FROM payment_relays
-                WHERE receipt_id = ? AND final_status != 'completed'
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT 1
-                """,
-                (receipt_id,),
-            ).fetchone()
+            if receipt_id:
+                row = conn.execute(
+                    """
+                    SELECT id, receipt_id, workflow_name, completed_steps, step_count,
+                           stopped_on_error, final_status, failure_category, relay_json, created_at
+                    FROM payment_relays
+                    WHERE receipt_id = ? AND final_status != 'completed'
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT 1
+                    """,
+                    (receipt_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT id, receipt_id, workflow_name, completed_steps, step_count,
+                           stopped_on_error, final_status, failure_category, relay_json, created_at
+                    FROM payment_relays
+                    WHERE final_status != 'completed'
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
             return self._payment_relay_from_row(row) if row else None
         finally:
             conn.close()

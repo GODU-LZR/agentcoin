@@ -158,6 +158,7 @@ class AgentCoinNode:
                 "receipt_onchain_relays_url": self.config.card.endpoints.get("payment_receipt_onchain_relays"),
                 "receipt_onchain_relay_latest_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_latest"),
                 "receipt_onchain_relay_latest_failed_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_latest_failed"),
+                "ops_summary_url": self.config.card.endpoints.get("payment_ops_summary"),
                 "receipt_onchain_relay_queue_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_queue"),
                 "receipt_onchain_relay_queue_summary_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_queue_summary"),
                 "receipt_onchain_replay_helper_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_replay_helper"),
@@ -969,6 +970,40 @@ class AgentCoinNode:
             helper,
             hmac_scope="payment-onchain-relay-replay-helper",
             identity_namespace="agentcoin-payment-onchain-relay-replay-helper",
+        )
+
+    def payment_ops_summary(self, *, receipt_id: str | None = None, relay_limit: int = 5) -> dict[str, Any]:
+        normalized_receipt_id = str(receipt_id or "").strip() or None
+        recent_relays = self.store.list_payment_relays(receipt_id=normalized_receipt_id, limit=max(1, int(relay_limit or 5)))
+        queue_summary = self.store.summarize_payment_relay_queue(receipt_id=normalized_receipt_id)
+        quote_template = {
+            "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
+            "asset": self.config.payment_quote_asset,
+            "ttl_seconds": int(self.config.payment_quote_ttl_seconds or 300),
+            "receipt_ttl_seconds": int(self.config.payment_receipt_ttl_seconds or 3600),
+            "recipient": self.config.onchain.local_controller_address,
+            "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
+        }
+        summary = {
+            "kind": "agentcoin-payment-ops-summary",
+            "receipt_id": normalized_receipt_id,
+            "required_workflows": list(self.config.payment_required_workflows),
+            "quote_template": quote_template,
+            "latest_relay": self.store.get_latest_payment_relay(normalized_receipt_id),
+            "latest_failed_relay": self.store.get_latest_failed_payment_relay(normalized_receipt_id),
+            "queue_summary": queue_summary,
+            "recent_relays": recent_relays,
+            "stats": {
+                key: value
+                for key, value in self.store.stats().items()
+                if str(key).startswith("payment_relay") or str(key).startswith("payment_relays")
+            },
+            "generated_at": utc_now(),
+        }
+        return self._sign_document(
+            summary,
+            hmac_scope="payment-ops-summary",
+            identity_namespace="agentcoin-payment-ops-summary",
         )
 
     def consume_payment_receipt(self, receipt_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
@@ -4210,6 +4245,18 @@ class AgentCoinNode:
                         {"items": node.store.list_payment_relays(receipt_id=receipt_id, limit=limit)},
                     )
                     return
+                if path == "/v1/payments/ops/summary":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/ops/summary"},
+                    ):
+                        return
+                    receipt_id = (query.get("receipt_id") or [None])[0]
+                    relay_limit = int((query.get("relay_limit") or ["5"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        node.payment_ops_summary(receipt_id=receipt_id, relay_limit=relay_limit),
+                    )
+                    return
                 if path == "/v1/payments/receipts/onchain-relays/latest":
                     if not self._require_local_client_or_auth(
                         allow_endpoints={"/v1/payments/receipts/onchain-relays/latest"},
@@ -4665,6 +4712,7 @@ class AgentCoinNode:
                                 "/v1/tasks/dispatch",
                                 "/v1/tasks/dispatch/evaluate",
                                 "/v1/workflow/execute",
+                                "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
                                 "/v1/payments/receipts/onchain-proof",
                                 "/v1/payments/receipts/onchain-rpc-plan",

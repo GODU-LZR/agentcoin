@@ -35,6 +35,7 @@ The current repository contains:
 - background payment relay queue processing for deferred proof submission and operator replay
 - payment relay queue pause, resume, requeue, cancel, and delete controls for local operator or browser workflows
 - payment relay diagnostics including queue summary, latest failed relay lookup, and signed replay-helper payload generation
+- signed payment ops summary payload for browser or operator dashboards
 
 ## Design Goals
 

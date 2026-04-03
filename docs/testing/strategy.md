@@ -25,6 +25,7 @@ The current test scope covers:
 - background payment relay queue execution against a local mock RPC
 - payment relay queue pause, resume, dead-letter requeue, cancel, and delete controls
 - payment relay diagnostics for latest failed relay, queue summary, and replay-helper reconstruction
+- signed payment ops summary payload for dashboard-style local inspection
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery
@@ -163,6 +164,7 @@ The following behaviors are now covered either by automated tests or previously 
 - payment proof relays now persist history by receipt id, and queued payment relays can be processed in the background
 - payment relay queue control endpoints now cover pause, resume, dead-letter replay via requeue, cancel, and delete
 - payment relay diagnostics now expose latest failed relay state, queue summaries, and a signed replay-helper request body
+- payment ops summary now aggregates recent relays, queue counts, quote defaults, and latest failed relay state
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

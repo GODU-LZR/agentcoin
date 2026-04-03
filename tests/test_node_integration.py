@@ -552,6 +552,35 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def _identity_signed_get(
+        self,
+        url: str,
+        *,
+        private_key_path: str,
+        principal: str,
+        public_key: str | None = None,
+        timestamp: str | None = None,
+        nonce: str | None = None,
+    ) -> tuple[int, dict]:
+        parsed = urlparse(url)
+        headers = sign_identity_request_headers(
+            method="GET",
+            path=parsed.path,
+            query=parsed.query,
+            body=b"",
+            private_key_path=private_key_path,
+            principal=principal,
+            public_key=public_key,
+            timestamp=timestamp,
+            nonce=nonce,
+        )
+        req = request.Request(url, headers=headers, method="GET")
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def _identity_signed_post_raw(
         self,
         url: str,
@@ -1812,6 +1841,26 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(history_payload["items"]), 2)
             self.assertEqual(history_payload["items"][0]["final_status"], "completed")
             self.assertEqual(history_payload["items"][1]["final_status"], "failed")
+
+            ops_status, ops_summary = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/ops/summary?receipt_id={receipt['receipt_id']}&relay_limit=2",
+                private_key_path=key_path,
+                principal="frontend-local-payment-requeue",
+                public_key=public_key,
+            )
+            self.assertEqual(ops_status, HTTPStatus.OK)
+            self.assertEqual(ops_summary["kind"], "agentcoin-payment-ops-summary")
+            self.assertEqual(ops_summary["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(ops_summary["queue_summary"]["item_count"], 1)
+            self.assertEqual(ops_summary["latest_failed_relay"]["final_status"], "failed")
+            self.assertEqual(len(ops_summary["recent_relays"]), 2)
+            ops_verification = verify_document(
+                ops_summary,
+                secret="payment-requeue-secret",
+                expected_scope="payment-ops-summary",
+                expected_key_id="payment-requeue-node",
+            )
+            self.assertTrue(ops_verification["verified"])
         finally:
             node.stop()
             rpc.stop()
