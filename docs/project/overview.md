@@ -17,6 +17,7 @@ The current repository contains:
 - local governance primitives for policy violations, reputation, and quarantine
 - an on-chain scaffold for DID, staking, and bounty escrow on BNB Chain
 - a node-side on-chain integration skeleton for task binding, signed submission receipts, and JSON-RPC payload building
+- a durable background settlement relay worker with queueing persistence and failure reconciliation
 - live JSON-RPC planning and raw transaction relay for external signers and wallets
 - a first runtime-adapter layer for HTTP and CLI agent execution
 - a lightweight semantic layer for cards and task envelopes
