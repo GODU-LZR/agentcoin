@@ -550,6 +550,29 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def _session_post(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        session_token: str,
+    ) -> tuple[int, dict]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Agentcoin-Session {session_token}",
+            },
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def _wait_for_queue_item_status(
         self,
         node: NodeHarness,
@@ -728,6 +751,98 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(replay_status, 400)
             self.assertIn("challenge", replay_payload["error"])
+        finally:
+            node.stop()
+
+    def test_identity_auth_verify_issues_reusable_loopback_session(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_session", "frontend-local-session")
+        node = NodeHarness(
+            node_id="identity-session-node",
+            token="token-identity-session",
+            db_path=str(Path(self.tempdir.name) / "identity-session.db"),
+            capabilities=["worker"],
+            runtimes=["openai-chat"],
+        )
+        node.start()
+        try:
+            _, challenge_payload = self._get(f"{node.base_url}/v1/auth/challenge")
+            challenge = challenge_payload["challenge"]
+            verify_status, verified = self._identity_signed_post(
+                f"{node.base_url}/v1/auth/verify",
+                {
+                    "challenge_id": challenge["challenge_id"],
+                    "principal": "frontend-local-session",
+                    "public_key": public_key,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-session",
+                public_key=public_key,
+            )
+            self.assertEqual(verify_status, HTTPStatus.OK)
+            session_token = str(verified["session"]["session_token"])
+
+            create_status, created = self._session_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "session-local-task-1",
+                    "kind": "generic",
+                    "payload": {"input": "via-session"},
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(create_status, HTTPStatus.CREATED)
+            self.assertEqual(created["task"]["id"], "session-local-task-1")
+
+            bind_status, bound = self._session_post(
+                f"{node.base_url}/v1/runtimes/bind",
+                {
+                    "task_id": "session-local-task-1",
+                    "runtime": "openai-chat",
+                    "options": {
+                        "endpoint": "http://127.0.0.1:12345/v1/chat/completions",
+                        "model": "openclaw/gateway",
+                    },
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(bind_status, HTTPStatus.OK)
+            self.assertEqual(bound["runtime"]["runtime"], "openai-chat")
+        finally:
+            node.stop()
+
+    def test_identity_auth_session_cannot_access_non_allowed_endpoint(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_session_denied", "frontend-local-session-denied")
+        node = NodeHarness(
+            node_id="identity-session-denied-node",
+            token="token-identity-session-denied",
+            db_path=str(Path(self.tempdir.name) / "identity-session-denied.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, challenge_payload = self._get(f"{node.base_url}/v1/auth/challenge")
+            challenge = challenge_payload["challenge"]
+            verify_status, verified = self._identity_signed_post(
+                f"{node.base_url}/v1/auth/verify",
+                {
+                    "challenge_id": challenge["challenge_id"],
+                    "principal": "frontend-local-session-denied",
+                    "public_key": public_key,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-session-denied",
+                public_key=public_key,
+            )
+            self.assertEqual(verify_status, HTTPStatus.OK)
+            session_token = str(verified["session"]["session_token"])
+
+            denied_status, denied_payload = self._session_post(
+                f"{node.base_url}/v1/outbox/flush",
+                {},
+                session_token=session_token,
+            )
+            self.assertEqual(denied_status, HTTPStatus.FORBIDDEN)
+            self.assertIn("not allowed", denied_payload["error"])
         finally:
             node.stop()
 

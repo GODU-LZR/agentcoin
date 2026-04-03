@@ -185,6 +185,7 @@ class NodeConfig:
     operator_auth_timestamp_skew_seconds: int = 300
     operator_auth_nonce_ttl_seconds: int = 900
     identity_auth_challenge_ttl_seconds: int = 300
+    identity_auth_session_ttl_seconds: int = 900
     cors_allowed_origins: list[str] = field(default_factory=lambda: ["*"])
     config_path: str | None = field(default=None, repr=False, compare=False)
     database_path: str = "./var/agentcoin.db"

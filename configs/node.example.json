@@ -12,6 +12,7 @@
   "identity_principal": "agentcoin-local",
   "identity_private_key_path": "./var/identity/id_ed25519",
   "identity_auth_challenge_ttl_seconds": 300,
+  "identity_auth_session_ttl_seconds": 900,
   "cors_allowed_origins": [
     "*"
   ],

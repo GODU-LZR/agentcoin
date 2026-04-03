@@ -82,6 +82,8 @@ class AgentCoinNode:
         )
         self._auth_challenges: dict[str, dict[str, Any]] = {}
         self._auth_challenge_lock = threading.Lock()
+        self._identity_sessions: dict[str, dict[str, Any]] = {}
+        self._identity_session_lock = threading.Lock()
 
     def local_identity_view(self) -> dict[str, Any]:
         return {
@@ -224,6 +226,58 @@ class AgentCoinNode:
             challenge = self._auth_challenges.pop(normalized_challenge_id, None)
         if not challenge:
             raise ValueError("identity auth challenge not found or expired")
+
+    def _prune_identity_sessions_locked(self) -> None:
+        now_value = datetime.now(timezone.utc)
+        expired: list[str] = []
+        for session_token, session in self._identity_sessions.items():
+            expires_at = str(session.get("expires_at") or "").strip()
+            if not expires_at:
+                expired.append(session_token)
+                continue
+            try:
+                expires_at_value = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                expired.append(session_token)
+                continue
+            if expires_at_value <= now_value:
+                expired.append(session_token)
+        for session_token in expired:
+            self._identity_sessions.pop(session_token, None)
+
+    def issue_identity_auth_session(
+        self,
+        *,
+        principal: str,
+        public_key: str,
+        did: str | None,
+        allow_endpoints: list[str],
+    ) -> dict[str, Any]:
+        session_token = str(uuid4())
+        session = {
+            "session_token": session_token,
+            "principal": principal,
+            "public_key": public_key,
+            "did": did,
+            "issued_at": utc_now(),
+            "expires_at": utc_after(int(self.config.identity_auth_session_ttl_seconds or 900)),
+            "allow_endpoints": list(allow_endpoints),
+            "loopback_only": True,
+            "scheme": "Agentcoin-Session",
+        }
+        with self._identity_session_lock:
+            self._prune_identity_sessions_locked()
+            self._identity_sessions[session_token] = session
+        return dict(session)
+
+    def get_identity_auth_session(self, session_token: str) -> dict[str, Any] | None:
+        normalized_session_token = str(session_token or "").strip()
+        if not normalized_session_token:
+            return None
+        with self._identity_session_lock:
+            self._prune_identity_sessions_locked()
+            session = self._identity_sessions.get(normalized_session_token)
+        return dict(session) if session else None
 
     def _resolve_delivery(self, target: str) -> tuple[str, str | None, str]:
         parsed = urlparse(target)
@@ -2564,6 +2618,16 @@ class AgentCoinNode:
                     "loopback_only": True,
                 }
 
+            def _resolve_client_identity_session(self) -> dict[str, Any] | None:
+                header = str(self.headers.get("Authorization") or "").strip()
+                prefix = "Agentcoin-Session "
+                if not header.startswith(prefix):
+                    return None
+                session_token = str(header[len(prefix):] or "").strip()
+                if not session_token:
+                    return None
+                return node.get_identity_auth_session(session_token)
+
             def _require_local_client_or_auth(
                 self,
                 *,
@@ -2572,6 +2636,25 @@ class AgentCoinNode:
                 policy_level: int = 0,
                 required_scopes: list[str] | None = None,
             ) -> dict[str, Any] | None:
+                session = self._resolve_client_identity_session()
+                if session is not None:
+                    parsed_request = urlparse(self.path)
+                    if not self._is_loopback_request():
+                        self._json_response(HTTPStatus.FORBIDDEN, {"error": "client identity session is restricted to loopback access"})
+                        return None
+                    allowed_session_endpoints = set(session.get("allow_endpoints") or [])
+                    if parsed_request.path not in allow_endpoints or parsed_request.path not in allowed_session_endpoints:
+                        self._json_response(HTTPStatus.FORBIDDEN, {"error": "client identity session is not allowed for this endpoint"})
+                        return None
+                    return {
+                        "mode": "client-session",
+                        "principal": session.get("principal"),
+                        "public_key": session.get("public_key"),
+                        "did": session.get("did"),
+                        "session_token": session.get("session_token"),
+                        "expires_at": session.get("expires_at"),
+                        "loopback_only": True,
+                    }
                 if self._resolve_bearer_auth() is not None:
                     return self._require_auth(
                         policy_tier=policy_tier,
@@ -2779,6 +2862,17 @@ class AgentCoinNode:
                 policy_level: int = 0,
                 required_scopes: list[str] | None = None,
             ) -> dict[str, Any] | None:
+                session_header = str(self.headers.get("Authorization") or "").strip().startswith("Agentcoin-Session ")
+                if session_header:
+                    session = self._resolve_client_identity_session()
+                    if session is None:
+                        self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "client identity session is missing or expired"})
+                        return None
+                    if not self._is_loopback_request():
+                        self._json_response(HTTPStatus.FORBIDDEN, {"error": "client identity session is restricted to loopback access"})
+                        return None
+                    self._json_response(HTTPStatus.FORBIDDEN, {"error": "client identity session is not allowed for this endpoint"})
+                    return None
                 normalized_scopes = [
                     str(scope or "").strip().lower()
                     for scope in list(required_scopes or [])
@@ -3596,6 +3690,18 @@ class AgentCoinNode:
                             "did": derive_local_did(public_key=public_key),
                             "algorithm": IDENTITY_ALGORITHM,
                         }
+                        session = node.issue_identity_auth_session(
+                            principal=principal,
+                            public_key=public_key,
+                            did=str(identity.get("did") or "").strip() or None,
+                            allow_endpoints=[
+                                "/v1/tasks",
+                                "/v1/tasks/dispatch",
+                                "/v1/tasks/dispatch/evaluate",
+                                "/v1/runtimes/bind",
+                                "/v1/integrations/openclaw/bind",
+                            ],
+                        )
                         receipt = node._sign_document(
                             {
                                 "kind": "agentcoin-identity-auth-receipt",
@@ -3608,6 +3714,12 @@ class AgentCoinNode:
                                     "consumed": True,
                                 },
                                 "verification": verification,
+                                "session": {
+                                    "scheme": session.get("scheme"),
+                                    "session_token": session.get("session_token"),
+                                    "expires_at": session.get("expires_at"),
+                                    "allow_endpoints": list(session.get("allow_endpoints") or []),
+                                },
                                 "generated_at": utc_now(),
                             },
                             hmac_scope="identity-auth-receipt",
@@ -3625,6 +3737,7 @@ class AgentCoinNode:
                                     "consumed": True,
                                 },
                                 "receipt": receipt,
+                                "session": session,
                             },
                         )
                         return
