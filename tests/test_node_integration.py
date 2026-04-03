@@ -46,6 +46,7 @@ class NodeHarness:
                  onchain: OnchainBindings | None = None,
                  network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
                  challenge_bond_required_wei: int = 0,
+                 payment_required_workflows: list[str] | None = None,
                  poaw_policy_version: str = "0.2",
                  poaw_score_weights: dict[str, int] | None = None,
                  bridges: list[str] | None = None,
@@ -84,6 +85,7 @@ class NodeHarness:
             outbox_max_attempts=outbox_max_attempts,
             task_retry_limit=2,
             task_retry_backoff_seconds=1,
+            payment_required_workflows=payment_required_workflows or [],
             challenge_bond_required_wei=challenge_bond_required_wei,
             poaw_policy_version=poaw_policy_version,
             poaw_score_weights=poaw_score_weights or {},
@@ -550,6 +552,41 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def _identity_signed_post_raw(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        private_key_path: str,
+        principal: str,
+        public_key: str | None = None,
+        timestamp: str | None = None,
+        nonce: str | None = None,
+    ) -> tuple[int, dict[str, str], dict]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        parsed = urlparse(url)
+        headers = {
+            "Content-Type": "application/json",
+            **sign_identity_request_headers(
+                method="POST",
+                path=parsed.path,
+                query=parsed.query,
+                body=body,
+                private_key_path=private_key_path,
+                principal=principal,
+                public_key=public_key,
+                timestamp=timestamp,
+                nonce=nonce,
+            ),
+        }
+        status, response_headers, raw_body = self._request_raw(
+            url,
+            method="POST",
+            headers=headers,
+            body=body,
+        )
+        return status, response_headers, json.loads(raw_body)
+
     def _session_post(
         self,
         url: str,
@@ -807,6 +844,19 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(bind_status, HTTPStatus.OK)
             self.assertEqual(bound["runtime"]["runtime"], "openai-chat")
+
+            execute_status, executed = self._session_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "free-review",
+                    "input": {"prompt": "via-session"},
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(execute_status, HTTPStatus.ACCEPTED)
+            self.assertFalse(executed["payment_required"])
+            self.assertFalse(executed["payment_verified"])
+            self.assertEqual(executed["task"]["payload"]["workflow_name"], "free-review")
         finally:
             node.stop()
 
@@ -843,6 +893,121 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(denied_status, HTTPStatus.FORBIDDEN)
             self.assertIn("not allowed", denied_payload["error"])
+        finally:
+            node.stop()
+
+    def test_workflow_execute_returns_402_without_payment_receipt(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_payment_402", "frontend-local-payment-402")
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="payment-402-node",
+            token="token-payment-402",
+            db_path=str(Path(self.tempdir.name) / "payment-402.db"),
+            capabilities=["worker"],
+            signing_secret="payment-402-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            status, headers, payload = self._identity_signed_post_raw(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-402",
+                public_key=public_key,
+            )
+            self.assertEqual(status, HTTPStatus.PAYMENT_REQUIRED)
+            self.assertTrue(payload["payment"]["required"])
+            self.assertEqual(payload["payment"]["challenge"]["workflow_name"], "premium-review")
+            self.assertEqual(payload["payment"]["challenge"]["amount_wei"], str(node.config.payment_quote_amount_wei))
+            self.assertEqual(payload["payment"]["challenge"]["bounty_escrow_address"], onchain.bounty_escrow_address)
+            self.assertEqual(headers.get("X-Agentcoin-Payment-Required"), "true")
+            self.assertEqual(headers.get("X-Agentcoin-Payment-Amount-Wei"), str(node.config.payment_quote_amount_wei))
+            self.assertEqual(headers.get("X-Agentcoin-Payment-Asset"), node.config.payment_quote_asset)
+            self.assertEqual(headers.get("X-Agentcoin-Payment-Recipient"), onchain.local_controller_address)
+            self.assertEqual(headers.get("X-Agentcoin-Payment-Bounty-Escrow"), onchain.bounty_escrow_address)
+        finally:
+            node.stop()
+
+    def test_workflow_execute_accepts_signed_payment_receipt(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_payment_ok", "frontend-local-payment-ok")
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="payment-ok-node",
+            token="token-payment-ok",
+            db_path=str(Path(self.tempdir.name) / "payment-ok.db"),
+            capabilities=["worker"],
+            signing_secret="payment-ok-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-ok",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xabc123",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+            receipt_verification = verify_document(
+                receipt,
+                secret="payment-ok-secret",
+                expected_scope="payment-receipt",
+                expected_key_id="payment-ok-node",
+            )
+            self.assertTrue(receipt_verification["verified"])
+
+            execute_status, executed = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(execute_status, HTTPStatus.ACCEPTED)
+            self.assertTrue(executed["payment_required"])
+            self.assertTrue(executed["payment_verified"])
+            self.assertEqual(executed["task"]["kind"], "workflow-execute")
+            self.assertEqual(executed["task"]["payload"]["workflow_name"], "premium-review")
+            self.assertEqual(executed["task"]["payload"]["_payment_receipt"]["challenge_id"], challenge_id)
         finally:
             node.stop()
 

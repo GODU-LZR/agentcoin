@@ -84,6 +84,8 @@ class AgentCoinNode:
         self._auth_challenge_lock = threading.Lock()
         self._identity_sessions: dict[str, dict[str, Any]] = {}
         self._identity_session_lock = threading.Lock()
+        self._payment_challenges: dict[str, dict[str, Any]] = {}
+        self._payment_challenge_lock = threading.Lock()
 
     def local_identity_view(self) -> dict[str, Any]:
         return {
@@ -137,9 +139,16 @@ class AgentCoinNode:
             },
             "payment": {
                 "http_payment_required_status": 402,
-                "enabled": False,
+                "enabled": bool(self.config.payment_required_workflows),
                 "planned": True,
-                "note": "HTTP 402 payment challenge middleware is not enabled in this build.",
+                "required_workflows": list(self.config.payment_required_workflows),
+                "quote": {
+                    "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
+                    "asset": self.config.payment_quote_asset,
+                    "ttl_seconds": int(self.config.payment_quote_ttl_seconds or 300),
+                    "recipient": self.config.onchain.local_controller_address,
+                    "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
+                },
             },
             "protocols": {
                 "native": "agentcoin/0.1",
@@ -278,6 +287,121 @@ class AgentCoinNode:
             self._prune_identity_sessions_locked()
             session = self._identity_sessions.get(normalized_session_token)
         return dict(session) if session else None
+
+    def _prune_payment_challenges_locked(self) -> None:
+        now_value = datetime.now(timezone.utc)
+        expired: list[str] = []
+        for challenge_id, challenge in self._payment_challenges.items():
+            expires_at = str(challenge.get("expires_at") or "").strip()
+            if not expires_at:
+                expired.append(challenge_id)
+                continue
+            try:
+                expires_at_value = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                expired.append(challenge_id)
+                continue
+            if expires_at_value <= now_value:
+                expired.append(challenge_id)
+        for challenge_id in expired:
+            self._payment_challenges.pop(challenge_id, None)
+
+    def issue_payment_challenge(self, *, workflow_name: str, payer_hint: str | None = None) -> dict[str, Any]:
+        challenge_id = str(uuid4())
+        challenge = {
+            "challenge_id": challenge_id,
+            "workflow_name": workflow_name,
+            "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
+            "asset": self.config.payment_quote_asset,
+            "recipient": self.config.onchain.local_controller_address,
+            "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
+            "issued_at": utc_now(),
+            "expires_at": utc_after(int(self.config.payment_quote_ttl_seconds or 300)),
+            "payer_hint": payer_hint,
+            "status": "pending",
+        }
+        with self._payment_challenge_lock:
+            self._prune_payment_challenges_locked()
+            self._payment_challenges[challenge_id] = challenge
+        return dict(challenge)
+
+    def get_payment_challenge(self, challenge_id: str) -> dict[str, Any]:
+        normalized_challenge_id = str(challenge_id or "").strip()
+        if not normalized_challenge_id:
+            raise ValueError("challenge_id is required")
+        with self._payment_challenge_lock:
+            self._prune_payment_challenges_locked()
+            challenge = self._payment_challenges.get(normalized_challenge_id)
+        if not challenge:
+            raise ValueError("payment challenge not found or expired")
+        return dict(challenge)
+
+    def mark_payment_challenge_paid(self, challenge_id: str) -> None:
+        normalized_challenge_id = str(challenge_id or "").strip()
+        if not normalized_challenge_id:
+            raise ValueError("challenge_id is required")
+        with self._payment_challenge_lock:
+            self._prune_payment_challenges_locked()
+            challenge = self._payment_challenges.get(normalized_challenge_id)
+            if not challenge:
+                raise ValueError("payment challenge not found or expired")
+            challenge["status"] = "paid"
+            self._payment_challenges[normalized_challenge_id] = challenge
+
+    def _verify_local_signed_document(
+        self,
+        payload: dict[str, Any],
+        *,
+        hmac_scope: str,
+        identity_namespace: str,
+    ) -> dict[str, Any]:
+        results: dict[str, dict[str, Any]] = {}
+        if self.config.signing_secret:
+            results["hmac"] = verify_document(
+                payload,
+                secret=self.config.signing_secret,
+                expected_scope=hmac_scope,
+                expected_key_id=self.config.node_id,
+            )
+        if self.config.identity_principal and self.config.advertised_identity_public_keys:
+            results["identity"] = verify_document_with_ssh(
+                payload,
+                public_keys=self.config.advertised_identity_public_keys,
+                revoked_public_keys=self.config.advertised_identity_revoked_public_keys,
+                principal=self.config.identity_principal,
+                expected_namespace=identity_namespace,
+            )
+        if not results:
+            raise SignatureError("no local signing material is available to verify payment receipt")
+        collapsed = self._collapse_verification(results)
+        if not isinstance(collapsed, dict):
+            raise SignatureError("payment receipt verification failed")
+        return collapsed
+
+    def verify_payment_receipt(self, receipt: dict[str, Any], *, workflow_name: str) -> dict[str, Any]:
+        verification = self._verify_local_signed_document(
+            receipt,
+            hmac_scope="payment-receipt",
+            identity_namespace="agentcoin-payment",
+        )
+        challenge_id = str(receipt.get("challenge_id") or "").strip()
+        challenge = self.get_payment_challenge(challenge_id)
+        if str(challenge.get("workflow_name") or "").strip() != str(workflow_name or "").strip():
+            raise SignatureError("payment receipt workflow does not match request")
+        if str(receipt.get("amount_wei") or "").strip() != str(challenge.get("amount_wei") or "").strip():
+            raise SignatureError("payment receipt amount does not match quote")
+        if str(receipt.get("asset") or "").strip() != str(challenge.get("asset") or "").strip():
+            raise SignatureError("payment receipt asset does not match quote")
+        if str(receipt.get("recipient") or "").strip() != str(challenge.get("recipient") or "").strip():
+            raise SignatureError("payment receipt recipient does not match quote")
+        if str(challenge.get("status") or "").strip() != "paid":
+            raise SignatureError("payment receipt challenge is not marked paid")
+        return {
+            "verified": True,
+            "challenge": challenge,
+            "receipt": receipt,
+            "signature": verification,
+        }
 
     def _resolve_delivery(self, target: str) -> tuple[str, str | None, str]:
         parsed = urlparse(target)
@@ -2473,10 +2597,12 @@ class AgentCoinNode:
                 self.send_header("Access-Control-Max-Age", "600")
                 self.send_header("Vary", "Origin")
 
-            def _json_response(self, status: int, payload: dict) -> None:
+            def _json_response(self, status: int, payload: dict, *, extra_headers: dict[str, str] | None = None) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self._send_cors_headers()
+                for key, value in dict(extra_headers or {}).items():
+                    self.send_header(str(key), str(value))
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -3698,6 +3824,7 @@ class AgentCoinNode:
                                 "/v1/tasks",
                                 "/v1/tasks/dispatch",
                                 "/v1/tasks/dispatch/evaluate",
+                                "/v1/workflow/execute",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -3738,6 +3865,113 @@ class AgentCoinNode:
                                 },
                                 "receipt": receipt,
                                 "session": session,
+                            },
+                        )
+                        return
+                    if self.path == "/v1/payments/receipts/issue":
+                        auth_context = self._require_auth(
+                            policy_tier="local-admin",
+                            policy_level=1,
+                            required_scopes=["local-admin"],
+                        )
+                        if not auth_context:
+                            return
+                        payload = self._read_json()
+                        challenge_id = str(payload.get("challenge_id") or "").strip()
+                        payer = str(payload.get("payer") or "").strip()
+                        tx_hash = str(payload.get("tx_hash") or "").strip()
+                        if not challenge_id or not payer or not tx_hash:
+                            raise ValueError("challenge_id, payer, and tx_hash are required")
+                        challenge = node.get_payment_challenge(challenge_id)
+                        node.mark_payment_challenge_paid(challenge_id)
+                        receipt_payload = {
+                            "kind": "agentcoin-payment-receipt",
+                            "challenge_id": challenge_id,
+                            "workflow_name": challenge.get("workflow_name"),
+                            "amount_wei": challenge.get("amount_wei"),
+                            "asset": challenge.get("asset"),
+                            "recipient": challenge.get("recipient"),
+                            "bounty_escrow_address": challenge.get("bounty_escrow_address"),
+                            "payer": payer,
+                            "tx_hash": tx_hash,
+                            "issued_at": utc_now(),
+                            "status": "paid",
+                        }
+                        signed_receipt = node._sign_document(
+                            receipt_payload,
+                            hmac_scope="payment-receipt",
+                            identity_namespace="agentcoin-payment",
+                        )
+                        self._json_response(HTTPStatus.CREATED, {"receipt": signed_receipt})
+                        return
+                    if self.path == "/v1/workflow/execute":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/workflow/execute"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip()
+                        if not workflow_name:
+                            raise ValueError("workflow_name is required")
+                        payment_required = workflow_name in set(node.config.payment_required_workflows or [])
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        payment_verification = None
+                        if payment_required:
+                            if not payment_receipt:
+                                challenge = node.issue_payment_challenge(
+                                    workflow_name=workflow_name,
+                                    payer_hint=str(payload.get("payer") or "").strip() or None,
+                                )
+                                self._json_response(
+                                    HTTPStatus.PAYMENT_REQUIRED,
+                                    {
+                                        "error": "payment required",
+                                        "payment": {
+                                            "required": True,
+                                            "challenge": challenge,
+                                        },
+                                    },
+                                    extra_headers={
+                                        "X-Agentcoin-Payment-Required": "true",
+                                        "X-Agentcoin-Payment-Challenge-Id": str(challenge["challenge_id"]),
+                                        "X-Agentcoin-Payment-Amount-Wei": str(challenge["amount_wei"]),
+                                        "X-Agentcoin-Payment-Asset": str(challenge["asset"]),
+                                        "X-Agentcoin-Payment-Recipient": str(challenge.get("recipient") or ""),
+                                        "X-Agentcoin-Payment-Bounty-Escrow": str(challenge.get("bounty_escrow_address") or ""),
+                                    },
+                                )
+                                return
+                            payment_verification = node.verify_payment_receipt(payment_receipt, workflow_name=workflow_name)
+
+                        task_payload = {
+                            "workflow_name": workflow_name,
+                            "input": payload.get("input"),
+                        }
+                        if payment_verification:
+                            task_payload["_payment_receipt"] = payment_receipt
+                            task_payload["_payment_verification"] = payment_verification
+                        task = node._normalize_task(
+                            TaskEnvelope.from_dict(
+                                {
+                                    "id": str(payload.get("task_id") or uuid4()),
+                                    "kind": "workflow-execute",
+                                    "role": "worker",
+                                    "required_capabilities": list(payload.get("required_capabilities") or ["worker"]),
+                                    "payload": task_payload,
+                                }
+                            ),
+                            node.config,
+                        )
+                        if task.sender == "local":
+                            task.sender = node.config.node_id
+                        node._persist_task_delivery(task)
+                        self._json_response(
+                            HTTPStatus.ACCEPTED,
+                            {
+                                "ok": True,
+                                "task": task.to_dict(),
+                                "payment_required": payment_required,
+                                "payment_verified": bool(payment_verification),
                             },
                         )
                         return

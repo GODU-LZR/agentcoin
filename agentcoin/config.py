@@ -198,6 +198,10 @@ class NodeConfig:
     task_retry_limit: int = 3
     task_retry_backoff_seconds: int = 5
     local_dispatch_fallback: bool = True
+    payment_required_workflows: list[str] = field(default_factory=list)
+    payment_quote_amount_wei: int = 10000000000000000
+    payment_quote_asset: str = "AGENT"
+    payment_quote_ttl_seconds: int = 300
     challenge_bond_required_wei: int = 0
     poaw_policy_version: str = "0.2"
     poaw_score_weights: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_POAW_SCORE_WEIGHTS))
@@ -274,6 +278,8 @@ class NodeConfig:
                 "manifest": f"{self.base_url}/v1/manifest",
                 "auth_challenge": f"{self.base_url}/v1/auth/challenge",
                 "auth_verify": f"{self.base_url}/v1/auth/verify",
+                "workflow_execute": f"{self.base_url}/v1/workflow/execute",
+                "payment_receipt_issue": f"{self.base_url}/v1/payments/receipts/issue",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",
                 "peers": f"{self.base_url}/v1/peers",

@@ -22,6 +22,8 @@ The current repository contains:
 - a first runtime-adapter layer for HTTP and CLI agent execution
 - a lightweight semantic layer for cards and task envelopes
 - a local PoAW score-event ledger for useful-work accounting
+- loopback-only signed client identity plus short-lived local identity sessions for passwordless browser or agent calls
+- an HTTP 402 payment-challenge skeleton for metered workflow execution and signed local payment receipts
 
 ## Design Goals
 
@@ -30,7 +32,7 @@ The current repository contains:
 - Agent-compatible: generic HTTP + JSON protocol boundary
 - Offline-first: useful behavior even under unstable or interrupted networking
 - Secure-by-default: loopback bind and bearer-token protected write APIs
-- Passwordless-ready: local SSH/Ed25519 identity bootstrap and DID exposure for browser or agent discovery
+- Passwordless-ready: local SSH/Ed25519 identity bootstrap, DID exposure, and signed loopback sessions for browser or agent discovery
 - Workflow-native: branch, merge, lineage, and replay semantics
 
 ## Repository Layout
@@ -101,6 +103,7 @@ Configuration defines:
 
 - node identity and bind settings
 - optional automatic local identity bootstrap, CORS-friendly local manifest exposure, and derived DID state
+- metered workflow policy and local 402 payment quote settings
 - auth token
 - HMAC signing secret
 - inbound signature requirement
@@ -417,5 +420,3 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 - Connectivity: [docs/architecture/e2ee-connectivity.md](../architecture/e2ee-connectivity.md)
 - Testing: [docs/testing/strategy.md](../testing/strategy.md)
 - License notice: [docs/legal/gpl-notice.md](../legal/gpl-notice.md)
-d o c s   u p d a t e  
- 

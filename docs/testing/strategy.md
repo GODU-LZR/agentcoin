@@ -12,7 +12,8 @@ The current test scope covers:
 - local SSH/Ed25519 identity bootstrap and derived DID exposure
 - local manifest endpoint and CORS preflight handling
 - one-time identity auth challenge plus signed request verification
-- loopback-only signed client identity access for local task creation, dispatch evaluation, and runtime binding
+- loopback-only signed client identity access for local task creation, dispatch evaluation, runtime binding, and workflow execution
+- HTTP 402 payment challenge, signed local payment receipt issue, and metered workflow execution replay
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery
@@ -146,6 +147,7 @@ The following behaviors are now covered either by automated tests or previously 
 - signed `read-only` operator auth now also covers dispatch and PoAW observability endpoints such as `GET /v1/tasks/dispatch/preview`, `GET /v1/poaw/events`, and `GET /v1/poaw/summary`
 - loopback-only scoped bearer tokens now have targeted integration coverage for `read-only` observability and `workflow-admin` local automation, including scope-denied audit persistence
 - Tier 1 `local-admin` endpoints now have targeted integration coverage for loopback shared-bearer migration and loopback scoped-bearer access
+- metered workflow execution now returns `402 Payment Required` plus a challenge, and accepts a signed local payment receipt after operator-side receipt issue
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 
