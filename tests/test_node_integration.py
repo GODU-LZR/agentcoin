@@ -1266,6 +1266,8 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(session["handshake_state"], "transport-ready")
             self.assertEqual(session["protocol_state"], "initialize-pending")
             self.assertTrue(int(session["pid"] or 0) > 0)
+            self.assertEqual(session["summary"]["turn_count"], 0)
+            self.assertIsNone(session["summary"]["active_turn_id"])
             self.assertFalse(open_payload["protocol_boundary"]["protocol_messages_implemented"])
 
             managed_status, managed_payload = self._identity_signed_get(
@@ -1286,6 +1288,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(sessions_status, HTTPStatus.OK)
             self.assertEqual(len(sessions_payload["items"]), 1)
             self.assertEqual(sessions_payload["items"][0]["session_id"], session["session_id"])
+            self.assertEqual(sessions_payload["items"][0]["summary"]["turn_count"], 0)
             self.assertTrue(sessions_payload["protocol_boundary"]["transport_ready"])
             self.assertFalse(sessions_payload["protocol_boundary"]["protocol_messages_implemented"])
 
@@ -1446,6 +1449,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(poll_payload["turns"]), 1)
             self.assertEqual(poll_payload["turns"][0]["phase"], "initialize")
             self.assertTrue(poll_payload["turns"][0]["response_captured"])
+            self.assertEqual(poll_payload["session"]["summary"]["turn_count"], 1)
+            self.assertEqual(poll_payload["session"]["summary"]["active_phase"], "initialize")
+            self.assertTrue(poll_payload["session"]["summary"]["active_response_captured"])
+            self.assertEqual(poll_payload["session"]["summary"]["pending_request_ids"], [])
             latest_server_frame = poll_payload["latest_server_frame"]
             initialize_response_frame = poll_payload["initialize_response_frame"]
             self.assertIsNotNone(latest_server_frame)
@@ -1644,6 +1651,11 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(poll_payload["turns"][0]["phase"], "initialize")
             self.assertEqual(poll_payload["turns"][1]["phase"], "task-request")
             self.assertTrue(poll_payload["turns"][1]["response_captured"])
+            self.assertEqual(poll_payload["session"]["summary"]["turn_count"], 2)
+            self.assertEqual(poll_payload["session"]["summary"]["active_phase"], "task-request")
+            self.assertEqual(poll_payload["session"]["summary"]["active_task_id"], "acp-task-1")
+            self.assertTrue(poll_payload["session"]["summary"]["active_response_captured"])
+            self.assertEqual(poll_payload["session"]["summary"]["pending_request_ids"], [])
             self.assertIsNotNone(task_response_frame)
             self.assertEqual(
                 task_response_frame["parsed"]["id"],

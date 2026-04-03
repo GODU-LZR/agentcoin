@@ -48,6 +48,7 @@ The current repository contains:
 - captured ACP task response frames can now be explicitly materialized into local AgentCoin task results, receipts, and execution audits
 - ACP initialize and task responses are now correlated by request id before they are surfaced into session state or task-result mapping
 - ACP sessions now preserve a minimal turn history so multi-step initialize and prompt exchanges can be inspected turn-by-turn
+- ACP session payloads now include a front-end-oriented `summary` with active turn selection, pending request ids, and latest response timing so the UI does not need to infer current state from raw turn arrays
 
 ## Design Goals
 

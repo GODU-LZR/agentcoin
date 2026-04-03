@@ -99,6 +99,58 @@ class LocalAgentManager:
             hydrated.append(turn_copy)
         return hydrated
 
+    @staticmethod
+    def _session_summary(
+        record: dict[str, Any],
+        turns: list[dict[str, Any]],
+        frames: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        active_turn: dict[str, Any] | None = None
+        pending_request_ids: list[str] = []
+        response_turns: list[dict[str, Any]] = []
+        for turn in turns:
+            request = dict(turn.get("request") or {})
+            request_id = str(request.get("id") or "").strip()
+            if request_id and not bool(turn.get("response_captured")):
+                pending_request_ids.append(request_id)
+            if bool(turn.get("response_captured")):
+                response_turns.append(turn)
+        for turn in reversed(turns):
+            if not bool(turn.get("response_captured")):
+                active_turn = turn
+                break
+        if active_turn is None and turns:
+            active_turn = turns[-1]
+        latest_server_frame = LocalAgentManager._summarize_latest_server_frame(frames)
+        latest_server_frame_id = None
+        if isinstance(latest_server_frame, dict):
+            parsed = latest_server_frame.get("parsed")
+            if isinstance(parsed, dict):
+                latest_server_frame_id = str(parsed.get("id") or "").strip() or None
+        last_response_received_at = None
+        if response_turns:
+            response_turn = response_turns[-1]
+            last_response_received_at = response_turn.get("response_received_at")
+        elif latest_server_frame:
+            last_response_received_at = latest_server_frame.get("received_at")
+        active_request = dict((active_turn or {}).get("request") or {})
+        active_task_ref = dict((active_turn or {}).get("task_ref") or {})
+        return {
+            "turn_count": len(turns),
+            "active_turn_id": (active_turn or {}).get("turn_id"),
+            "active_phase": (active_turn or {}).get("phase"),
+            "active_request_id": str(active_request.get("id") or "").strip() or None,
+            "active_task_id": str(active_task_ref.get("task_id") or "").strip() or None,
+            "active_response_captured": bool((active_turn or {}).get("response_captured")),
+            "pending_request_ids": pending_request_ids,
+            "latest_server_frame_id": latest_server_frame_id,
+            "latest_server_frame_received_at": (latest_server_frame or {}).get("received_at"),
+            "last_response_received_at": last_response_received_at,
+            "handshake_state": str(record.get("handshake_state") or ""),
+            "protocol_state": str(record.get("protocol_state") or ""),
+            "status": str(record.get("status") or ""),
+        }
+
     def _update_session_states_for_registration(self, registration_id: str, process_state: str) -> None:
         for record in self._acp_sessions.values():
             if str(record.get("registration_id") or "") != registration_id:
@@ -153,12 +205,14 @@ class LocalAgentManager:
         record = self._acp_sessions.get(session_id)
         if not record:
             return None
+        if str(record.get("status") or "") == "closed":
+            turns = list(record.get("turns") or [])
+            record["summary"] = self._session_summary(record, turns, [])
+            return dict(record)
         registration = self._refresh_status(str(record.get("registration_id") or ""))
         if not registration:
             self._acp_sessions.pop(session_id, None)
             return None
-        if str(record.get("status") or "") == "closed":
-            return dict(record)
         if str(registration.get("status") or "") != "running":
             record["status"] = "stale"
             record["process_state"] = str(registration.get("status") or "")
@@ -195,6 +249,7 @@ class LocalAgentManager:
                 record["latest_task_response_frame"] = task_response_frame
                 if not record.get("task_response_received_at"):
                     record["task_response_received_at"] = task_response_frame.get("received_at")
+        record["summary"] = self._session_summary(record, list(record.get("turns") or []), frames)
         return dict(record)
 
     def _build_acp_initialize_intent(
@@ -289,6 +344,7 @@ class LocalAgentManager:
             stored["initialize_sent"] = False
             stored["handshake_state"] = "initialize-prepared"
             stored["protocol_state"] = "initialize-dispatch-pending"
+        stored["summary"] = self._session_summary(stored, list(stored.get("turns") or []), [])
         return {"session": dict(stored), "initialize_intent": intent, "dispatched": bool(dispatch)}
 
     def _build_acp_task_request_intent(
@@ -386,6 +442,7 @@ class LocalAgentManager:
         else:
             stored["task_request_sent"] = False
             stored["protocol_state"] = "task-request-dispatch-pending"
+        stored["summary"] = self._session_summary(stored, list(stored.get("turns") or []), [])
         return {"session": dict(stored), "task_request_intent": intent, "dispatched": bool(dispatch)}
 
     def poll_acp_session(self, session_id: str) -> dict[str, Any]:
@@ -562,6 +619,7 @@ class LocalAgentManager:
             "opened_at": utc_now(),
             "updated_at": utc_now(),
         }
+        session["summary"] = self._session_summary(session, [], [])
         self._acp_sessions[session_id] = session
         return dict(session)
 
@@ -574,6 +632,7 @@ class LocalAgentManager:
         stored["handshake_state"] = "closed"
         stored["updated_at"] = utc_now()
         stored["closed_at"] = utc_now()
+        stored["summary"] = self._session_summary(stored, list(stored.get("turns") or []), [])
         return dict(stored)
 
     def shutdown(self) -> None:

@@ -38,6 +38,7 @@ The current test scope covers:
 - ACP result materialization coverage, including mapping a captured response frame into a completed local task plus deterministic execution receipt and audit
 - ACP request/response correlation coverage, ensuring initialize and prompt responses are matched by request id instead of only by latest frame order
 - ACP multi-turn session coverage, ensuring session polling exposes ordered initialize and task-request turns with per-turn response capture state
+- ACP session summary coverage, ensuring session payloads expose active-turn and pending-request state without requiring the front end to derive it from raw turn history
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery
