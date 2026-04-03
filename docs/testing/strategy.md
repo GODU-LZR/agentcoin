@@ -18,6 +18,7 @@ The current test scope covers:
 - loopback signed-client and session access to receipt introspection
 - standardized quote and payment-proof payload consistency across challenge, receipt issue, and introspection
 - signed payment attestation consistency across receipt issue and introspection state changes
+- on-chain payment proof projection consistency before and after receipt consumption
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

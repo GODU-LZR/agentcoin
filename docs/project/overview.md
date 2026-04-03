@@ -28,6 +28,7 @@ The current repository contains:
 - passwordless local payment receipt introspection for loopback browser or agent flows
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
+- signed on-chain payment proof projection from local receipt and attestation state
 
 ## Design Goals
 

@@ -20,7 +20,7 @@ from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_confi
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.net import OutboundTransport
-from agentcoin.onchain import OnchainRuntime
+from agentcoin.onchain import OnchainRuntime, sha256_hex
 from agentcoin.receipts import (
     build_deterministic_execution_receipt,
     build_governance_action_receipt,
@@ -146,6 +146,7 @@ class AgentCoinNode:
                 "planned": True,
                 "required_workflows": list(self.config.payment_required_workflows),
                 "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
+                "receipt_onchain_proof_url": self.config.card.endpoints.get("payment_receipt_onchain_proof"),
                 "receipt_kind": "agentcoin-payment-receipt",
                 "proof_type": "local-operator-attestation",
                 "quote": {
@@ -522,6 +523,61 @@ class AgentCoinNode:
             attestation,
             hmac_scope="payment-attestation",
             identity_namespace="agentcoin-payment-attestation",
+        )
+
+    def build_payment_onchain_proof(
+        self,
+        receipt: dict[str, Any],
+        *,
+        workflow_name: str | None = None,
+    ) -> dict[str, Any]:
+        if not self.onchain.enabled:
+            raise ValueError("onchain payment proof requires onchain bindings to be enabled")
+        introspection = self.introspect_payment_receipt(receipt, workflow_name=workflow_name)
+        challenge = dict(introspection.get("challenge") or {})
+        attestation = dict(introspection.get("attestation") or {})
+        proof = {
+            "kind": "agentcoin-payment-onchain-proof",
+            "workflow_name": challenge.get("workflow_name"),
+            "receipt_id": receipt.get("receipt_id"),
+            "challenge_id": challenge.get("challenge_id"),
+            "quote_digest": introspection.get("quote_digest"),
+            "payment_proof_digest": introspection.get("payment_proof_digest"),
+            "attestation_digest": sha256_hex(attestation) if attestation else None,
+            "active": bool(introspection.get("active")),
+            "status": introspection.get("status"),
+            "reason": introspection.get("reason"),
+            "payment_receipt_kind": receipt.get("kind"),
+            "payment_attestation_kind": attestation.get("kind"),
+            "chain": {
+                "chain_id": self.config.onchain.chain_id,
+                "rpc_url": self.config.onchain.rpc_url,
+                "explorer_base_url": self.config.onchain.explorer_base_url,
+            },
+            "contracts": {
+                "bounty_escrow": self.config.onchain.bounty_escrow_address,
+                "controller_address": self.config.onchain.local_controller_address,
+                "did_registry": self.config.onchain.did_registry_address,
+            },
+            "projection": {
+                "action": "submitPaymentProof",
+                "contract": "BountyEscrow",
+                "proof_type": "local-operator-attestation",
+                "args": {
+                    "challenge_id": challenge.get("challenge_id"),
+                    "receipt_id": receipt.get("receipt_id"),
+                    "quote_digest": introspection.get("quote_digest"),
+                    "payment_proof_digest": introspection.get("payment_proof_digest"),
+                    "attestation_digest": sha256_hex(attestation) if attestation else None,
+                },
+            },
+            "attestation": attestation,
+            "generated_at": utc_now(),
+        }
+        return self._sign_document(
+            proof,
+            hmac_scope="payment-onchain-proof",
+            identity_namespace="agentcoin-payment-onchain",
         )
 
     def consume_payment_receipt(self, receipt_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
@@ -4104,6 +4160,7 @@ class AgentCoinNode:
                                 "/v1/tasks/dispatch/evaluate",
                                 "/v1/workflow/execute",
                                 "/v1/payments/receipts/introspect",
+                                "/v1/payments/receipts/onchain-proof",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -4199,6 +4256,27 @@ class AgentCoinNode:
                             {
                                 "receipt": payment_receipt,
                                 "introspection": introspection,
+                            },
+                        )
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-proof":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-proof"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip() or None
+                        proof = node.build_payment_onchain_proof(
+                            payment_receipt,
+                            workflow_name=workflow_name,
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "proof": proof,
                             },
                         )
                         return

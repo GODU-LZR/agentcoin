@@ -869,6 +869,18 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(introspect_status, HTTPStatus.BAD_REQUEST)
             self.assertIn("receipt", introspected["error"])
+
+            proof_status, proof_payload = self._session_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-proof",
+                {
+                    "payment_receipt": {
+                        "kind": "agentcoin-payment-receipt",
+                    }
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(proof_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("onchain", proof_payload["error"])
         finally:
             node.stop()
 
@@ -1042,6 +1054,38 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(introspect_before["introspection"]["attestation"]["status"], "issued")
             self.assertTrue(introspect_before["introspection"]["attestation"]["active"])
 
+            proof_before_status, proof_before = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-proof",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(proof_before_status, HTTPStatus.OK)
+            self.assertEqual(proof_before["proof"]["kind"], "agentcoin-payment-onchain-proof")
+            self.assertEqual(proof_before["proof"]["status"], "issued")
+            self.assertTrue(proof_before["proof"]["active"])
+            self.assertEqual(proof_before["proof"]["quote_digest"], receipt["quote_digest"])
+            self.assertEqual(proof_before["proof"]["payment_proof_digest"], receipt["payment_proof_digest"])
+            self.assertEqual(
+                proof_before["proof"]["contracts"]["bounty_escrow"],
+                onchain.bounty_escrow_address,
+            )
+            self.assertEqual(
+                proof_before["proof"]["projection"]["args"]["receipt_id"],
+                receipt_id,
+            )
+            proof_verification = verify_document(
+                proof_before["proof"],
+                secret="payment-ok-secret",
+                expected_scope="payment-onchain-proof",
+                expected_key_id="payment-ok-node",
+            )
+            self.assertTrue(proof_verification["verified"])
+
             execute_status, executed = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
                 {
@@ -1094,6 +1138,25 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(introspect_after["introspection"]["payment_proof_digest"], receipt["payment_proof_digest"])
             self.assertEqual(introspect_after["introspection"]["attestation"]["status"], "consumed")
             self.assertFalse(introspect_after["introspection"]["attestation"]["active"])
+
+            proof_after_status, proof_after = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-proof",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(proof_after_status, HTTPStatus.OK)
+            self.assertEqual(proof_after["proof"]["status"], "consumed")
+            self.assertFalse(proof_after["proof"]["active"])
+            self.assertEqual(proof_after["proof"]["payment_proof_digest"], receipt["payment_proof_digest"])
+            self.assertEqual(
+                proof_after["proof"]["projection"]["args"]["attestation_digest"],
+                proof_after["proof"]["attestation_digest"],
+            )
 
             replay_status, replay_payload = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
