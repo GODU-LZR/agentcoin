@@ -333,8 +333,11 @@ Still missing for later milestones:
 - `GET /v1/tasks/dead-letter`
 - `GET /v1/tasks/replay-inspect?task_id=...`
 - `GET /v1/onchain/settlement-relay-queue`
-- `POST /v1/onchain/settlement-relay-queue`
-- `POST /v1/tasks`
+- `POST /v1/onchain/settlement-relay-queue`  - `POST /v1/onchain/settlement-relay-queue/pause`
+  - `POST /v1/onchain/settlement-relay-queue/resume`
+  - `POST /v1/onchain/settlement-relay-queue/requeue`
+  - `POST /v1/onchain/settlement-relay-queue/cancel`
+  - `POST /v1/onchain/settlement-relay-queue/delete`- `POST /v1/tasks`
 - `POST /v1/tasks/dispatch`
 - `POST /v1/bridges/import`
 - `POST /v1/bridges/export`

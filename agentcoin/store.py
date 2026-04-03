@@ -2417,6 +2417,38 @@ class NodeStore:
             conn.close()
         return self.get_settlement_relay_queue_item(queue_id)
 
+    def cancel_settlement_relay_queue_item(self, queue_id: str) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE settlement_relay_queue
+                SET status = 'dead-letter',
+                    last_error = 'cancelled',
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE id = ? AND status IN ('queued', 'paused', 'retrying')
+                """,
+                (now, now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_settlement_relay_queue_item(queue_id)
+
+    def delete_settlement_relay_queue_item(self, queue_id: str) -> bool:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "DELETE FROM settlement_relay_queue WHERE id = ?",
+                (queue_id,),
+            )
+            conn.commit()
+            return row.rowcount > 0
+        finally:
+            conn.close()
+
     def _completion_score_event(
         self,
         *,

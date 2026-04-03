@@ -2566,6 +2566,16 @@ class AgentCoinNode:
                 "policy_level": 4,
                 "required_scopes": ["settlement-admin"],
             },
+            "/v1/onchain/settlement-relay-queue/cancel": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
+            "/v1/onchain/settlement-relay-queue/delete": {
+                "policy_tier": "settlement-admin",
+                "policy_level": 4,
+                "required_scopes": ["settlement-admin"],
+            },
             "/v1/onchain/settlement-relays/reconcile": {
                 "policy_tier": "settlement-admin",
                 "policy_level": 4,
@@ -4425,6 +4435,34 @@ class AgentCoinNode:
                         if not item or item.get("status") != "queued":
                             raise ValueError("queue item cannot be requeued")
                         self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue/cancel":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_settlement_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("settlement relay queue item not found")
+                        item = node.store.cancel_settlement_relay_queue_item(queue_id)
+                        if not item or item.get("status") != "dead-letter":
+                            raise ValueError("queue item cannot be cancelled")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue/delete":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_settlement_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("settlement relay queue item not found")
+                        ok = node.store.delete_settlement_relay_queue_item(queue_id)
+                        self._json_response(HTTPStatus.OK, {"ok": ok})
                         return
                     if self.path == "/v1/onchain/settlement-relays/reconcile":
                         if not self._require_auth():

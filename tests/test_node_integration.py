@@ -8069,6 +8069,89 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_operator_can_cancel_and_delete_settlement_relay_queue_item(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xcancelqueue"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="http://127.0.0.1:1",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-cancel",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-cancel-node",
+            token="token-settlement-cancel",
+            db_path=str(Path(self.tempdir.name) / "settlement-cancel.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-cancel",
+                {
+                    "id": "settlement-cancel-task",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 47,
+                },
+            )
+            self._complete_onchain_task(node, "token-settlement-cancel", "settlement-cancel-task", "worker-settlement-cancel")
+            
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-cancel",
+                {
+                    "task_id": "settlement-cancel-task",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"}
+                    ],
+                    "rpc_url": "http://127.0.0.1:1",
+                    "timeout_seconds": 0.2,
+                    "max_attempts": 1,
+                    "delay_seconds": 30,
+                },
+            )
+            item = queued["item"]
+
+            # Cancel the item
+            _, canceled_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue/cancel",
+                "token-settlement-cancel",
+                {"queue_id": item["id"]}
+            )
+            self.assertEqual(canceled_payload["item"]["status"], "dead-letter")
+            self.assertEqual(canceled_payload["item"]["last_error"], "cancelled")
+
+            # Delete the item
+            _, delete_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue/delete",
+                "token-settlement-cancel",
+                {"queue_id": item["id"]}
+            )
+            self.assertTrue(delete_payload["ok"])
+            
+            # Verify it's deleted
+            status_code, items_payload = self._get_auth(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue?task_id=settlement-cancel-task",
+                "token-settlement-cancel",
+            )
+            self.assertEqual(status_code, 200)
+            self.assertEqual(len(items_payload["items"]), 0)
+
+        finally:
+            node.stop()
+            rpc.stop()
+
     def test_onchain_status_exposes_explicit_transport_profile(self) -> None:
         node = NodeHarness(
             node_id="network-profile-node",

@@ -112,6 +112,7 @@ Status legend:
 - `[x]` relay queue max in-flight
 - `[x]` relay queue dead-letter
 - `[x]` operator relay requeue
+- `[x]` operator relay cancel / delete
 
 ## Phase 11
 
