@@ -144,6 +144,7 @@ class AgentCoinNode:
                 "enabled": bool(self.config.payment_required_workflows),
                 "planned": True,
                 "required_workflows": list(self.config.payment_required_workflows),
+                "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
                 "quote": {
                     "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
                     "asset": self.config.payment_quote_asset,
@@ -474,20 +475,37 @@ class AgentCoinNode:
         return collapsed
 
     def verify_payment_receipt(self, receipt: dict[str, Any], *, workflow_name: str) -> dict[str, Any]:
+        introspection = self.introspect_payment_receipt(receipt, workflow_name=workflow_name)
+        if not bool(introspection.get("active")):
+            raise SignatureError(str(introspection.get("reason") or "payment receipt is not active"))
+        return introspection
+
+    def introspect_payment_receipt(
+        self,
+        receipt: dict[str, Any],
+        *,
+        workflow_name: str | None = None,
+    ) -> dict[str, Any]:
+        receipt_id = str(receipt.get("receipt_id") or "").strip()
+        if not receipt_id:
+            raise ValueError("payment_receipt.receipt_id is required")
+        challenge_id = str(receipt.get("challenge_id") or "").strip()
+        if not challenge_id:
+            raise ValueError("payment_receipt.challenge_id is required")
         verification = self._verify_local_signed_document(
             receipt,
             hmac_scope="payment-receipt",
             identity_namespace="agentcoin-payment",
         )
-        receipt_id = str(receipt.get("receipt_id") or "").strip()
         receipt_status = self.get_payment_receipt(receipt_id)
-        challenge_id = str(receipt.get("challenge_id") or "").strip()
         challenge = self.get_payment_challenge(challenge_id)
         if str(receipt_status.get("challenge_id") or "").strip() != challenge_id:
             raise SignatureError("payment receipt challenge does not match issued receipt")
-        if str(challenge.get("workflow_name") or "").strip() != str(workflow_name or "").strip():
+        expected_workflow = str(workflow_name or "").strip()
+        challenge_workflow = str(challenge.get("workflow_name") or "").strip()
+        if expected_workflow and challenge_workflow != expected_workflow:
             raise SignatureError("payment receipt workflow does not match request")
-        if str(receipt.get("workflow_name") or "").strip() != str(challenge.get("workflow_name") or "").strip():
+        if str(receipt.get("workflow_name") or "").strip() != challenge_workflow:
             raise SignatureError("payment receipt workflow does not match quote")
         if str(receipt.get("amount_wei") or "").strip() != str(challenge.get("amount_wei") or "").strip():
             raise SignatureError("payment receipt amount does not match quote")
@@ -499,12 +517,16 @@ class AgentCoinNode:
             raise SignatureError("payment receipt payer does not match issued receipt")
         if str(receipt.get("tx_hash") or "").strip() != str(receipt_status.get("tx_hash") or "").strip():
             raise SignatureError("payment receipt tx_hash does not match issued receipt")
-        if str(receipt_status.get("status") or "").strip() != "issued":
-            raise SignatureError("payment receipt has already been consumed")
         if str(challenge.get("status") or "").strip() != "paid":
             raise SignatureError("payment receipt challenge is not marked paid")
+        receipt_state = str(receipt_status.get("status") or "").strip() or "unknown"
+        active = receipt_state == "issued"
+        reason = "" if active else "payment receipt has already been consumed"
         return {
             "verified": True,
+            "active": active,
+            "status": receipt_state,
+            "reason": reason,
             "challenge": challenge,
             "receipt": receipt,
             "receipt_status": receipt_status,
@@ -3958,6 +3980,7 @@ class AgentCoinNode:
                                 "/v1/tasks/dispatch",
                                 "/v1/tasks/dispatch/evaluate",
                                 "/v1/workflow/execute",
+                                "/v1/payments/receipts/introspect",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -4023,6 +4046,28 @@ class AgentCoinNode:
                         self._json_response(
                             HTTPStatus.CREATED if created else HTTPStatus.OK,
                             {"receipt": signed_receipt, "created": created},
+                        )
+                        return
+                    if self.path == "/v1/payments/receipts/introspect":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/introspect"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip() or None
+                        introspection = node.introspect_payment_receipt(
+                            payment_receipt,
+                            workflow_name=workflow_name,
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "receipt": payment_receipt,
+                                "introspection": introspection,
+                            },
                         )
                         return
                     if self.path == "/v1/workflow/execute":

@@ -15,6 +15,7 @@ The current test scope covers:
 - loopback-only signed client identity access for local task creation, dispatch evaluation, runtime binding, and workflow execution
 - HTTP 402 payment challenge, signed local payment receipt issue, and metered workflow execution replay
 - payment receipt status introspection, single-use consumption, and replay rejection
+- loopback signed-client and session access to receipt introspection
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

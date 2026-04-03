@@ -281,6 +281,7 @@ class NodeConfig:
                 "auth_verify": f"{self.base_url}/v1/auth/verify",
                 "workflow_execute": f"{self.base_url}/v1/workflow/execute",
                 "payment_receipt_issue": f"{self.base_url}/v1/payments/receipts/issue",
+                "payment_receipt_introspect": f"{self.base_url}/v1/payments/receipts/introspect",
                 "payment_receipt_status": f"{self.base_url}/v1/payments/receipts/status",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",

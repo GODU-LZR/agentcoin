@@ -857,6 +857,18 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(executed["payment_required"])
             self.assertFalse(executed["payment_verified"])
             self.assertEqual(executed["task"]["payload"]["workflow_name"], "free-review")
+
+            introspect_status, introspected = self._session_post(
+                f"{node.base_url}/v1/payments/receipts/introspect",
+                {
+                    "payment_receipt": {
+                        "kind": "agentcoin-payment-receipt",
+                    }
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(introspect_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("receipt", introspected["error"])
         finally:
             node.stop()
 
@@ -992,6 +1004,21 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(receipt_verification["verified"])
 
+            introspect_before_status, introspect_before = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(introspect_before_status, HTTPStatus.OK)
+            self.assertTrue(introspect_before["introspection"]["verified"])
+            self.assertTrue(introspect_before["introspection"]["active"])
+            self.assertEqual(introspect_before["introspection"]["status"], "issued")
+
             execute_status, executed = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
                 {
@@ -1025,6 +1052,21 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(status_code, HTTPStatus.OK)
             self.assertEqual(receipt_status_payload["receipt"]["status"], "consumed")
             self.assertEqual(receipt_status_payload["receipt"]["consumed_task_id"], executed["task"]["id"])
+
+            introspect_after_status, introspect_after = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(introspect_after_status, HTTPStatus.OK)
+            self.assertFalse(introspect_after["introspection"]["active"])
+            self.assertEqual(introspect_after["introspection"]["status"], "consumed")
+            self.assertIn("consumed", introspect_after["introspection"]["reason"])
 
             replay_status, replay_payload = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",

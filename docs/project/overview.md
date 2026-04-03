@@ -25,6 +25,7 @@ The current repository contains:
 - loopback-only signed client identity plus short-lived local identity sessions for passwordless browser or agent calls
 - an HTTP 402 payment-challenge skeleton for metered workflow execution and signed local payment receipts
 - single-use local payment receipts with explicit receipt status tracking and replay rejection
+- passwordless local payment receipt introspection for loopback browser or agent flows
 
 ## Design Goals
 
