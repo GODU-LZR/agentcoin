@@ -60,6 +60,24 @@ class LocalAgentManager:
             latest["parsed"] = dict(parsed)
         return latest
 
+    @staticmethod
+    def _frame_for_request_id(frames: list[dict[str, Any]], request_id: str | None) -> dict[str, Any] | None:
+        normalized_request_id = str(request_id or "").strip()
+        if not normalized_request_id:
+            return None
+        for frame in reversed(frames):
+            parsed = frame.get("parsed")
+            if not isinstance(parsed, dict):
+                continue
+            if str(parsed.get("id") or "").strip() != normalized_request_id:
+                continue
+            matched = dict(frame)
+            matched_parsed = matched.get("parsed")
+            if isinstance(matched_parsed, dict):
+                matched["parsed"] = dict(matched_parsed)
+            return matched
+        return None
+
     def _update_session_states_for_registration(self, registration_id: str, process_state: str) -> None:
         for record in self._acp_sessions.values():
             if str(record.get("registration_id") or "") != registration_id:
@@ -135,18 +153,24 @@ class LocalAgentManager:
         latest_frame = self._summarize_latest_server_frame(frames)
         if latest_frame:
             record["latest_server_frame"] = latest_frame
+        initialize_response_frame = self._frame_for_request_id(frames, record.get("initialize_request_id"))
+        if initialize_response_frame:
+            record["initialize_response_frame"] = initialize_response_frame
             if bool(record.get("initialize_sent")):
                 record["handshake_state"] = "initialize-response-captured"
                 record["protocol_state"] = "server-response-captured"
                 record["initialize_response_captured"] = True
                 if not record.get("initialize_response_received_at"):
-                    record["initialize_response_received_at"] = latest_frame.get("received_at")
+                    record["initialize_response_received_at"] = initialize_response_frame.get("received_at")
+        task_response_frame = self._frame_for_request_id(frames, record.get("task_request_id"))
+        if task_response_frame:
+            record["task_response_frame"] = task_response_frame
             if bool(record.get("task_request_sent")):
                 record["protocol_state"] = "task-response-captured"
                 record["task_response_captured"] = True
-                record["latest_task_response_frame"] = latest_frame
+                record["latest_task_response_frame"] = task_response_frame
                 if not record.get("task_response_received_at"):
-                    record["task_response_received_at"] = latest_frame.get("received_at")
+                    record["task_response_received_at"] = task_response_frame.get("received_at")
         return dict(record)
 
     def _build_acp_initialize_intent(
@@ -215,6 +239,7 @@ class LocalAgentManager:
         )
         stored = self._acp_sessions[session_id]
         stored["initialize_intent"] = intent
+        stored["initialize_request_id"] = str(intent.get("request", {}).get("id") or "")
         stored["last_client_frame"] = dict(intent.get("request") or {})
         stored["updated_at"] = utc_now()
         if dispatch:
@@ -301,6 +326,7 @@ class LocalAgentManager:
         )
         stored = self._acp_sessions[session_id]
         stored["last_task_request_intent"] = intent
+        stored["task_request_id"] = str(intent.get("request", {}).get("id") or "")
         stored["last_client_frame"] = dict(intent.get("request") or {})
         stored["updated_at"] = utc_now()
         if dispatch:
@@ -326,6 +352,8 @@ class LocalAgentManager:
             "session": refreshed or session,
             "captured_frames": frames,
             "latest_server_frame": self._summarize_latest_server_frame(frames),
+            "initialize_response_frame": self._frame_for_request_id(frames, (refreshed or session).get("initialize_request_id")),
+            "task_response_frame": self._frame_for_request_id(frames, (refreshed or session).get("task_request_id")),
         }
 
     def register_discovered_agent(

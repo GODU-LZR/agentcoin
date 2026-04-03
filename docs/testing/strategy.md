@@ -36,6 +36,7 @@ The current test scope covers:
 - ACP stdout polling coverage, including capture of a fake initialize response frame and best-effort JSON parsing into session state
 - ACP task-request coverage, including mapping a local task into a `prompt` frame candidate, dispatching it, and polling for a fake response frame
 - ACP result materialization coverage, including mapping a captured response frame into a completed local task plus deterministic execution receipt and audit
+- ACP request/response correlation coverage, ensuring initialize and prompt responses are matched by request id instead of only by latest frame order
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

@@ -1138,7 +1138,8 @@ class AgentCoinNode:
             raise ValueError("task not found")
         polled = self.local_agents.poll_acp_session(session_id)
         session = dict(polled.get("session") or {})
-        latest_frame = dict(polled.get("latest_server_frame") or {})
+        task_response_frame = dict(polled.get("task_response_frame") or {})
+        latest_frame = task_response_frame or dict(polled.get("latest_server_frame") or {})
         parsed = latest_frame.get("parsed")
         if not isinstance(parsed, dict):
             raise ValueError("acp session has not captured a parseable server frame")

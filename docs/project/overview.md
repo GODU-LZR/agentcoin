@@ -46,6 +46,7 @@ The current repository contains:
 - ACP sessions can now poll and capture the first stdout response frame after `initialize`, with best-effort JSON parsing and explicit non-coverage of full ACP response validation
 - local AgentCoin tasks can now be mapped into best-effort ACP `prompt` request candidates and optionally dispatched over the same stdio session
 - captured ACP task response frames can now be explicitly materialized into local AgentCoin task results, receipts, and execution audits
+- ACP initialize and task responses are now correlated by request id before they are surfaced into session state or task-result mapping
 
 ## Design Goals
 

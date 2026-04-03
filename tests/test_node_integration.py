@@ -1444,7 +1444,13 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(poll_payload["session"]["handshake_state"], "initialize-response-captured")
             self.assertEqual(poll_payload["session"]["protocol_state"], "server-response-captured")
             latest_server_frame = poll_payload["latest_server_frame"]
+            initialize_response_frame = poll_payload["initialize_response_frame"]
             self.assertIsNotNone(latest_server_frame)
+            self.assertIsNotNone(initialize_response_frame)
+            self.assertEqual(
+                initialize_response_frame["parsed"]["id"],
+                initialize_payload["initialize_intent"]["request"]["id"],
+            )
             self.assertEqual(latest_server_frame["parsed"]["result"]["serverInfo"]["name"], "fake-acp-server")
             self.assertEqual(latest_server_frame["parsed"]["result"]["serverCapabilities"], {"tasks": True})
             self.assertEqual(
@@ -1629,7 +1635,13 @@ class NodeIntegrationTests(unittest.TestCase):
                     break
                 time.sleep(0.1)
             latest_server_frame = poll_payload["latest_server_frame"]
+            task_response_frame = poll_payload["task_response_frame"]
             self.assertEqual(poll_payload["session"]["protocol_state"], "task-response-captured")
+            self.assertIsNotNone(task_response_frame)
+            self.assertEqual(
+                task_response_frame["parsed"]["id"],
+                task_request_payload["task_request_intent"]["request"]["id"],
+            )
             self.assertEqual(latest_server_frame["parsed"]["result"]["content"][0]["text"], "task-ok")
 
             apply_status, applied = self._identity_signed_post(
