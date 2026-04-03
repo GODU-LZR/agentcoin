@@ -983,6 +983,7 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(issue_status, HTTPStatus.CREATED)
             receipt = issued["receipt"]
+            receipt_id = str(receipt["receipt_id"])
             receipt_verification = verify_document(
                 receipt,
                 secret="payment-ok-secret",
@@ -1008,6 +1009,36 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(executed["task"]["kind"], "workflow-execute")
             self.assertEqual(executed["task"]["payload"]["workflow_name"], "premium-review")
             self.assertEqual(executed["task"]["payload"]["_payment_receipt"]["challenge_id"], challenge_id)
+            self.assertEqual(
+                executed["task"]["payload"]["_payment_verification"]["receipt_status"]["status"],
+                "consumed",
+            )
+            self.assertEqual(
+                executed["task"]["payload"]["_payment_verification"]["receipt_status"]["consumed_task_id"],
+                executed["task"]["id"],
+            )
+
+            status_code, receipt_status_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/status?receipt_id={receipt_id}",
+                "token-payment-ok",
+            )
+            self.assertEqual(status_code, HTTPStatus.OK)
+            self.assertEqual(receipt_status_payload["receipt"]["status"], "consumed")
+            self.assertEqual(receipt_status_payload["receipt"]["consumed_task_id"], executed["task"]["id"])
+
+            replay_status, replay_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(replay_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("already been consumed", replay_payload["error"])
         finally:
             node.stop()
 

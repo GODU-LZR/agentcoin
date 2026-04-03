@@ -202,6 +202,7 @@ class NodeConfig:
     payment_quote_amount_wei: int = 10000000000000000
     payment_quote_asset: str = "AGENT"
     payment_quote_ttl_seconds: int = 300
+    payment_receipt_ttl_seconds: int = 3600
     challenge_bond_required_wei: int = 0
     poaw_policy_version: str = "0.2"
     poaw_score_weights: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_POAW_SCORE_WEIGHTS))
@@ -280,6 +281,7 @@ class NodeConfig:
                 "auth_verify": f"{self.base_url}/v1/auth/verify",
                 "workflow_execute": f"{self.base_url}/v1/workflow/execute",
                 "payment_receipt_issue": f"{self.base_url}/v1/payments/receipts/issue",
+                "payment_receipt_status": f"{self.base_url}/v1/payments/receipts/status",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",
                 "peers": f"{self.base_url}/v1/peers",

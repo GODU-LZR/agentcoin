@@ -176,6 +176,7 @@
   "payment_quote_amount_wei": 10000000000000000,
   "payment_quote_asset": "AGENT",
   "payment_quote_ttl_seconds": 300,
+  "payment_receipt_ttl_seconds": 3600,
   "dispatch_peer_cooldown_seconds": 60,
   "dispatch_peer_blacklist_after_failures": 4,
   "dispatch_peer_blacklist_seconds": 300,

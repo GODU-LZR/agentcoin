@@ -14,6 +14,7 @@ The current test scope covers:
 - one-time identity auth challenge plus signed request verification
 - loopback-only signed client identity access for local task creation, dispatch evaluation, runtime binding, and workflow execution
 - HTTP 402 payment challenge, signed local payment receipt issue, and metered workflow execution replay
+- payment receipt status introspection, single-use consumption, and replay rejection
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery
@@ -148,6 +149,7 @@ The following behaviors are now covered either by automated tests or previously 
 - loopback-only scoped bearer tokens now have targeted integration coverage for `read-only` observability and `workflow-admin` local automation, including scope-denied audit persistence
 - Tier 1 `local-admin` endpoints now have targeted integration coverage for loopback shared-bearer migration and loopback scoped-bearer access
 - metered workflow execution now returns `402 Payment Required` plus a challenge, and accepts a signed local payment receipt after operator-side receipt issue
+- metered workflow receipts now transition to `consumed`, can be inspected by receipt id, and reject second-use replay
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

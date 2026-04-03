@@ -24,6 +24,7 @@ The current repository contains:
 - a local PoAW score-event ledger for useful-work accounting
 - loopback-only signed client identity plus short-lived local identity sessions for passwordless browser or agent calls
 - an HTTP 402 payment-challenge skeleton for metered workflow execution and signed local payment receipts
+- single-use local payment receipts with explicit receipt status tracking and replay rejection
 
 ## Design Goals
 
@@ -104,6 +105,7 @@ Configuration defines:
 - node identity and bind settings
 - optional automatic local identity bootstrap, CORS-friendly local manifest exposure, and derived DID state
 - metered workflow policy and local 402 payment quote settings
+- local payment receipt lifetime and introspection settings
 - auth token
 - HMAC signing secret
 - inbound signature requirement
