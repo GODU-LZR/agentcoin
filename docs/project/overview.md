@@ -27,6 +27,7 @@ The current repository contains:
 - single-use local payment receipts with explicit receipt status tracking and replay rejection
 - passwordless local payment receipt introspection for loopback browser or agent flows
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
+- signed payment attestations for receipt issue and introspection responses
 
 ## Design Goals
 

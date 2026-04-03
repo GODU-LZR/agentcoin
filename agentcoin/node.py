@@ -339,6 +339,16 @@ class AgentCoinNode:
         serialized = json.dumps(dict(quote or {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         return hashlib.sha256(serialized).hexdigest()
 
+    @staticmethod
+    def _payment_proof_digest(payment_proof: dict[str, Any]) -> str:
+        serialized = json.dumps(
+            dict(payment_proof or {}),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
     def build_payment_quote(
         self,
         *,
@@ -445,6 +455,7 @@ class AgentCoinNode:
             "attestor_node_id": self.config.node_id,
             "attestor_did": self.config.resolved_local_did,
         }
+        payment_proof_digest = self._payment_proof_digest(payment_proof)
         receipt = {
             "kind": "agentcoin-payment-receipt",
             "receipt_id": receipt_id,
@@ -461,6 +472,7 @@ class AgentCoinNode:
             "quote": quote,
             "quote_digest": quote.get("quote_digest"),
             "payment_proof": payment_proof,
+            "payment_proof_digest": payment_proof_digest,
             "status": "issued",
         }
         signed_receipt = self._sign_document(
@@ -480,6 +492,37 @@ class AgentCoinNode:
             refreshed["status"] = "paid"
             self._payment_challenges[challenge_id] = refreshed
         return dict(signed_receipt), True
+
+    def build_payment_attestation(
+        self,
+        *,
+        challenge: dict[str, Any],
+        receipt: dict[str, Any],
+        receipt_status: dict[str, Any],
+        active: bool,
+        reason: str,
+    ) -> dict[str, Any]:
+        payment_proof = dict(receipt.get("payment_proof") or {})
+        attestation = {
+            "kind": "agentcoin-payment-attestation",
+            "receipt_id": receipt.get("receipt_id"),
+            "challenge_id": challenge.get("challenge_id"),
+            "workflow_name": challenge.get("workflow_name"),
+            "quote_digest": challenge.get("quote_digest"),
+            "payment_proof_digest": self._payment_proof_digest(payment_proof),
+            "active": bool(active),
+            "status": str(receipt_status.get("status") or receipt.get("status") or ""),
+            "reason": str(reason or ""),
+            "consumed_task_id": receipt_status.get("consumed_task_id"),
+            "attested_at": utc_now(),
+            "attestor_node_id": self.config.node_id,
+            "attestor_did": self.config.resolved_local_did,
+        }
+        return self._sign_document(
+            attestation,
+            hmac_scope="payment-attestation",
+            identity_namespace="agentcoin-payment-attestation",
+        )
 
     def consume_payment_receipt(self, receipt_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
         normalized_receipt_id = str(receipt_id or "").strip()
@@ -574,10 +617,13 @@ class AgentCoinNode:
         if str(receipt.get("recipient") or "").strip() != str(challenge.get("recipient") or "").strip():
             raise SignatureError("payment receipt recipient does not match quote")
         payment_proof = dict(receipt.get("payment_proof") or {})
+        payment_proof_digest = self._payment_proof_digest(payment_proof)
         if str(payment_proof.get("challenge_id") or "").strip() != challenge_id:
             raise SignatureError("payment receipt proof challenge does not match quote")
         if str(payment_proof.get("quote_digest") or "").strip() != quote_digest:
             raise SignatureError("payment receipt proof quote digest does not match quote")
+        if str(receipt.get("payment_proof_digest") or "").strip() != payment_proof_digest:
+            raise SignatureError("payment receipt proof digest does not match proof")
         if str(receipt.get("payer") or "").strip() != str(receipt_status.get("payer") or "").strip():
             raise SignatureError("payment receipt payer does not match issued receipt")
         if str(receipt.get("tx_hash") or "").strip() != str(receipt_status.get("tx_hash") or "").strip():
@@ -587,6 +633,13 @@ class AgentCoinNode:
         receipt_state = str(receipt_status.get("status") or "").strip() or "unknown"
         active = receipt_state == "issued"
         reason = "" if active else "payment receipt has already been consumed"
+        attestation = self.build_payment_attestation(
+            challenge=challenge,
+            receipt=receipt,
+            receipt_status=receipt_status,
+            active=active,
+            reason=reason,
+        )
         return {
             "verified": True,
             "active": active,
@@ -595,6 +648,8 @@ class AgentCoinNode:
             "quote": quote,
             "quote_digest": quote_digest,
             "payment_proof": payment_proof,
+            "payment_proof_digest": payment_proof_digest,
+            "attestation": attestation,
             "challenge": challenge,
             "receipt": receipt,
             "receipt_status": receipt_status,
@@ -4111,9 +4166,18 @@ class AgentCoinNode:
                             payer=payer,
                             tx_hash=tx_hash,
                         )
+                        challenge = node.get_payment_challenge(challenge_id)
+                        receipt_status = node.get_payment_receipt(str(signed_receipt.get("receipt_id") or ""))
+                        attestation = node.build_payment_attestation(
+                            challenge=challenge,
+                            receipt=signed_receipt,
+                            receipt_status=receipt_status,
+                            active=True,
+                            reason="",
+                        )
                         self._json_response(
                             HTTPStatus.CREATED if created else HTTPStatus.OK,
-                            {"receipt": signed_receipt, "created": created},
+                            {"receipt": signed_receipt, "attestation": attestation, "created": created},
                         )
                         return
                     if self.path == "/v1/payments/receipts/introspect":

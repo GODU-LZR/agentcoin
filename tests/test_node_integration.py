@@ -1006,6 +1006,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(receipt["payment_proof"]["proof_type"], "local-operator-attestation")
             self.assertEqual(receipt["payment_proof"]["challenge_id"], challenge_id)
             self.assertEqual(receipt["payment_proof"]["quote_digest"], receipt["quote_digest"])
+            self.assertEqual(receipt["payment_proof_digest"], issued["attestation"]["payment_proof_digest"])
+            self.assertEqual(issued["attestation"]["kind"], "agentcoin-payment-attestation")
+            self.assertTrue(issued["attestation"]["active"])
+            self.assertEqual(issued["attestation"]["status"], "issued")
             receipt_verification = verify_document(
                 receipt,
                 secret="payment-ok-secret",
@@ -1030,10 +1034,13 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(introspect_before["introspection"]["status"], "issued")
             self.assertEqual(introspect_before["introspection"]["quote"]["quote_id"], challenge_id)
             self.assertEqual(introspect_before["introspection"]["quote_digest"], receipt["quote_digest"])
+            self.assertEqual(introspect_before["introspection"]["payment_proof_digest"], receipt["payment_proof_digest"])
             self.assertEqual(
                 introspect_before["introspection"]["payment_proof"]["proof_type"],
                 "local-operator-attestation",
             )
+            self.assertEqual(introspect_before["introspection"]["attestation"]["status"], "issued")
+            self.assertTrue(introspect_before["introspection"]["attestation"]["active"])
 
             execute_status, executed = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
@@ -1084,6 +1091,9 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(introspect_after["introspection"]["status"], "consumed")
             self.assertIn("consumed", introspect_after["introspection"]["reason"])
             self.assertEqual(introspect_after["introspection"]["quote_digest"], receipt["quote_digest"])
+            self.assertEqual(introspect_after["introspection"]["payment_proof_digest"], receipt["payment_proof_digest"])
+            self.assertEqual(introspect_after["introspection"]["attestation"]["status"], "consumed")
+            self.assertFalse(introspect_after["introspection"]["attestation"]["active"])
 
             replay_status, replay_payload = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
