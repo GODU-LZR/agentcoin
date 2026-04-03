@@ -2000,6 +2000,16 @@ class AgentCoinNode:
                 "policy_level": 1,
                 "required_scopes": ["read-only"],
             },
+            "GET /v1/poaw/events": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/poaw/summary": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
             "GET /v1/violations": {
                 "policy_tier": "read-only",
                 "policy_level": 1,
@@ -2071,6 +2081,11 @@ class AgentCoinNode:
                 "required_scopes": ["read-only"],
             },
             "GET /v1/tasks/replay-inspect": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/tasks/dispatch/preview": {
                 "policy_tier": "read-only",
                 "policy_level": 1,
                 "required_scopes": ["read-only"],

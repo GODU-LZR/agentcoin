@@ -3933,6 +3933,129 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_signed_operator_request_is_required_for_dispatch_preview_and_poaw_observability(self) -> None:
+        node = NodeHarness(
+            node_id="read-only-poaw-node",
+            token="token-read-only-poaw",
+            db_path=str(Path(self.tempdir.name) / "read-only-poaw.db"),
+            capabilities=["planner", "worker", "reviewer"],
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-poaw-observer-secret",
+                    scopes=["read-only"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="workflow-admin:ops-1",
+                    shared_secret="workflow-poaw-secret",
+                    scopes=["workflow-admin"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-read-only-poaw",
+                {"id": "poaw-task-1", "kind": "generic", "role": "worker", "payload": {"goal": "observe"}},
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-read-only-poaw",
+                {"worker_id": "worker-poaw-1", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-read-only-poaw",
+                {
+                    "task_id": "poaw-task-1",
+                    "worker_id": "worker-poaw-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"done": True},
+                },
+            )
+
+            denied_preview_status, denied_preview = self._get_auth(
+                f"{node.base_url}/v1/tasks/dispatch/preview?required_capabilities=worker",
+                "token-read-only-poaw",
+            )
+            self.assertEqual(denied_preview_status, 401)
+            self.assertEqual(denied_preview["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_events_status, denied_events = self._get_auth(
+                f"{node.base_url}/v1/poaw/events?task_id=poaw-task-1",
+                "token-read-only-poaw",
+            )
+            self.assertEqual(denied_events_status, 401)
+            self.assertEqual(denied_events["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_summary_status, denied_summary = self._get_auth(
+                f"{node.base_url}/v1/poaw/summary?task_id=poaw-task-1",
+                "token-read-only-poaw",
+            )
+            self.assertEqual(denied_summary_status, 401)
+            self.assertEqual(denied_summary["policy_receipt"]["reason_code"], "signed-request-required")
+
+            preview_status, preview = self._signed_get(
+                f"{node.base_url}/v1/tasks/dispatch/preview?required_capabilities=worker",
+                "token-read-only-poaw",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-poaw-observer-secret",
+            )
+            self.assertEqual(preview_status, 200)
+            self.assertEqual(preview["required_capabilities"], ["worker"])
+            self.assertGreaterEqual(len(preview["candidates"]), 1)
+
+            events_status, events = self._signed_get(
+                f"{node.base_url}/v1/poaw/events?task_id=poaw-task-1",
+                "token-read-only-poaw",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-poaw-observer-secret",
+            )
+            self.assertEqual(events_status, 200)
+            self.assertGreaterEqual(len(events["items"]), 1)
+            self.assertEqual(events["items"][0]["task_id"], "poaw-task-1")
+
+            summary_status, summary = self._signed_get(
+                f"{node.base_url}/v1/poaw/summary?task_id=poaw-task-1",
+                "token-read-only-poaw",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-poaw-observer-secret",
+            )
+            self.assertEqual(summary_status, 200)
+            self.assertEqual(summary["task_id"], "poaw-task-1")
+            self.assertGreaterEqual(int(summary["total_points"] or 0), 1)
+
+            inherited_summary_status, inherited_summary = self._signed_get(
+                f"{node.base_url}/v1/poaw/summary?task_id=poaw-task-1",
+                "token-read-only-poaw",
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-poaw-secret",
+            )
+            self.assertEqual(inherited_summary_status, 200)
+            self.assertEqual(inherited_summary["task_id"], "poaw-task-1")
+
+            preview_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/tasks/dispatch/preview", limit=10)
+            self.assertEqual([item["decision"] for item in preview_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(preview_audits[0]["key_id"], "read-only:observer-1")
+            self.assertEqual(preview_audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            events_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/poaw/events", limit=10)
+            self.assertEqual([item["decision"] for item in events_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(events_audits[0]["key_id"], "read-only:observer-1")
+            self.assertEqual(events_audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            summary_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/poaw/summary", limit=10)
+            self.assertEqual([item["decision"] for item in summary_audits[:3]], ["allowed", "allowed", "denied"])
+            self.assertEqual(
+                {item["key_id"] for item in summary_audits[:2]},
+                {"read-only:observer-1", "workflow-admin:ops-1"},
+            )
+            self.assertEqual(summary_audits[2]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",
