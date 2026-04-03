@@ -16,6 +16,7 @@ The current test scope covers:
 - HTTP 402 payment challenge, signed local payment receipt issue, and metered workflow execution replay
 - payment receipt status introspection, single-use consumption, and replay rejection
 - loopback signed-client and session access to receipt introspection
+- standardized quote and payment-proof payload consistency across challenge, receipt issue, and introspection
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

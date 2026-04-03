@@ -940,9 +940,14 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(status, HTTPStatus.PAYMENT_REQUIRED)
             self.assertTrue(payload["payment"]["required"])
+            self.assertEqual(payload["payment"]["receipt_kind"], "agentcoin-payment-receipt")
+            self.assertEqual(payload["payment"]["proof_type"], "local-operator-attestation")
             self.assertEqual(payload["payment"]["challenge"]["workflow_name"], "premium-review")
             self.assertEqual(payload["payment"]["challenge"]["amount_wei"], str(node.config.payment_quote_amount_wei))
             self.assertEqual(payload["payment"]["challenge"]["bounty_escrow_address"], onchain.bounty_escrow_address)
+            self.assertEqual(payload["payment"]["quote"]["workflow_name"], "premium-review")
+            self.assertEqual(payload["payment"]["quote"]["quote_id"], payload["payment"]["challenge"]["challenge_id"])
+            self.assertEqual(payload["payment"]["quote"]["quote_digest"], payload["payment"]["challenge"]["quote_digest"])
             self.assertEqual(headers.get("X-Agentcoin-Payment-Required"), "true")
             self.assertEqual(headers.get("X-Agentcoin-Payment-Amount-Wei"), str(node.config.payment_quote_amount_wei))
             self.assertEqual(headers.get("X-Agentcoin-Payment-Asset"), node.config.payment_quote_asset)
@@ -996,6 +1001,11 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(issue_status, HTTPStatus.CREATED)
             receipt = issued["receipt"]
             receipt_id = str(receipt["receipt_id"])
+            self.assertEqual(receipt["quote"]["quote_id"], challenge_id)
+            self.assertEqual(receipt["quote_digest"], receipt["quote"]["quote_digest"])
+            self.assertEqual(receipt["payment_proof"]["proof_type"], "local-operator-attestation")
+            self.assertEqual(receipt["payment_proof"]["challenge_id"], challenge_id)
+            self.assertEqual(receipt["payment_proof"]["quote_digest"], receipt["quote_digest"])
             receipt_verification = verify_document(
                 receipt,
                 secret="payment-ok-secret",
@@ -1018,6 +1028,12 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertTrue(introspect_before["introspection"]["verified"])
             self.assertTrue(introspect_before["introspection"]["active"])
             self.assertEqual(introspect_before["introspection"]["status"], "issued")
+            self.assertEqual(introspect_before["introspection"]["quote"]["quote_id"], challenge_id)
+            self.assertEqual(introspect_before["introspection"]["quote_digest"], receipt["quote_digest"])
+            self.assertEqual(
+                introspect_before["introspection"]["payment_proof"]["proof_type"],
+                "local-operator-attestation",
+            )
 
             execute_status, executed = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
@@ -1067,6 +1083,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(introspect_after["introspection"]["active"])
             self.assertEqual(introspect_after["introspection"]["status"], "consumed")
             self.assertIn("consumed", introspect_after["introspection"]["reason"])
+            self.assertEqual(introspect_after["introspection"]["quote_digest"], receipt["quote_digest"])
 
             replay_status, replay_payload = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",

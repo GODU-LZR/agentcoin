@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import logging
@@ -145,6 +146,8 @@ class AgentCoinNode:
                 "planned": True,
                 "required_workflows": list(self.config.payment_required_workflows),
                 "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
+                "receipt_kind": "agentcoin-payment-receipt",
+                "proof_type": "local-operator-attestation",
                 "quote": {
                     "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
                     "asset": self.config.payment_quote_asset,
@@ -331,18 +334,58 @@ class AgentCoinNode:
         for receipt_id in expired:
             self._payment_receipts.pop(receipt_id, None)
 
-    def issue_payment_challenge(self, *, workflow_name: str, payer_hint: str | None = None) -> dict[str, Any]:
-        challenge_id = str(uuid4())
-        challenge = {
-            "challenge_id": challenge_id,
+    @staticmethod
+    def _payment_quote_digest(quote: dict[str, Any]) -> str:
+        serialized = json.dumps(dict(quote or {}), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()
+
+    def build_payment_quote(
+        self,
+        *,
+        workflow_name: str,
+        challenge_id: str,
+        issued_at: str,
+        expires_at: str,
+        payer_hint: str | None = None,
+    ) -> dict[str, Any]:
+        quote = {
+            "quote_id": challenge_id,
             "workflow_name": workflow_name,
             "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
             "asset": self.config.payment_quote_asset,
             "recipient": self.config.onchain.local_controller_address,
             "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
-            "issued_at": utc_now(),
-            "expires_at": utc_after(int(self.config.payment_quote_ttl_seconds or 300)),
+            "issued_at": issued_at,
+            "expires_at": expires_at,
+        }
+        if payer_hint:
+            quote["payer_hint"] = payer_hint
+        quote["quote_digest"] = self._payment_quote_digest(quote)
+        return quote
+
+    def issue_payment_challenge(self, *, workflow_name: str, payer_hint: str | None = None) -> dict[str, Any]:
+        challenge_id = str(uuid4())
+        issued_at = utc_now()
+        expires_at = utc_after(int(self.config.payment_quote_ttl_seconds or 300))
+        quote = self.build_payment_quote(
+            workflow_name=workflow_name,
+            challenge_id=challenge_id,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            payer_hint=payer_hint,
+        )
+        challenge = {
+            "challenge_id": challenge_id,
+            "workflow_name": workflow_name,
+            "amount_wei": quote.get("amount_wei"),
+            "asset": quote.get("asset"),
+            "recipient": quote.get("recipient"),
+            "bounty_escrow_address": quote.get("bounty_escrow_address"),
+            "issued_at": issued_at,
+            "expires_at": expires_at,
             "payer_hint": payer_hint,
+            "quote": quote,
+            "quote_digest": quote.get("quote_digest"),
             "status": "pending",
         }
         with self._payment_challenge_lock:
@@ -392,6 +435,16 @@ class AgentCoinNode:
             existing_receipt = self.get_payment_receipt(existing_receipt_id)
             return existing_receipt, False
         receipt_id = str(uuid4())
+        quote = dict(challenge.get("quote") or {})
+        payment_proof = {
+            "proof_type": "local-operator-attestation",
+            "payer": payer,
+            "tx_hash": tx_hash,
+            "challenge_id": challenge_id,
+            "quote_digest": str(quote.get("quote_digest") or ""),
+            "attestor_node_id": self.config.node_id,
+            "attestor_did": self.config.resolved_local_did,
+        }
         receipt = {
             "kind": "agentcoin-payment-receipt",
             "receipt_id": receipt_id,
@@ -405,6 +458,9 @@ class AgentCoinNode:
             "tx_hash": tx_hash,
             "issued_at": utc_now(),
             "expires_at": utc_after(int(self.config.payment_receipt_ttl_seconds or 3600)),
+            "quote": quote,
+            "quote_digest": quote.get("quote_digest"),
+            "payment_proof": payment_proof,
             "status": "issued",
         }
         signed_receipt = self._sign_document(
@@ -501,18 +557,27 @@ class AgentCoinNode:
         challenge = self.get_payment_challenge(challenge_id)
         if str(receipt_status.get("challenge_id") or "").strip() != challenge_id:
             raise SignatureError("payment receipt challenge does not match issued receipt")
+        quote = dict(challenge.get("quote") or {})
+        quote_digest = str(quote.get("quote_digest") or "").strip()
         expected_workflow = str(workflow_name or "").strip()
         challenge_workflow = str(challenge.get("workflow_name") or "").strip()
         if expected_workflow and challenge_workflow != expected_workflow:
             raise SignatureError("payment receipt workflow does not match request")
         if str(receipt.get("workflow_name") or "").strip() != challenge_workflow:
             raise SignatureError("payment receipt workflow does not match quote")
+        if str(receipt.get("quote_digest") or "").strip() != quote_digest:
+            raise SignatureError("payment receipt quote digest does not match quote")
         if str(receipt.get("amount_wei") or "").strip() != str(challenge.get("amount_wei") or "").strip():
             raise SignatureError("payment receipt amount does not match quote")
         if str(receipt.get("asset") or "").strip() != str(challenge.get("asset") or "").strip():
             raise SignatureError("payment receipt asset does not match quote")
         if str(receipt.get("recipient") or "").strip() != str(challenge.get("recipient") or "").strip():
             raise SignatureError("payment receipt recipient does not match quote")
+        payment_proof = dict(receipt.get("payment_proof") or {})
+        if str(payment_proof.get("challenge_id") or "").strip() != challenge_id:
+            raise SignatureError("payment receipt proof challenge does not match quote")
+        if str(payment_proof.get("quote_digest") or "").strip() != quote_digest:
+            raise SignatureError("payment receipt proof quote digest does not match quote")
         if str(receipt.get("payer") or "").strip() != str(receipt_status.get("payer") or "").strip():
             raise SignatureError("payment receipt payer does not match issued receipt")
         if str(receipt.get("tx_hash") or "").strip() != str(receipt_status.get("tx_hash") or "").strip():
@@ -527,6 +592,9 @@ class AgentCoinNode:
             "active": active,
             "status": receipt_state,
             "reason": reason,
+            "quote": quote,
+            "quote_digest": quote_digest,
+            "payment_proof": payment_proof,
             "challenge": challenge,
             "receipt": receipt,
             "receipt_status": receipt_status,
@@ -4095,7 +4163,10 @@ class AgentCoinNode:
                                         "error": "payment required",
                                         "payment": {
                                             "required": True,
+                                            "receipt_kind": "agentcoin-payment-receipt",
+                                            "proof_type": "local-operator-attestation",
                                             "challenge": challenge,
+                                            "quote": dict(challenge.get("quote") or {}),
                                         },
                                     },
                                     extra_headers={

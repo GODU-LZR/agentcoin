@@ -26,6 +26,7 @@ The current repository contains:
 - an HTTP 402 payment-challenge skeleton for metered workflow execution and signed local payment receipts
 - single-use local payment receipts with explicit receipt status tracking and replay rejection
 - passwordless local payment receipt introspection for loopback browser or agent flows
+- standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 
 ## Design Goals
 
