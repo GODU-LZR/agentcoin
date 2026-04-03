@@ -2913,6 +2913,77 @@ class NodeStore:
             conn.close()
         return self.get_payment_relay_queue_item(queue_id)
 
+    def pause_payment_relay_queue_item(self, queue_id: str) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE payment_relay_queue
+                SET status = 'paused',
+                    updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'retrying')
+                """,
+                (now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_payment_relay_queue_item(queue_id)
+
+    def resume_payment_relay_queue_item(self, queue_id: str, *, delay_seconds: int = 0) -> dict[str, Any] | None:
+        now = utc_now()
+        next_attempt_at = utc_after(max(0, int(delay_seconds)))
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE payment_relay_queue
+                SET status = 'queued',
+                    next_attempt_at = ?,
+                    updated_at = ?,
+                    completed_at = NULL
+                WHERE id = ? AND status = 'paused'
+                """,
+                (next_attempt_at, now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_payment_relay_queue_item(queue_id)
+
+    def cancel_payment_relay_queue_item(self, queue_id: str) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE payment_relay_queue
+                SET status = 'dead-letter',
+                    last_error = 'cancelled',
+                    updated_at = ?,
+                    completed_at = ?
+                WHERE id = ? AND status IN ('queued', 'paused', 'retrying')
+                """,
+                (now, now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_payment_relay_queue_item(queue_id)
+
+    def delete_payment_relay_queue_item(self, queue_id: str) -> bool:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "DELETE FROM payment_relay_queue WHERE id = ?",
+                (queue_id,),
+            )
+            conn.commit()
+            return row.rowcount > 0
+        finally:
+            conn.close()
+
     def _completion_score_event(
         self,
         *,

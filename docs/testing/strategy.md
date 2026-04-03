@@ -23,6 +23,7 @@ The current test scope covers:
 - payment raw-bundle and relay flow against a local mock RPC
 - payment relay history persistence, latest-relay lookup, and queue inspection by receipt id
 - background payment relay queue execution against a local mock RPC
+- payment relay queue pause, resume, dead-letter requeue, cancel, and delete controls
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery
@@ -159,6 +160,7 @@ The following behaviors are now covered either by automated tests or previously 
 - metered workflow execution now returns `402 Payment Required` plus a challenge, and accepts a signed local payment receipt after operator-side receipt issue
 - metered workflow receipts now transition to `consumed`, can be inspected by receipt id, and reject second-use replay
 - payment proof relays now persist history by receipt id, and queued payment relays can be processed in the background
+- payment relay queue control endpoints now cover pause, resume, dead-letter replay via requeue, cancel, and delete
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

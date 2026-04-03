@@ -1556,6 +1556,334 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_client_can_pause_and_resume_payment_relay_queue_item(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentpause1"})
+        rpc.start()
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_pause",
+            "frontend-local-payment-pause",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-pause-node",
+            token="token-payment-pause",
+            db_path=str(Path(self.tempdir.name) / "payment-pause.db"),
+            capabilities=["worker"],
+            signing_secret="payment-pause-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "pause this proof"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-pause",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-pause",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xpaymentpause",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaa"},
+                    ],
+                    "rpc_url": rpc.url,
+                    "delay_seconds": 2,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-pause",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            paused_status, paused_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/pause",
+                {"queue_id": item["id"]},
+                private_key_path=key_path,
+                principal="frontend-local-payment-pause",
+                public_key=public_key,
+            )
+            self.assertEqual(paused_status, HTTPStatus.OK)
+            self.assertEqual(paused_payload["item"]["status"], "paused")
+
+            time.sleep(0.6)
+            paused = node.node.store.get_payment_relay_queue_item(item["id"])
+            assert paused is not None
+            self.assertEqual(paused["status"], "paused")
+            self.assertEqual(len(rpc.calls), 0)
+
+            queue_status, queue_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue?status=paused",
+                "token-payment-pause",
+            )
+            self.assertEqual(queue_status, HTTPStatus.OK)
+            self.assertEqual(len(queue_payload["items"]), 1)
+            self.assertEqual(queue_payload["items"][0]["id"], item["id"])
+
+            resumed_status, resumed_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/resume",
+                {"queue_id": item["id"], "delay_seconds": 0},
+                private_key_path=key_path,
+                principal="frontend-local-payment-pause",
+                public_key=public_key,
+            )
+            self.assertEqual(resumed_status, HTTPStatus.OK)
+            self.assertEqual(resumed_payload["item"]["status"], "queued")
+
+            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertEqual(len(rpc.calls), 1)
+
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["stats"]["payment_relay_queue_paused"], 0)
+            self.assertEqual(health["stats"]["payment_relay_queue_completed"], 1)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_client_can_requeue_dead_letter_payment_relay_item(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentrequeue1"})
+        rpc.start()
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_requeue",
+            "frontend-local-payment-requeue",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="http://127.0.0.1:1",
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-requeue-node",
+            token="token-payment-requeue",
+            db_path=str(Path(self.tempdir.name) / "payment-requeue.db"),
+            capabilities=["worker"],
+            signing_secret="payment-requeue-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "requeue this proof"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-requeue",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-requeue",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xpaymentrequeue",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaa"},
+                    ],
+                    "rpc_url": "http://127.0.0.1:1",
+                    "timeout_seconds": 0.2,
+                    "max_attempts": 1,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-requeue",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            dead_letter = self._wait_for_payment_queue_item_status(node, item["id"], status="dead-letter", timeout=3.0)
+            self.assertEqual(dead_letter["attempts"], 1)
+            self.assertTrue(dead_letter["last_relay_id"])
+
+            requeued_status, requeued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/requeue",
+                {
+                    "queue_id": item["id"],
+                    "rpc_url": rpc.url,
+                    "timeout_seconds": 10,
+                    "max_attempts": 2,
+                    "delay_seconds": 0,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-requeue",
+                public_key=public_key,
+            )
+            self.assertEqual(requeued_status, HTTPStatus.OK)
+            self.assertEqual(requeued_payload["item"]["status"], "queued")
+            self.assertEqual(requeued_payload["item"]["attempts"], 0)
+            self.assertEqual(requeued_payload["item"]["max_attempts"], 2)
+            self.assertEqual(requeued_payload["item"]["payload"]["rpc_url"], rpc.url)
+
+            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertTrue(completed["last_relay_id"])
+            self.assertEqual(len(rpc.calls), 1)
+
+            history_status, history_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relays?receipt_id={receipt['receipt_id']}",
+                "token-payment-requeue",
+            )
+            self.assertEqual(history_status, HTTPStatus.OK)
+            self.assertEqual(len(history_payload["items"]), 2)
+            self.assertEqual(history_payload["items"][0]["final_status"], "completed")
+            self.assertEqual(history_payload["items"][1]["final_status"], "failed")
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_client_can_cancel_and_delete_payment_relay_queue_item(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_cancel",
+            "frontend-local-payment-cancel",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-cancel-node",
+            token="token-payment-cancel",
+            db_path=str(Path(self.tempdir.name) / "payment-cancel.db"),
+            capabilities=["worker"],
+            signing_secret="payment-cancel-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "cancel this proof"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-cancel",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-cancel",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xpaymentcancel",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaa"},
+                    ],
+                    "rpc_url": "https://bsc-testnet.example/rpc",
+                    "delay_seconds": 2,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-cancel",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            cancel_status, cancel_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/cancel",
+                {"queue_id": item["id"]},
+                private_key_path=key_path,
+                principal="frontend-local-payment-cancel",
+                public_key=public_key,
+            )
+            self.assertEqual(cancel_status, HTTPStatus.OK)
+            self.assertEqual(cancel_payload["item"]["status"], "dead-letter")
+            self.assertEqual(cancel_payload["item"]["last_error"], "cancelled")
+
+            queue_status, queue_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue?status=dead-letter",
+                "token-payment-cancel",
+            )
+            self.assertEqual(queue_status, HTTPStatus.OK)
+            self.assertEqual(len(queue_payload["items"]), 1)
+            self.assertEqual(queue_payload["items"][0]["id"], item["id"])
+
+            delete_status, delete_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/delete",
+                {"queue_id": item["id"]},
+                private_key_path=key_path,
+                principal="frontend-local-payment-cancel",
+                public_key=public_key,
+            )
+            self.assertEqual(delete_status, HTTPStatus.OK)
+            self.assertTrue(delete_payload["ok"])
+
+            _, queue_after = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue?receipt_id={receipt['receipt_id']}",
+                "token-payment-cancel",
+            )
+            self.assertEqual(queue_after["items"], [])
+
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["stats"]["payment_relay_queue"], 0)
+        finally:
+            node.stop()
+
     def test_signed_client_identity_can_create_and_bind_local_tasks_without_bearer(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_local_task", "frontend-local-2")
         node = NodeHarness(

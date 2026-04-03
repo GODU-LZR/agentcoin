@@ -4508,7 +4508,11 @@ class AgentCoinNode:
                                 "/v1/payments/receipts/onchain-relays",
                                 "/v1/payments/receipts/onchain-relays/latest",
                                 "/v1/payments/receipts/onchain-relay-queue",
+                                "/v1/payments/receipts/onchain-relay-queue/pause",
+                                "/v1/payments/receipts/onchain-relay-queue/resume",
                                 "/v1/payments/receipts/onchain-relay-queue/requeue",
+                                "/v1/payments/receipts/onchain-relay-queue/cancel",
+                                "/v1/payments/receipts/onchain-relay-queue/delete",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -4768,6 +4772,75 @@ class AgentCoinNode:
                         if not item or item.get("status") != "queued":
                             raise ValueError("queue item cannot be requeued")
                         self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/pause":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/pause"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_payment_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("payment relay queue item not found")
+                        item = node.store.pause_payment_relay_queue_item(queue_id)
+                        if not item or item.get("status") != "paused":
+                            raise ValueError("queue item cannot be paused")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/resume":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/resume"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_payment_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("payment relay queue item not found")
+                        item = node.store.resume_payment_relay_queue_item(
+                            queue_id,
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                        )
+                        if not item or item.get("status") != "queued":
+                            raise ValueError("queue item cannot be resumed")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/cancel":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/cancel"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_payment_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("payment relay queue item not found")
+                        item = node.store.cancel_payment_relay_queue_item(queue_id)
+                        if not item or item.get("status") != "dead-letter":
+                            raise ValueError("queue item cannot be cancelled")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/delete":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/delete"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_payment_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("payment relay queue item not found")
+                        ok = node.store.delete_payment_relay_queue_item(queue_id)
+                        self._json_response(HTTPStatus.OK, {"ok": ok})
                         return
                     if self.path == "/v1/workflow/execute":
                         if not self._require_local_client_or_auth(

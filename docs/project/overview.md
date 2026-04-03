@@ -33,6 +33,7 @@ The current repository contains:
 - payment raw-bundle and relay skeleton for externally signed proof submission
 - persisted payment relay history and latest-relay lookup by receipt id
 - background payment relay queue processing for deferred proof submission and operator replay
+- payment relay queue pause, resume, requeue, cancel, and delete controls for local operator or browser workflows
 
 ## Design Goals
 
