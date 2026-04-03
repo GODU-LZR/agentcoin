@@ -2584,6 +2584,24 @@ class NodeStore:
         items = self.list_payment_relays(receipt_id=receipt_id, limit=1)
         return items[0] if items else None
 
+    def get_latest_failed_payment_relay(self, receipt_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, receipt_id, workflow_name, completed_steps, step_count,
+                       stopped_on_error, final_status, failure_category, relay_json, created_at
+                FROM payment_relays
+                WHERE receipt_id = ? AND final_status != 'completed'
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (receipt_id,),
+            ).fetchone()
+            return self._payment_relay_from_row(row) if row else None
+        finally:
+            conn.close()
+
     def enqueue_payment_relay(
         self,
         *,
@@ -2686,6 +2704,30 @@ class NodeStore:
             ]
         finally:
             conn.close()
+
+    def summarize_payment_relay_queue(self, *, receipt_id: str | None = None) -> dict[str, Any]:
+        items = self.list_payment_relay_queue(receipt_id=receipt_id, limit=1000)
+        counts = {
+            "queued": 0,
+            "paused": 0,
+            "running": 0,
+            "retrying": 0,
+            "completed": 0,
+            "dead-letter": 0,
+        }
+        latest_item = items[0] if items else None
+        latest_failed_item = next((item for item in items if str(item.get("status") or "") == "dead-letter"), None)
+        for item in items:
+            status_name = str(item.get("status") or "").strip()
+            if status_name in counts:
+                counts[status_name] += 1
+        return {
+            "receipt_id": receipt_id,
+            "item_count": len(items),
+            "counts": counts,
+            "latest_item": latest_item,
+            "latest_failed_item": latest_failed_item,
+        }
 
     def get_payment_relay_queue_item(self, queue_id: str) -> dict[str, Any] | None:
         conn = self._connect()

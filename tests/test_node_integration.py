@@ -1742,6 +1742,44 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(dead_letter["attempts"], 1)
             self.assertTrue(dead_letter["last_relay_id"])
 
+            latest_failed_status, latest_failed_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relays/latest-failed?receipt_id={receipt['receipt_id']}",
+                "token-payment-requeue",
+            )
+            self.assertEqual(latest_failed_status, HTTPStatus.OK)
+            self.assertEqual(latest_failed_payload["final_status"], "failed")
+            self.assertEqual(latest_failed_payload["receipt_id"], receipt["receipt_id"])
+
+            summary_status, summary_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/summary?receipt_id={receipt['receipt_id']}",
+                "token-payment-requeue",
+            )
+            self.assertEqual(summary_status, HTTPStatus.OK)
+            self.assertEqual(summary_payload["item_count"], 1)
+            self.assertEqual(summary_payload["counts"]["dead-letter"], 1)
+            self.assertEqual(summary_payload["latest_failed_item"]["id"], item["id"])
+
+            helper_status, helper_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay/replay-helper",
+                {"receipt_id": receipt["receipt_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-payment-requeue",
+                public_key=public_key,
+            )
+            self.assertEqual(helper_status, HTTPStatus.OK)
+            helper = helper_payload["helper"]
+            self.assertEqual(helper["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(helper["source_type"], "queue-item")
+            self.assertEqual(helper["queue_requeue_request"]["queue_id"], item["id"])
+            self.assertEqual(helper["direct_relay_request"]["raw_transactions"][0]["action"], "submitPaymentProof")
+            helper_verification = verify_document(
+                helper,
+                secret="payment-requeue-secret",
+                expected_scope="payment-onchain-relay-replay-helper",
+                expected_key_id="payment-requeue-node",
+            )
+            self.assertTrue(helper_verification["verified"])
+
             requeued_status, requeued_payload = self._identity_signed_post(
                 f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/requeue",
                 {
