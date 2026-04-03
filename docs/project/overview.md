@@ -42,6 +42,7 @@ The current repository contains:
 - a loopback-only local agent discovery endpoint can now scan for GitHub Copilot CLI, Claude Code CLI, plus VS Code Codex, GitHub Copilot, and Cline installations
 - local tasks can now be bound to a `claude-code-cli` runtime skeleton, so a trusted local Claude Code style subprocess can be invoked as a worker-side execution adapter
 - local tasks can now also be bound to a `claude-http` runtime skeleton, so a remote Anthropic-compatible Claude Messages endpoint can be used even when no local Claude client is installed
+- `claude-http` now also preserves Claude Messages `tools` and `tool_choice`, and normalizes returned `tool_use` content blocks into task results and receipts
 - discovered ACP-capable local agents can now be registered, started, listed, and stopped as managed local-agent skeletons
 - managed ACP-capable local agents can now expose transport-ready ACP session skeletons over stdio, with explicit open/list/close lifecycle endpoints
 - ACP sessions can now build and optionally dispatch a best-effort `initialize` intent over stdio, while explicitly keeping server response parsing out of scope for now

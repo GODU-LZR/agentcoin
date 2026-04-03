@@ -32,6 +32,7 @@ The current test scope covers:
 - local agent discovery for GitHub Copilot CLI, Claude Code CLI, plus VS Code Codex, GitHub Copilot, and Cline across Windows and WSL-style layouts
 - runtime adapter execution for a local `claude-code-cli` subprocess skeleton
 - runtime adapter execution for a remote `claude-http` Anthropic-compatible messages skeleton
+- Claude Messages tool-use normalization, including `tools`, `tool_choice`, and returned `tool_use` content blocks
 - ACP-capable local agent registration plus managed start / stop lifecycle coverage
 - ACP session skeleton coverage for managed local agents, including transport-ready open/list/close behavior without claiming full ACP protocol exchange
 - ACP initialize-intent coverage, including optional stdio dispatch of a best-effort `initialize` frame candidate and explicit non-coverage of server response parsing

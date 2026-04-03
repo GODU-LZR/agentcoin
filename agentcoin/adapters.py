@@ -755,6 +755,24 @@ class ExecutionAdapterRegistry:
             "content_blocks": content_blocks,
         }
 
+    @staticmethod
+    def _extract_claude_tool_uses(response: dict[str, Any]) -> list[dict[str, Any]]:
+        content_blocks = list(response.get("content") or [])
+        tool_uses: list[dict[str, Any]] = []
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() != "tool_use":
+                continue
+            tool_uses.append(
+                {
+                    "id": str(block.get("id") or "").strip() or None,
+                    "name": str(block.get("name") or "").strip() or None,
+                    "input": block.get("input"),
+                }
+            )
+        return tool_uses
+
     def _execute_ollama_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
         endpoint = str(runtime.get("endpoint") or "http://127.0.0.1:11434/api/chat").strip()
         if not self.policy.http_host_allowed(endpoint):
@@ -1000,6 +1018,10 @@ class ExecutionAdapterRegistry:
                 request_body[optional_key] = runtime.get(optional_key)
         if "stop_sequences" in runtime:
             request_body["stop_sequences"] = list(runtime.get("stop_sequences") or [])
+        if "tools" in runtime:
+            request_body["tools"] = list(runtime.get("tools") or [])
+        if "tool_choice" in runtime:
+            request_body["tool_choice"] = runtime.get("tool_choice")
         headers = {
             "Content-Type": "application/json",
             "anthropic-version": str(runtime.get("anthropic_version") or "2023-06-01"),
@@ -1025,6 +1047,7 @@ class ExecutionAdapterRegistry:
                 extra={"runtime": "claude-http", "endpoint": endpoint, "model": model},
             )
         assistant_message = self._extract_claude_assistant_message(response)
+        tool_uses = self._extract_claude_tool_uses(response)
         result = self._base_result(task, worker_id=worker_id)
         result["adapter"] = {
             "mode": "runtime-adapter",
@@ -1051,6 +1074,8 @@ class ExecutionAdapterRegistry:
             "stop_reason": response.get("stop_reason"),
             "usage": response.get("usage"),
         }
+        if tool_uses:
+            result["runtime_execution"]["tool_uses"] = tool_uses
         result["execution_receipt"] = build_deterministic_execution_receipt(
             task,
             worker_id=worker_id,
@@ -1062,6 +1087,7 @@ class ExecutionAdapterRegistry:
                 "model": model,
                 "response_id": response.get("id"),
                 "stop_reason": response.get("stop_reason"),
+                "tool_uses": tool_uses,
             },
         )
         return result

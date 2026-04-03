@@ -422,11 +422,22 @@ class ClaudeHttpHarness:
                 content = last_message.get("content", "")
                 if isinstance(content, list):
                     content = "\n".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                response_content: list[dict[str, object]] = [{"type": "text", "text": f"claude-http:{content}"}]
+                if payload.get("tools"):
+                    tool = dict((payload.get("tools") or [])[0] or {})
+                    response_content.append(
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": tool.get("name"),
+                            "input": {"echo": content},
+                        }
+                    )
                 response = {
                     "id": "msg_claude_1",
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "text", "text": f"claude-http:{content}"}],
+                    "content": response_content,
                     "model": payload.get("model"),
                     "stop_reason": "end_turn",
                     "usage": {"input_tokens": 10, "output_tokens": 5},
@@ -10462,6 +10473,82 @@ class NodeIntegrationTests(unittest.TestCase):
             headers = {str(key).lower(): value for key, value in gateway.headers[0].items()}
             self.assertEqual(headers["x-api-key"], "anthropic-secret")
             self.assertEqual(headers["anthropic-version"], "2023-06-01")
+        finally:
+            node.stop()
+            gateway.stop()
+
+    def test_runtime_adapter_claude_http_tool_use_blocks(self) -> None:
+        gateway = ClaudeHttpHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-claude-http-tools-node",
+            token="token-claude-http-tools",
+            db_path=str(Path(self.tempdir.name) / "runtime-claude-http-tools.db"),
+            capabilities=["worker"],
+            runtimes=["claude-http"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-http-tools",
+                {
+                    "id": "runtime-claude-http-tools-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "lookup repository status"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/integrations/claude-http/bind",
+                "token-claude-http-tools",
+                {
+                    "task_id": "runtime-claude-http-tools-1",
+                    "endpoint": gateway.url,
+                    "model": "claude-3-7-sonnet-latest",
+                    "auth_token": "anthropic-secret",
+                    "prompt": "lookup repository status",
+                    "tools": [
+                        {
+                            "name": "repo_status",
+                            "description": "Inspect repository status",
+                            "input_schema": {
+                                "type": "object",
+                                "properties": {"path": {"type": "string"}},
+                            },
+                        }
+                    ],
+                    "tool_choice": {"type": "tool", "name": "repo_status"},
+                    "timeout_seconds": 10,
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "claude-http")
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-claude-http-tools",
+                worker_id="worker-claude-http-tools-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["claude-http"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-claude-http-tools-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "claude-http")
+            self.assertEqual(task["result"]["runtime_execution"]["tool_uses"][0]["name"], "repo_status")
+            self.assertEqual(task["result"]["runtime_execution"]["tool_uses"][0]["input"]["echo"], "lookup repository status")
+            self.assertEqual(gateway.calls[0]["tool_choice"]["name"], "repo_status")
+            self.assertEqual(gateway.calls[0]["tools"][0]["name"], "repo_status")
+            self.assertEqual(
+                task["result"]["execution_receipt"]["artifacts"]["tool_uses"][0]["name"],
+                "repo_status",
+            )
         finally:
             node.stop()
             gateway.stop()

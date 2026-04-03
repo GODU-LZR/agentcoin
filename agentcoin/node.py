@@ -5841,6 +5841,10 @@ class AgentCoinNode:
                             "anthropic_version": str(payload.get("anthropic_version") or "").strip() or None,
                             "provider": "claude-http",
                         }
+                        if "tools" in payload:
+                            runtime_options["tools"] = list(payload.get("tools") or [])
+                        if "tool_choice" in payload:
+                            runtime_options["tool_choice"] = payload.get("tool_choice")
                         if isinstance(payload.get("headers"), dict):
                             runtime_options["headers"] = dict(payload.get("headers") or {})
                         merged_payload = dict(task["payload"])
