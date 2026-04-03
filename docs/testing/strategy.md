@@ -20,6 +20,7 @@ The current test scope covers:
 - signed payment attestation consistency across receipt issue and introspection state changes
 - on-chain payment proof projection consistency before and after receipt consumption
 - signed payment on-chain RPC plan projection and probe generation consistency
+- payment raw-bundle and relay flow against a local mock RPC
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

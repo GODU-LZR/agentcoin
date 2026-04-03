@@ -30,6 +30,7 @@ The current repository contains:
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state
 - signed payment on-chain RPC plan projection for external signer or wallet handoff
+- payment raw-bundle and relay skeleton for externally signed proof submission
 
 ## Design Goals
 

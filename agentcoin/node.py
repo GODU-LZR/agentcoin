@@ -148,6 +148,8 @@ class AgentCoinNode:
                 "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
                 "receipt_onchain_proof_url": self.config.card.endpoints.get("payment_receipt_onchain_proof"),
                 "receipt_onchain_rpc_plan_url": self.config.card.endpoints.get("payment_receipt_onchain_rpc_plan"),
+                "receipt_onchain_raw_bundle_url": self.config.card.endpoints.get("payment_receipt_onchain_raw_bundle"),
+                "receipt_onchain_relay_url": self.config.card.endpoints.get("payment_receipt_onchain_relay"),
                 "receipt_kind": "agentcoin-payment-receipt",
                 "proof_type": "local-operator-attestation",
                 "quote": {
@@ -636,6 +638,146 @@ class AgentCoinNode:
             plan,
             hmac_scope="payment-onchain-rpc-plan",
             identity_namespace="agentcoin-payment-onchain-rpc-plan",
+        )
+
+    def build_payment_onchain_raw_bundle(
+        self,
+        receipt: dict[str, Any],
+        *,
+        workflow_name: str | None = None,
+        raw_transactions: list[dict[str, Any]],
+        rpc: dict[str, Any] | None = None,
+        rpc_url: str | None = None,
+    ) -> dict[str, Any]:
+        plan = self.build_payment_onchain_rpc_plan(receipt, workflow_name=workflow_name, rpc=rpc or {})
+        items = list(raw_transactions or [])
+        steps = [
+            {
+                "index": 0,
+                "action": str(plan.get("intent", {}).get("action") or "submitPaymentProof"),
+                "intent": dict(plan.get("intent") or {}),
+                "rpc_payload": dict(plan.get("rpc_payload") or {}),
+            }
+        ]
+        if len(items) != len(steps):
+            raise ValueError("raw_transactions length must match payment proof steps")
+        bundled_steps: list[dict[str, Any]] = []
+        for step, item in zip(steps, items, strict=False):
+            action = str(step.get("action") or "")
+            raw_action = str(item.get("action") or action).strip()
+            if raw_action and raw_action != action:
+                raise ValueError(f"raw transaction action mismatch for step {action}")
+            raw_tx = str(item.get("raw_transaction") or "").strip()
+            if not raw_tx:
+                raise ValueError(f"raw_transaction is required for step {action}")
+            step_rpc_url = str(item.get("rpc_url") or "").strip() or rpc_url or str(step.get("rpc_payload", {}).get("rpc_url") or "").strip()
+            raw_payload = self.onchain.raw_transaction_payload(
+                raw_tx,
+                rpc_url=step_rpc_url or None,
+                request_id=str(item.get("request_id") or "").strip() or None,
+            )
+            bundled_steps.append(
+                {
+                    "index": step.get("index"),
+                    "action": action,
+                    "intent": step.get("intent"),
+                    "rpc_payload": step.get("rpc_payload"),
+                    "raw_transaction": raw_tx,
+                    "raw_relay_payload": raw_payload,
+                    "signed_by": item.get("signed_by"),
+                    "signature_ref": item.get("signature_ref"),
+                }
+            )
+        bundle = {
+            "kind": "evm-payment-raw-bundle",
+            "receipt_id": plan.get("proof", {}).get("receipt_id"),
+            "workflow_name": plan.get("proof", {}).get("workflow_name"),
+            "proof": dict(plan.get("proof") or {}),
+            "plan": plan,
+            "step_count": len(bundled_steps),
+            "steps": bundled_steps,
+            "generated_at": utc_now(),
+        }
+        return self._sign_document(
+            bundle,
+            hmac_scope="payment-onchain-raw-bundle",
+            identity_namespace="agentcoin-payment-onchain-raw-bundle",
+        )
+
+    def execute_payment_onchain_relay(
+        self,
+        receipt: dict[str, Any],
+        *,
+        workflow_name: str | None = None,
+        raw_transactions: list[dict[str, Any]],
+        rpc: dict[str, Any] | None = None,
+        rpc_url: str | None = None,
+        timeout: float = 10,
+        continue_on_error: bool = False,
+    ) -> dict[str, Any]:
+        bundle = self.build_payment_onchain_raw_bundle(
+            receipt,
+            workflow_name=workflow_name,
+            raw_transactions=raw_transactions,
+            rpc=rpc or {},
+            rpc_url=rpc_url,
+        )
+        relayed_steps: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for step in list(bundle.get("steps") or []):
+            raw_payload = dict(step.get("raw_relay_payload") or {})
+            step_rpc_url = str(raw_payload.get("rpc_url") or "").strip()
+            if not step_rpc_url:
+                raise ValueError("rpc_url is required for payment relay")
+            try:
+                response = self._chain_rpc_call(step_rpc_url, raw_payload["request"], timeout=timeout)
+                if "error" in response:
+                    raise ValueError(f"rpc error: {response.get('error')}")
+                if "result" not in response:
+                    raise ValueError("rpc response missing result")
+                relayed_steps.append(
+                    {
+                        "index": step.get("index"),
+                        "action": step.get("action"),
+                        "response": response,
+                        "tx_hash": response.get("result"),
+                        "raw_relay_payload": raw_payload,
+                    }
+                )
+            except Exception as exc:
+                failures.append(
+                    {
+                        "index": step.get("index"),
+                        "action": step.get("action"),
+                        "error": str(exc),
+                        "category": self._classify_relay_failure(str(exc)),
+                        "raw_relay_payload": raw_payload,
+                    }
+                )
+                if not continue_on_error:
+                    break
+        relay = {
+            "kind": "evm-payment-relay",
+            "receipt_id": bundle.get("receipt_id"),
+            "workflow_name": bundle.get("workflow_name"),
+            "proof": dict(bundle.get("proof") or {}),
+            "step_count": int(bundle.get("step_count") or 0),
+            "submitted_steps": relayed_steps,
+            "failures": failures,
+            "completed_steps": len(relayed_steps),
+            "stopped_on_error": bool(failures) and not continue_on_error,
+            "final_status": self._relay_final_status(
+                step_count=int(bundle.get("step_count") or 0),
+                failures=failures,
+                next_index=len(relayed_steps) if not failures else int(failures[0].get("index") or 0),
+            ),
+            "transport": self.config.network.transport_profile(),
+            "generated_at": utc_now(),
+        }
+        return self._sign_document(
+            relay,
+            hmac_scope="payment-onchain-relay",
+            identity_namespace="agentcoin-payment-onchain-relay",
         )
 
     def consume_payment_receipt(self, receipt_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
@@ -4220,6 +4362,8 @@ class AgentCoinNode:
                                 "/v1/payments/receipts/introspect",
                                 "/v1/payments/receipts/onchain-proof",
                                 "/v1/payments/receipts/onchain-rpc-plan",
+                                "/v1/payments/receipts/onchain-raw-bundle",
+                                "/v1/payments/receipts/onchain-relay",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -4361,6 +4505,46 @@ class AgentCoinNode:
                                 "plan": plan,
                             },
                         )
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-raw-bundle":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-raw-bundle"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip() or None
+                        bundle = node.build_payment_onchain_raw_bundle(
+                            payment_receipt,
+                            workflow_name=workflow_name,
+                            raw_transactions=list(payload.get("raw_transactions") or []),
+                            rpc=dict(payload.get("rpc") or {}),
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                        )
+                        self._json_response(HTTPStatus.OK, {"bundle": bundle})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip() or None
+                        relay = node.execute_payment_onchain_relay(
+                            payment_receipt,
+                            workflow_name=workflow_name,
+                            raw_transactions=list(payload.get("raw_transactions") or []),
+                            rpc=dict(payload.get("rpc") or {}),
+                            rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                            timeout=float(payload.get("timeout_seconds") or 10),
+                            continue_on_error=bool(payload.get("continue_on_error")),
+                        )
+                        self._json_response(HTTPStatus.OK, {"relay": relay})
                         return
                     if self.path == "/v1/workflow/execute":
                         if not self._require_local_client_or_auth(

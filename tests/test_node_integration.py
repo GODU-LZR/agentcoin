@@ -893,6 +893,18 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(plan_status, HTTPStatus.BAD_REQUEST)
             self.assertIn("onchain", plan_payload["error"])
+
+            bundle_status, bundle_payload = self._session_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-raw-bundle",
+                {
+                    "payment_receipt": {
+                        "kind": "agentcoin-payment-receipt",
+                    }
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(bundle_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("onchain", bundle_payload["error"])
         finally:
             node.stop()
 
@@ -1238,6 +1250,113 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertIn("already been consumed", replay_payload["error"])
         finally:
             node.stop()
+
+    def test_payment_onchain_raw_bundle_and_relay(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentproof1"})
+        rpc.start()
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_payment_relay", "frontend-local-payment-relay")
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-relay-node",
+            token="token-payment-relay",
+            db_path=str(Path(self.tempdir.name) / "payment-relay.db"),
+            capabilities=["worker"],
+            signing_secret="payment-relay-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-relay",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-relay",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xabc999",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            bundle_status, bundle_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-raw-bundle",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaabbbb", "signed_by": "wallet-1"},
+                    ],
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-relay",
+                public_key=public_key,
+            )
+            self.assertEqual(bundle_status, HTTPStatus.OK)
+            bundle = bundle_payload["bundle"]
+            self.assertEqual(bundle["kind"], "evm-payment-raw-bundle")
+            self.assertEqual(bundle["step_count"], 1)
+            self.assertEqual(bundle["steps"][0]["action"], "submitPaymentProof")
+            self.assertEqual(bundle["steps"][0]["raw_relay_payload"]["request"]["method"], "eth_sendRawTransaction")
+            bundle_verification = verify_document(
+                bundle,
+                secret="payment-relay-secret",
+                expected_scope="payment-onchain-raw-bundle",
+                expected_key_id="payment-relay-node",
+            )
+            self.assertTrue(bundle_verification["verified"])
+
+            relay_status, relay_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaabbbb"},
+                    ],
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-relay",
+                public_key=public_key,
+            )
+            self.assertEqual(relay_status, HTTPStatus.OK)
+            relay = relay_payload["relay"]
+            self.assertEqual(relay["kind"], "evm-payment-relay")
+            self.assertEqual(relay["completed_steps"], 1)
+            self.assertEqual(relay["final_status"], "completed")
+            self.assertEqual(relay["submitted_steps"][0]["tx_hash"], "0xpaymentproof1")
+            relay_verification = verify_document(
+                relay,
+                secret="payment-relay-secret",
+                expected_scope="payment-onchain-relay",
+                expected_key_id="payment-relay-node",
+            )
+            self.assertTrue(relay_verification["verified"])
+            self.assertEqual([call["method"] for call in rpc.calls], ["eth_sendRawTransaction"])
+        finally:
+            node.stop()
+            rpc.stop()
 
     def test_signed_client_identity_can_create_and_bind_local_tasks_without_bearer(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_local_task", "frontend-local-2")
