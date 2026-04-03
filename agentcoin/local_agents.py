@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from typing import Any
 from uuid import uuid4
@@ -84,6 +85,88 @@ class LocalAgentManager:
             record["updated_at"] = utc_now()
             record["pid"] = registration.get("pid")
         return dict(record)
+
+    def _build_acp_initialize_intent(
+        self,
+        session_id: str,
+        *,
+        protocol_version: str,
+        client_capabilities: dict[str, Any] | None = None,
+        client_info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        client_capabilities = dict(client_capabilities or {})
+        normalized_client_info = {
+            "name": str((client_info or {}).get("name") or "agentcoin").strip() or "agentcoin",
+            "title": str((client_info or {}).get("title") or "AgentCoin Local ACP Bridge").strip() or "AgentCoin Local ACP Bridge",
+            "version": str((client_info or {}).get("version") or "0.1").strip() or "0.1",
+        }
+        request_id = str(uuid4())
+        request = {
+            "id": request_id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": protocol_version,
+                "clientCapabilities": client_capabilities,
+                "clientInfo": normalized_client_info,
+            },
+        }
+        return {
+            "kind": "agentcoin-acp-initialize-intent",
+            "session_id": session_id,
+            "transport": "stdio",
+            "wire_format": "ndjson-json-candidate",
+            "protocol_version": protocol_version,
+            "client_capabilities": client_capabilities,
+            "client_info": normalized_client_info,
+            "request": request,
+            "notes": [
+                "AgentCoin currently emits a best-effort initialize frame candidate over NDJSON stdio.",
+                "This is an ACP handshake skeleton and does not yet parse or validate a server response.",
+            ],
+            "generated_at": utc_now(),
+        }
+
+    def prepare_acp_initialize(
+        self,
+        session_id: str,
+        *,
+        protocol_version: str = "0.1-preview",
+        client_capabilities: dict[str, Any] | None = None,
+        client_info: dict[str, Any] | None = None,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        session = self.get_acp_session(session_id)
+        if not session:
+            raise ValueError("acp session not found")
+        if str(session.get("status") or "") != "open":
+            raise ValueError("acp session is not open")
+        registration_id = str(session.get("registration_id") or "")
+        process = self._processes.get(registration_id)
+        if process is None or process.stdin is None:
+            raise ValueError("acp session transport is not writable")
+        intent = self._build_acp_initialize_intent(
+            session_id,
+            protocol_version=protocol_version,
+            client_capabilities=client_capabilities,
+            client_info=client_info,
+        )
+        stored = self._acp_sessions[session_id]
+        stored["initialize_intent"] = intent
+        stored["last_client_frame"] = dict(intent.get("request") or {})
+        stored["updated_at"] = utc_now()
+        if dispatch:
+            encoded = json.dumps(intent["request"], ensure_ascii=False, separators=(",", ":")) + "\n"
+            process.stdin.write(encoded)
+            process.stdin.flush()
+            stored["initialize_sent"] = True
+            stored["initialize_sent_at"] = utc_now()
+            stored["handshake_state"] = "initialize-sent"
+            stored["protocol_state"] = "server-capabilities-pending"
+        else:
+            stored["initialize_sent"] = False
+            stored["handshake_state"] = "initialize-prepared"
+            stored["protocol_state"] = "initialize-dispatch-pending"
+        return {"session": dict(stored), "initialize_intent": intent, "dispatched": bool(dispatch)}
 
     def register_discovered_agent(
         self,

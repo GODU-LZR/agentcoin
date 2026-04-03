@@ -42,6 +42,7 @@ The current repository contains:
 - a loopback-only local agent discovery endpoint can now scan for GitHub Copilot CLI plus VS Code Codex, GitHub Copilot, and Cline installations
 - discovered ACP-capable local agents can now be registered, started, listed, and stopped as managed local-agent skeletons
 - managed ACP-capable local agents can now expose transport-ready ACP session skeletons over stdio, with explicit open/list/close lifecycle endpoints
+- ACP sessions can now build and optionally dispatch a best-effort `initialize` intent over stdio, while explicitly keeping server response parsing out of scope for now
 
 ## Design Goals
 

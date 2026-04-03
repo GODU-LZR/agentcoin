@@ -137,6 +137,7 @@ class AgentCoinNode:
                 "local_agent_acp_sessions_url": card.get("endpoints", {}).get("local_agent_acp_sessions"),
                 "local_agent_acp_session_open_url": card.get("endpoints", {}).get("local_agent_acp_session_open"),
                 "local_agent_acp_session_close_url": card.get("endpoints", {}).get("local_agent_acp_session_close"),
+                "local_agent_acp_session_initialize_url": card.get("endpoints", {}).get("local_agent_acp_session_initialize"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -4865,6 +4866,7 @@ class AgentCoinNode:
                                 "/v1/discovery/local-agents/acp-sessions",
                                 "/v1/discovery/local-agents/acp-session/open",
                                 "/v1/discovery/local-agents/acp-session/close",
+                                "/v1/discovery/local-agents/acp-session/initialize",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
@@ -5171,6 +5173,35 @@ class AgentCoinNode:
                             raise ValueError("session_id is required")
                         session = node.local_agents.close_acp_session(session_id)
                         self._json_response(HTTPStatus.OK, {"ok": True, "session": session})
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/initialize":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/initialize"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        session_id = str(payload.get("session_id") or "").strip()
+                        if not session_id:
+                            raise ValueError("session_id is required")
+                        prepared = node.local_agents.prepare_acp_initialize(
+                            session_id,
+                            protocol_version=str(payload.get("protocol_version") or "0.1-preview").strip() or "0.1-preview",
+                            client_capabilities=dict(payload.get("client_capabilities") or {}),
+                            client_info=dict(payload.get("client_info") or {}),
+                            dispatch=bool(payload.get("dispatch")),
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                **prepared,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                    "server_response_parsing_implemented": False,
+                                },
+                            },
+                        )
                         return
                     if self.path == "/v1/payments/receipts/onchain-relay-queue/requeue":
                         if not self._require_local_client_or_auth(

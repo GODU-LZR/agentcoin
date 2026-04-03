@@ -32,6 +32,7 @@ The current test scope covers:
 - local agent discovery for GitHub Copilot CLI plus VS Code Codex, GitHub Copilot, and Cline across Windows and WSL-style layouts
 - ACP-capable local agent registration plus managed start / stop lifecycle coverage
 - ACP session skeleton coverage for managed local agents, including transport-ready open/list/close behavior without claiming full ACP protocol exchange
+- ACP initialize-intent coverage, including optional stdio dispatch of a best-effort `initialize` frame candidate and explicit non-coverage of server response parsing
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

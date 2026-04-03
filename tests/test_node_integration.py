@@ -1311,6 +1311,111 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_local_agent_acp_initialize_dispatch_writes_candidate_frame(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_acp_init",
+            "frontend-local-agent-acp-init",
+        )
+        capture_path = Path(self.tempdir.name) / "acp_initialize_capture.json"
+        sleeper = Path(self.tempdir.name) / "fake_acp_agent_initialize.py"
+        sleeper.write_text(
+            "import json, sys, time\n"
+            f"capture_path = r'''{capture_path}'''\n"
+            "line = sys.stdin.readline()\n"
+            "with open(capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line)\n"
+            "    handle.flush()\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": False,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-acp-init-node",
+            token="token-local-agent-acp-init",
+            db_path=str(Path(self.tempdir.name) / "local-agent-acp-init.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            _, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-init",
+                public_key=public_key,
+            )
+            registration = register_payload["item"]
+            _, open_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-init",
+                public_key=public_key,
+            )
+            session_id = open_payload["session"]["session_id"]
+
+            initialize_status, initialize_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/initialize",
+                {
+                    "session_id": session_id,
+                    "protocol_version": "0.1-preview",
+                    "client_capabilities": {"tasks": True},
+                    "client_info": {"name": "agentcoin-test", "version": "0.1-test"},
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-init",
+                public_key=public_key,
+            )
+            self.assertEqual(initialize_status, HTTPStatus.OK)
+            self.assertTrue(initialize_payload["dispatched"])
+            self.assertEqual(initialize_payload["session"]["handshake_state"], "initialize-sent")
+            self.assertEqual(initialize_payload["session"]["protocol_state"], "server-capabilities-pending")
+            self.assertEqual(initialize_payload["initialize_intent"]["request"]["method"], "initialize")
+            self.assertEqual(
+                initialize_payload["initialize_intent"]["request"]["params"]["protocolVersion"],
+                "0.1-preview",
+            )
+
+            deadline = time.time() + 5
+            while time.time() < deadline and not capture_path.exists():
+                time.sleep(0.1)
+            self.assertTrue(capture_path.exists())
+            captured = json.loads(capture_path.read_text(encoding="utf-8"))
+            self.assertEqual(captured["method"], "initialize")
+            self.assertEqual(captured["params"]["protocolVersion"], "0.1-preview")
+            self.assertEqual(captured["params"]["clientCapabilities"], {"tasks": True})
+            self.assertEqual(captured["params"]["clientInfo"]["name"], "agentcoin-test")
+        finally:
+            node.stop()
+
     def test_workflow_execute_returns_402_without_payment_receipt(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_payment_402", "frontend-local-payment-402")
         onchain = OnchainBindings(

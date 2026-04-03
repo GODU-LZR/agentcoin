@@ -288,6 +288,7 @@ class NodeConfig:
                 "local_agent_acp_sessions": f"{self.base_url}/v1/discovery/local-agents/acp-sessions",
                 "local_agent_acp_session_open": f"{self.base_url}/v1/discovery/local-agents/acp-session/open",
                 "local_agent_acp_session_close": f"{self.base_url}/v1/discovery/local-agents/acp-session/close",
+                "local_agent_acp_session_initialize": f"{self.base_url}/v1/discovery/local-agents/acp-session/initialize",
                 "auth_challenge": f"{self.base_url}/v1/auth/challenge",
                 "auth_verify": f"{self.base_url}/v1/auth/verify",
                 "workflow_execute": f"{self.base_url}/v1/workflow/execute",
