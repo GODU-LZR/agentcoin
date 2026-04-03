@@ -37,6 +37,7 @@ The current repository contains:
 - payment relay diagnostics including queue summary, latest failed relay lookup, and signed replay-helper payload generation
 - signed payment ops summary payload for browser or operator dashboards
 - optional background auto-requeue for transient payment proof dead-letter failures
+- per-item manual disable and re-enable controls for payment relay auto-requeue governance
 
 ## Design Goals
 

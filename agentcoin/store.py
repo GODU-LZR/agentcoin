@@ -2727,16 +2727,20 @@ class NodeStore:
             "completed": 0,
             "dead-letter": 0,
         }
+        auto_requeue_disabled_count = 0
         latest_item = items[0] if items else None
         latest_failed_item = next((item for item in items if str(item.get("status") or "") == "dead-letter"), None)
         for item in items:
             status_name = str(item.get("status") or "").strip()
             if status_name in counts:
                 counts[status_name] += 1
+            if bool(dict(item.get("payload") or {}).get("_auto_requeue_disabled")):
+                auto_requeue_disabled_count += 1
         return {
             "receipt_id": receipt_id,
             "item_count": len(items),
             "counts": counts,
+            "auto_requeue_disabled_count": auto_requeue_disabled_count,
             "latest_item": latest_item,
             "latest_failed_item": latest_failed_item,
         }
@@ -2772,6 +2776,24 @@ class NodeStore:
             }
         finally:
             conn.close()
+
+    def update_payment_relay_queue_payload(self, queue_id: str, *, payload: dict[str, Any]) -> dict[str, Any] | None:
+        now = utc_now()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE payment_relay_queue
+                SET payload_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(payload, ensure_ascii=False), now, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_payment_relay_queue_item(queue_id)
 
     def recover_running_payment_relay_queue_items(self, *, delay_seconds: int = 0) -> int:
         now = utc_now()
@@ -2902,7 +2924,12 @@ class NodeStore:
             status = "dead-letter" if attempts >= max_attempts else "retrying"
             delay_seconds = 0 if status == "dead-letter" else min(2 ** min(attempts, 6), 60)
             next_attempt_at = utc_after(delay_seconds)
-            payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else str(row["payload_json"] or "{}")
+            if payload is not None:
+                merged_payload = json.loads(row["payload_json"] or "{}")
+                merged_payload.update(dict(payload))
+                payload_json = json.dumps(merged_payload, ensure_ascii=False)
+            else:
+                payload_json = str(row["payload_json"] or "{}")
             completed_at = now if status == "dead-letter" else None
             conn.execute(
                 """

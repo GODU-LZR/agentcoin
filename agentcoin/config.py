@@ -297,6 +297,8 @@ class NodeConfig:
                 "payment_receipt_onchain_relay_queue_summary": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/summary",
                 "payment_receipt_onchain_relay_queue_pause": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/pause",
                 "payment_receipt_onchain_relay_queue_resume": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/resume",
+                "payment_receipt_onchain_relay_queue_auto_requeue_disable": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/auto-requeue/disable",
+                "payment_receipt_onchain_relay_queue_auto_requeue_enable": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/auto-requeue/enable",
                 "payment_receipt_onchain_relay_queue_requeue": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/requeue",
                 "payment_receipt_onchain_relay_queue_cancel": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/cancel",
                 "payment_receipt_onchain_relay_queue_delete": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/delete",

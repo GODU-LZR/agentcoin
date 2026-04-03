@@ -861,6 +861,8 @@ class AgentCoinNode:
             if max_items is not None and len(processed) >= max_items:
                 break
             payload = dict(item.get("payload") or {})
+            if bool(payload.get("_auto_requeue_disabled")):
+                continue
             auto_requeue_count = int(payload.get("_auto_requeue_count") or 0)
             if auto_requeue_count >= max_requeues:
                 continue
@@ -1009,6 +1011,31 @@ class AgentCoinNode:
             hmac_scope="payment-onchain-relay-replay-helper",
             identity_namespace="agentcoin-payment-onchain-relay-replay-helper",
         )
+
+    def set_payment_relay_auto_requeue_disabled(
+        self,
+        queue_id: str,
+        *,
+        disabled: bool,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        item = self.store.get_payment_relay_queue_item(queue_id)
+        if not item:
+            raise ValueError("payment relay queue item not found")
+        payload = dict(item.get("payload") or {})
+        if disabled:
+            payload["_auto_requeue_disabled"] = True
+            payload["_auto_requeue_disabled_reason"] = str(reason or "").strip() or "manual-override"
+            payload["_auto_requeue_disabled_at"] = utc_now()
+        else:
+            payload.pop("_auto_requeue_disabled", None)
+            payload.pop("_auto_requeue_disabled_reason", None)
+            payload.pop("_auto_requeue_disabled_at", None)
+            payload["_auto_requeue_reenabled_at"] = utc_now()
+        updated = self.store.update_payment_relay_queue_payload(queue_id, payload=payload)
+        if not updated:
+            raise ValueError("payment relay queue item not found")
+        return updated
 
     def payment_ops_summary(self, *, receipt_id: str | None = None, relay_limit: int = 5) -> dict[str, Any]:
         normalized_receipt_id = str(receipt_id or "").strip() or None
@@ -4768,6 +4795,8 @@ class AgentCoinNode:
                                 "/v1/payments/receipts/onchain-relay-queue/summary",
                                 "/v1/payments/receipts/onchain-relay-queue/pause",
                                 "/v1/payments/receipts/onchain-relay-queue/resume",
+                                "/v1/payments/receipts/onchain-relay-queue/auto-requeue/disable",
+                                "/v1/payments/receipts/onchain-relay-queue/auto-requeue/enable",
                                 "/v1/payments/receipts/onchain-relay-queue/requeue",
                                 "/v1/payments/receipts/onchain-relay-queue/cancel",
                                 "/v1/payments/receipts/onchain-relay-queue/delete",
@@ -5067,6 +5096,34 @@ class AgentCoinNode:
                         )
                         if not item or item.get("status") != "queued":
                             raise ValueError("queue item cannot be resumed")
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/auto-requeue/disable":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/auto-requeue/disable"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        item = node.set_payment_relay_auto_requeue_disabled(
+                            queue_id,
+                            disabled=True,
+                            reason=str(payload.get("reason") or "").strip() or None,
+                        )
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/auto-requeue/enable":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/auto-requeue/enable"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        item = node.set_payment_relay_auto_requeue_disabled(queue_id, disabled=False)
                         self._json_response(HTTPStatus.OK, {"item": item})
                         return
                     if self.path == "/v1/payments/receipts/onchain-relay-queue/cancel":

@@ -2073,6 +2073,133 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_client_can_disable_and_reenable_payment_relay_auto_requeue(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_auto_requeue_override",
+            "frontend-local-payment-auto-requeue-override",
+        )
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentautorequeueoverride1"})
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="http://127.0.0.1:1",
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-auto-requeue-override-node",
+            token="token-payment-auto-requeue-override",
+            db_path=str(Path(self.tempdir.name) / "payment-auto-requeue-override.db"),
+            capabilities=["worker"],
+            signing_secret="payment-auto-requeue-override-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+            payment_relay_auto_requeue_enabled=True,
+            payment_relay_auto_requeue_delay_seconds=2,
+            payment_relay_auto_requeue_max_requeues=2,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "manually govern auto requeue"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-override",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-auto-requeue-override",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xpaymentautorequeueoverride",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xbbbb"},
+                    ],
+                    "timeout_seconds": 0.2,
+                    "max_attempts": 1,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-override",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            disable_status, disable_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/auto-requeue/disable",
+                {
+                    "queue_id": item["id"],
+                    "reason": "manual-review-pending",
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-override",
+                public_key=public_key,
+            )
+            self.assertEqual(disable_status, HTTPStatus.OK)
+            self.assertTrue(disable_payload["item"]["payload"]["_auto_requeue_disabled"])
+            self.assertEqual(
+                disable_payload["item"]["payload"]["_auto_requeue_disabled_reason"],
+                "manual-review-pending",
+            )
+
+            dead_letter = self._wait_for_payment_queue_item_status(node, item["id"], status="dead-letter", timeout=3.0)
+            self.assertEqual(dead_letter["attempts"], 1)
+            self.assertTrue(dead_letter["payload"]["_auto_requeue_disabled"])
+
+            summary_status, summary_payload = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/summary?receipt_id={receipt['receipt_id']}",
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-override",
+                public_key=public_key,
+            )
+            self.assertEqual(summary_status, HTTPStatus.OK)
+            self.assertEqual(summary_payload["auto_requeue_disabled_count"], 1)
+
+            rpc.start()
+            node.node.config.onchain.rpc_url = rpc.url
+            time.sleep(2.5)
+            still_dead_letter = node.node.store.get_payment_relay_queue_item(item["id"])
+            self.assertIsNotNone(still_dead_letter)
+            self.assertEqual(still_dead_letter["status"], "dead-letter")
+            self.assertTrue(still_dead_letter["payload"]["_auto_requeue_disabled"])
+            self.assertEqual(len(rpc.calls), 0)
+
+            enable_status, enable_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue/auto-requeue/enable",
+                {"queue_id": item["id"]},
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-override",
+                public_key=public_key,
+            )
+            self.assertEqual(enable_status, HTTPStatus.OK)
+            self.assertNotIn("_auto_requeue_disabled", enable_payload["item"]["payload"])
+
+            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=5.0)
+            self.assertEqual(completed["payload"]["_auto_requeue_count"], 1)
+            self.assertIn("_auto_requeue_reenabled_at", completed["payload"])
+            self.assertEqual(len(rpc.calls), 1)
+        finally:
+            node.stop()
+            rpc.stop()
+
     def test_signed_client_identity_can_create_and_bind_local_tasks_without_bearer(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_local_task", "frontend-local-2")
         node = NodeHarness(
