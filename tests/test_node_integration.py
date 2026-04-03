@@ -1443,6 +1443,9 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(poll_status, HTTPStatus.OK)
             self.assertEqual(poll_payload["session"]["handshake_state"], "initialize-response-captured")
             self.assertEqual(poll_payload["session"]["protocol_state"], "server-response-captured")
+            self.assertEqual(len(poll_payload["turns"]), 1)
+            self.assertEqual(poll_payload["turns"][0]["phase"], "initialize")
+            self.assertTrue(poll_payload["turns"][0]["response_captured"])
             latest_server_frame = poll_payload["latest_server_frame"]
             initialize_response_frame = poll_payload["initialize_response_frame"]
             self.assertIsNotNone(latest_server_frame)
@@ -1637,6 +1640,10 @@ class NodeIntegrationTests(unittest.TestCase):
             latest_server_frame = poll_payload["latest_server_frame"]
             task_response_frame = poll_payload["task_response_frame"]
             self.assertEqual(poll_payload["session"]["protocol_state"], "task-response-captured")
+            self.assertEqual(len(poll_payload["turns"]), 2)
+            self.assertEqual(poll_payload["turns"][0]["phase"], "initialize")
+            self.assertEqual(poll_payload["turns"][1]["phase"], "task-request")
+            self.assertTrue(poll_payload["turns"][1]["response_captured"])
             self.assertIsNotNone(task_response_frame)
             self.assertEqual(
                 task_response_frame["parsed"]["id"],

@@ -78,6 +78,27 @@ class LocalAgentManager:
             return matched
         return None
 
+    @staticmethod
+    def _turns_with_responses(
+        turns: list[dict[str, Any]],
+        frames: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        hydrated: list[dict[str, Any]] = []
+        for turn in turns:
+            turn_copy = dict(turn)
+            request = dict(turn_copy.get("request") or {})
+            request_id = str(request.get("id") or "").strip()
+            response_frame = LocalAgentManager._frame_for_request_id(frames, request_id)
+            if response_frame:
+                turn_copy["response_frame"] = response_frame
+                turn_copy["response_captured"] = True
+                if not turn_copy.get("response_received_at"):
+                    turn_copy["response_received_at"] = response_frame.get("received_at")
+            else:
+                turn_copy["response_captured"] = False
+            hydrated.append(turn_copy)
+        return hydrated
+
     def _update_session_states_for_registration(self, registration_id: str, process_state: str) -> None:
         for record in self._acp_sessions.values():
             if str(record.get("registration_id") or "") != registration_id:
@@ -153,6 +174,9 @@ class LocalAgentManager:
         latest_frame = self._summarize_latest_server_frame(frames)
         if latest_frame:
             record["latest_server_frame"] = latest_frame
+        turns = self._turns_with_responses(list(record.get("turns") or []), frames)
+        if turns:
+            record["turns"] = turns
         initialize_response_frame = self._frame_for_request_id(frames, record.get("initialize_request_id"))
         if initialize_response_frame:
             record["initialize_response_frame"] = initialize_response_frame
@@ -242,6 +266,17 @@ class LocalAgentManager:
         stored["initialize_request_id"] = str(intent.get("request", {}).get("id") or "")
         stored["last_client_frame"] = dict(intent.get("request") or {})
         stored["updated_at"] = utc_now()
+        turns = list(stored.get("turns") or [])
+        turns.append(
+            {
+                "turn_id": str(uuid4()),
+                "phase": "initialize",
+                "request": dict(intent.get("request") or {}),
+                "request_sent": bool(dispatch),
+                "requested_at": utc_now(),
+            }
+        )
+        stored["turns"] = turns
         if dispatch:
             encoded = json.dumps(intent["request"], ensure_ascii=False, separators=(",", ":")) + "\n"
             process.stdin.write(encoded)
@@ -329,6 +364,18 @@ class LocalAgentManager:
         stored["task_request_id"] = str(intent.get("request", {}).get("id") or "")
         stored["last_client_frame"] = dict(intent.get("request") or {})
         stored["updated_at"] = utc_now()
+        turns = list(stored.get("turns") or [])
+        turns.append(
+            {
+                "turn_id": str(uuid4()),
+                "phase": "task-request",
+                "request": dict(intent.get("request") or {}),
+                "request_sent": bool(dispatch),
+                "task_ref": dict(task_ref or {}),
+                "requested_at": utc_now(),
+            }
+        )
+        stored["turns"] = turns
         if dispatch:
             encoded = json.dumps(intent["request"], ensure_ascii=False, separators=(",", ":")) + "\n"
             process.stdin.write(encoded)
@@ -354,6 +401,7 @@ class LocalAgentManager:
             "latest_server_frame": self._summarize_latest_server_frame(frames),
             "initialize_response_frame": self._frame_for_request_id(frames, (refreshed or session).get("initialize_request_id")),
             "task_response_frame": self._frame_for_request_id(frames, (refreshed or session).get("task_request_id")),
+            "turns": list((refreshed or session).get("turns") or []),
         }
 
     def register_discovered_agent(
@@ -506,6 +554,7 @@ class LocalAgentManager:
             "protocol_state": "initialize-pending",
             "initialize_sent": False,
             "attachable_today": False,
+            "turns": [],
             "notes": [
                 "ACP process transport is ready, but AgentCoin has not yet exchanged ACP protocol messages.",
                 "This session is a transport and lifecycle skeleton, not a full ACP bridge.",

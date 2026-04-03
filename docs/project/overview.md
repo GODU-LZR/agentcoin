@@ -47,6 +47,7 @@ The current repository contains:
 - local AgentCoin tasks can now be mapped into best-effort ACP `prompt` request candidates and optionally dispatched over the same stdio session
 - captured ACP task response frames can now be explicitly materialized into local AgentCoin task results, receipts, and execution audits
 - ACP initialize and task responses are now correlated by request id before they are surfaced into session state or task-result mapping
+- ACP sessions now preserve a minimal turn history so multi-step initialize and prompt exchanges can be inspected turn-by-turn
 
 ## Design Goals
 
