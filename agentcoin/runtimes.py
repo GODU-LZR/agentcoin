@@ -85,7 +85,7 @@ class RuntimeRegistry:
                 title="Claude HTTP Messages Adapter",
                 description="Execute a task by calling an Anthropic-compatible Claude Messages endpoint over HTTP.",
                 supports_http=True,
-                input_modes=["messages-api", "system-prompt", "tools-api"],
+                input_modes=["messages-api", "system-prompt", "tools-api", "tool-results-api"],
                 output_modes=["assistant-message", "tool-use", "json-object"],
             ),
             "ollama-chat": RuntimeAdapterDescriptor(

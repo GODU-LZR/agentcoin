@@ -10553,6 +10553,79 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             gateway.stop()
 
+    def test_runtime_adapter_claude_http_tool_results_are_forwarded(self) -> None:
+        gateway = ClaudeHttpHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-claude-http-tool-results-node",
+            token="token-claude-http-tool-results",
+            db_path=str(Path(self.tempdir.name) / "runtime-claude-http-tool-results.db"),
+            capabilities=["worker"],
+            runtimes=["claude-http"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-http-tool-results",
+                {
+                    "id": "runtime-claude-http-tool-results-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "continue after tool result"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/integrations/claude-http/bind",
+                "token-claude-http-tool-results",
+                {
+                    "task_id": "runtime-claude-http-tool-results-1",
+                    "endpoint": gateway.url,
+                    "model": "claude-3-7-sonnet-latest",
+                    "auth_token": "anthropic-secret",
+                    "prompt": "continue after tool result",
+                    "tool_results": [
+                        {
+                            "tool_use_id": "toolu_prior_1",
+                            "content": [{"type": "text", "text": "{\"status\":\"ok\"}"}],
+                        }
+                    ],
+                    "timeout_seconds": 10,
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["runtime"]["runtime"], "claude-http")
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-claude-http-tool-results",
+                worker_id="worker-claude-http-tool-results-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["claude-http"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            self.assertEqual(len(gateway.calls[0]["messages"]), 2)
+            self.assertEqual(gateway.calls[0]["messages"][1]["role"], "user")
+            self.assertEqual(gateway.calls[0]["messages"][1]["content"][0]["type"], "tool_result")
+            self.assertEqual(gateway.calls[0]["messages"][1]["content"][0]["tool_use_id"], "toolu_prior_1")
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-claude-http-tool-results-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "claude-http")
+            self.assertEqual(task["result"]["runtime_execution"]["request"]["messages"][1]["content"][0]["type"], "tool_result")
+            self.assertEqual(
+                task["result"]["runtime_execution"]["request"]["messages"][1]["content"][0]["tool_use_id"],
+                "toolu_prior_1",
+            )
+        finally:
+            node.stop()
+            gateway.stop()
+
     def test_runtime_adapter_langgraph_http(self) -> None:
         langgraph = LangGraphHarness()
         langgraph.start()

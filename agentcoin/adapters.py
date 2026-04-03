@@ -710,6 +710,47 @@ class ExecutionAdapterRegistry:
         return [{"role": "user", "content": content}]
 
     @staticmethod
+    def _normalize_claude_content_blocks(content: Any) -> list[dict[str, Any]]:
+        if isinstance(content, list):
+            blocks: list[dict[str, Any]] = []
+            for item in content:
+                if isinstance(item, dict):
+                    blocks.append(dict(item))
+                elif isinstance(item, str) and item.strip():
+                    blocks.append({"type": "text", "text": item})
+            return blocks
+        if isinstance(content, dict):
+            return [dict(content)]
+        if isinstance(content, str) and content.strip():
+            return [{"type": "text", "text": content}]
+        return []
+
+    @staticmethod
+    def _normalize_claude_tool_results(tool_results: Any) -> list[dict[str, Any]]:
+        if not isinstance(tool_results, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            tool_use_id = str(item.get("tool_use_id") or "").strip()
+            if not tool_use_id:
+                continue
+            block: dict[str, Any] = {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+            }
+            content_blocks = ExecutionAdapterRegistry._normalize_claude_content_blocks(item.get("content"))
+            if content_blocks:
+                block["content"] = content_blocks
+            elif "content" in item:
+                block["content"] = item.get("content")
+            if "is_error" in item:
+                block["is_error"] = bool(item.get("is_error"))
+            normalized.append(block)
+        return normalized
+
+    @staticmethod
     def _normalize_claude_messages(task: dict[str, Any], runtime: dict[str, Any]) -> list[dict[str, Any]]:
         raw_messages = runtime.get("messages") or task.get("payload", {}).get("messages")
         if isinstance(raw_messages, list) and raw_messages:
@@ -719,24 +760,24 @@ class ExecutionAdapterRegistry:
                     continue
                 role = str(item.get("role") or "user").strip() or "user"
                 content = item.get("content")
-                if isinstance(content, list):
-                    normalized.append({"role": role, "content": list(content)})
-                elif isinstance(content, str):
-                    normalized.append({"role": role, "content": content})
-                elif isinstance(content, dict):
-                    normalized.append({"role": role, "content": [dict(content)]})
+                if isinstance(content, (list, dict, str)):
+                    normalized.append({"role": role, "content": ExecutionAdapterRegistry._normalize_claude_content_blocks(content) or content})
             if normalized:
+                tool_result_blocks = ExecutionAdapterRegistry._normalize_claude_tool_results(runtime.get("tool_results"))
+                if tool_result_blocks:
+                    normalized.append({"role": "user", "content": tool_result_blocks})
                 return normalized
         prompt = runtime.get("prompt")
         if prompt is None:
             prompt = task.get("payload", {}).get("input")
         if prompt is None:
             prompt = task.get("payload", {})
-        if isinstance(prompt, str):
-            content = prompt
-        else:
-            content = json.dumps(prompt, ensure_ascii=False)
-        return [{"role": "user", "content": content}]
+        prompt_content = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
+        messages = [{"role": "user", "content": ExecutionAdapterRegistry._normalize_claude_content_blocks(prompt_content)}]
+        tool_result_blocks = ExecutionAdapterRegistry._normalize_claude_tool_results(runtime.get("tool_results"))
+        if tool_result_blocks:
+            messages.append({"role": "user", "content": tool_result_blocks})
+        return messages
 
     @staticmethod
     def _extract_claude_assistant_message(response: dict[str, Any]) -> dict[str, Any]:
