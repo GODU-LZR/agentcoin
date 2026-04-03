@@ -3845,6 +3845,94 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_signed_operator_request_is_required_for_git_observability(self) -> None:
+        repo_path = Path(self.tempdir.name) / "git-auth-repo"
+        self._init_git_repo(repo_path)
+        (repo_path / "README.txt").write_text("hello\nchange\n", encoding="utf-8")
+
+        node = NodeHarness(
+            node_id="read-only-git-node",
+            token="token-read-only-git",
+            db_path=str(Path(self.tempdir.name) / "read-only-git.db"),
+            capabilities=["planner", "worker"],
+            git_root=str(repo_path),
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-git-observer-secret",
+                    scopes=["read-only"],
+                ),
+                OperatorIdentityConfig(
+                    key_id="workflow-admin:ops-1",
+                    shared_secret="workflow-git-secret",
+                    scopes=["workflow-admin"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            denied_status_status, denied_status = self._get_auth(
+                f"{node.base_url}/v1/git/status",
+                "token-read-only-git",
+            )
+            self.assertEqual(denied_status_status, 401)
+            self.assertEqual(denied_status["policy_receipt"]["reason_code"], "signed-request-required")
+
+            denied_diff_status, denied_diff = self._get_auth(
+                f"{node.base_url}/v1/git/diff?base_ref=HEAD&name_only=1",
+                "token-read-only-git",
+            )
+            self.assertEqual(denied_diff_status, 401)
+            self.assertEqual(denied_diff["policy_receipt"]["reason_code"], "signed-request-required")
+
+            status_status, status_payload = self._signed_get(
+                f"{node.base_url}/v1/git/status",
+                "token-read-only-git",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-git-observer-secret",
+            )
+            self.assertEqual(status_status, 200)
+            self.assertTrue(status_payload["is_dirty"])
+            tracked = (
+                set(status_payload["staged_files"])
+                | set(status_payload["unstaged_files"])
+                | set(status_payload["untracked_files"])
+            )
+            self.assertIn("README.txt", tracked)
+
+            diff_status, diff_payload = self._signed_get(
+                f"{node.base_url}/v1/git/diff?base_ref=HEAD&name_only=1",
+                "token-read-only-git",
+                key_id="read-only:observer-1",
+                shared_secret="read-only-git-observer-secret",
+            )
+            self.assertEqual(diff_status, 200)
+            self.assertIn("README.txt", diff_payload["files"])
+
+            inherited_status, inherited_payload = self._signed_get(
+                f"{node.base_url}/v1/git/status",
+                "token-read-only-git",
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-git-secret",
+            )
+            self.assertEqual(inherited_status, 200)
+            self.assertTrue(inherited_payload["is_dirty"])
+
+            status_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/git/status", limit=10)
+            self.assertEqual([item["decision"] for item in status_audits[:3]], ["allowed", "allowed", "denied"])
+            self.assertEqual(
+                {item["key_id"] for item in status_audits[:2]},
+                {"read-only:observer-1", "workflow-admin:ops-1"},
+            )
+            self.assertEqual(status_audits[2]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+
+            diff_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/git/diff", limit=10)
+            self.assertEqual([item["decision"] for item in diff_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(diff_audits[0]["key_id"], "read-only:observer-1")
+            self.assertEqual(diff_audits[1]["payload"]["policy_receipt"]["reason_code"], "signed-request-required")
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",

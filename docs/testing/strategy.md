@@ -138,6 +138,7 @@ The following behaviors are now covered either by automated tests or previously 
 - dispute responses and replay-inspect now expose contract alignment for dispute-driven `challengeJob` / `slashJob` settlement, challenger bond custody gaps, and committee escalation handoff
 - confirmed final settlement relays can now auto-finalize an associated workflow state, while `challengeJob` relays remain non-final and do not auto-finalize
 - replay-inspect now exposes the latest settlement reconciliation status and receipt count for a task
+- signed `read-only` operator auth now also covers Git observability endpoints such as `GET /v1/git/status` and `GET /v1/git/diff`, including inherited scope acceptance and denial audit persistence
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

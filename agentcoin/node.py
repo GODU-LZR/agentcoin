@@ -2025,6 +2025,16 @@ class AgentCoinNode:
                 "policy_level": 1,
                 "required_scopes": ["read-only"],
             },
+            "GET /v1/git/status": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
+            "GET /v1/git/diff": {
+                "policy_tier": "read-only",
+                "policy_level": 1,
+                "required_scopes": ["read-only"],
+            },
             "GET /v1/outbox": {
                 "policy_tier": "read-only",
                 "policy_level": 1,
