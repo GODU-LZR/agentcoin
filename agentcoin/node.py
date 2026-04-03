@@ -17,7 +17,7 @@ from uuid import uuid4
 from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_config, prepare_runtime_config, preview_peer_identity_config_update
 from agentcoin.gitops import GitWorkspace
-from agentcoin.models import TaskEnvelope, utc_now
+from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime
 from agentcoin.receipts import (
@@ -37,17 +37,21 @@ from agentcoin.semantics import (
     task_semantics,
 )
 from agentcoin.security import (
+    CLIENT_REQUEST_NAMESPACE,
     IDENTITY_ALGORITHM,
     IDENTITY_SIGNATURE_FIELD,
     OPERATOR_REQUEST_NAMESPACE,
     SignatureError,
     build_operator_request_envelope,
     canonicalize_query_string,
+    derive_local_did,
     operator_request_body_digest,
     sign_document,
     sign_document_with_ssh,
+    sign_identity_request_headers,
     sign_operator_request_hmac_value,
     verify_document,
+    verify_identity_request_signature,
     verify_document_with_ssh,
 )
 from agentcoin.store import NodeStore
@@ -76,6 +80,8 @@ class AgentCoinNode:
             name="agentcoin-settlement-relay",
             daemon=True,
         )
+        self._auth_challenges: dict[str, dict[str, Any]] = {}
+        self._auth_challenge_lock = threading.Lock()
 
     def local_identity_view(self) -> dict[str, Any]:
         return {
@@ -107,6 +113,8 @@ class AgentCoinNode:
             "discovery": {
                 "card_url": card.get("endpoints", {}).get("card"),
                 "manifest_url": card.get("endpoints", {}).get("manifest"),
+                "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
+                "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
                 "mdns": {
                     "enabled": False,
@@ -121,6 +129,7 @@ class AgentCoinNode:
                 "request_signing": {
                     "supported": ["ssh-ed25519"],
                     "operator_namespace": OPERATOR_REQUEST_NAMESPACE,
+                    "client_namespace": CLIENT_REQUEST_NAMESPACE,
                     "planned": ["eip-191", "eip-712", "secp256k1"],
                 },
             },
@@ -160,6 +169,61 @@ class AgentCoinNode:
         if normalized_origin in allowed_origins:
             return normalized_origin
         return None
+
+    def issue_identity_auth_challenge(self) -> dict[str, Any]:
+        challenge_id = str(uuid4())
+        challenge = {
+            "challenge_id": challenge_id,
+            "nonce": str(uuid4()),
+            "node_id": self.config.node_id,
+            "issued_at": utc_now(),
+            "expires_at": utc_after(int(self.config.identity_auth_challenge_ttl_seconds or 300)),
+            "namespace": CLIENT_REQUEST_NAMESPACE,
+            "local_identity": self.local_identity_view(),
+        }
+        with self._auth_challenge_lock:
+            self._prune_auth_challenges_locked()
+            self._auth_challenges[challenge_id] = challenge
+        return dict(challenge)
+
+    def _prune_auth_challenges_locked(self) -> None:
+        now_value = datetime.now(timezone.utc)
+        expired: list[str] = []
+        for challenge_id, challenge in self._auth_challenges.items():
+            expires_at = str(challenge.get("expires_at") or "").strip()
+            if not expires_at:
+                expired.append(challenge_id)
+                continue
+            try:
+                expires_at_value = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                expired.append(challenge_id)
+                continue
+            if expires_at_value <= now_value:
+                expired.append(challenge_id)
+        for challenge_id in expired:
+            self._auth_challenges.pop(challenge_id, None)
+
+    def get_identity_auth_challenge(self, challenge_id: str) -> dict[str, Any]:
+        normalized_challenge_id = str(challenge_id or "").strip()
+        if not normalized_challenge_id:
+            raise ValueError("challenge_id is required")
+        with self._auth_challenge_lock:
+            self._prune_auth_challenges_locked()
+            challenge = self._auth_challenges.get(normalized_challenge_id)
+        if not challenge:
+            raise ValueError("identity auth challenge not found or expired")
+        return dict(challenge)
+
+    def finalize_identity_auth_challenge(self, challenge_id: str) -> None:
+        normalized_challenge_id = str(challenge_id or "").strip()
+        if not normalized_challenge_id:
+            raise ValueError("challenge_id is required")
+        with self._auth_challenge_lock:
+            self._prune_auth_challenges_locked()
+            challenge = self._auth_challenges.pop(normalized_challenge_id, None)
+        if not challenge:
+            raise ValueError("identity auth challenge not found or expired")
 
     def _resolve_delivery(self, target: str) -> tuple[str, str | None, str]:
         parsed = urlparse(target)
@@ -2414,6 +2478,37 @@ class AgentCoinNode:
                 except ValueError:
                     return remote_address.lower() == "localhost"
 
+            def _identity_request_verification(self, *, principal: str, public_key: str) -> dict[str, Any]:
+                timestamp = str(self.headers.get("X-Agentcoin-Timestamp") or "").strip()
+                nonce = str(self.headers.get("X-Agentcoin-Nonce") or "").strip()
+                body_digest = str(self.headers.get("X-Agentcoin-Body-Digest") or "").strip()
+                signature = str(self.headers.get("X-Agentcoin-Identity-Signature") or "").strip()
+                namespace = str(self.headers.get("X-Agentcoin-Identity-Namespace") or CLIENT_REQUEST_NAMESPACE).strip()
+                if not timestamp or not nonce or not body_digest or not signature:
+                    raise SignatureError("identity request signature headers are incomplete")
+                try:
+                    timestamp_value = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise SignatureError("invalid identity request timestamp") from exc
+                now_value = datetime.now(timezone.utc)
+                skew = abs((now_value - timestamp_value).total_seconds())
+                if skew > float(node.config.operator_auth_timestamp_skew_seconds or 300):
+                    raise SignatureError("identity request timestamp is outside the allowed skew window")
+                parsed_request = urlparse(self.path)
+                return verify_identity_request_signature(
+                    method=self.command,
+                    path=parsed_request.path,
+                    query=parsed_request.query,
+                    body=self._read_body_bytes(),
+                    principal=principal,
+                    public_key=public_key,
+                    timestamp=timestamp,
+                    nonce=nonce,
+                    body_digest=body_digest,
+                    signature_b64=signature,
+                    namespace=namespace,
+                )
+
             def _resolve_bearer_auth(self) -> dict[str, Any] | None:
                 header = self.headers.get("Authorization", "")
                 if not header.startswith("Bearer "):
@@ -3057,6 +3152,9 @@ class AgentCoinNode:
                 if path == "/v1/manifest":
                     self._json_response(HTTPStatus.OK, node.manifest())
                     return
+                if path == "/v1/auth/challenge":
+                    self._json_response(HTTPStatus.OK, {"challenge": node.issue_identity_auth_challenge()})
+                    return
                 if path == "/v1/schema/context":
                     self._json_response(HTTPStatus.OK, context_document())
                     return
@@ -3408,6 +3506,57 @@ class AgentCoinNode:
 
             def do_POST(self) -> None:
                 try:
+                    if self.path == "/v1/auth/verify":
+                        payload = self._read_json()
+                        challenge_id = str(payload.get("challenge_id") or "").strip()
+                        principal = str(payload.get("principal") or "").strip()
+                        public_key = str(payload.get("public_key") or "").strip()
+                        if not challenge_id or not principal or not public_key:
+                            raise ValueError("challenge_id, principal, and public_key are required")
+                        challenge = node.get_identity_auth_challenge(challenge_id)
+                        verification = self._identity_request_verification(
+                            principal=principal,
+                            public_key=public_key,
+                        )
+                        node.finalize_identity_auth_challenge(challenge_id)
+                        identity = {
+                            "principal": principal,
+                            "public_key": public_key,
+                            "did": derive_local_did(public_key=public_key),
+                            "algorithm": IDENTITY_ALGORITHM,
+                        }
+                        receipt = node._sign_document(
+                            {
+                                "kind": "agentcoin-identity-auth-receipt",
+                                "verified": True,
+                                "identity": identity,
+                                "challenge": {
+                                    "challenge_id": challenge.get("challenge_id"),
+                                    "issued_at": challenge.get("issued_at"),
+                                    "expires_at": challenge.get("expires_at"),
+                                    "consumed": True,
+                                },
+                                "verification": verification,
+                                "generated_at": utc_now(),
+                            },
+                            hmac_scope="identity-auth-receipt",
+                            identity_namespace="agentcoin-identity-auth",
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                "identity": identity,
+                                "challenge": {
+                                    "challenge_id": challenge.get("challenge_id"),
+                                    "issued_at": challenge.get("issued_at"),
+                                    "expires_at": challenge.get("expires_at"),
+                                    "consumed": True,
+                                },
+                                "receipt": receipt,
+                            },
+                        )
+                        return
                     if self.path == "/v1/tasks":
                         if not self._require_auth():
                             return

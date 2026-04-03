@@ -19,7 +19,7 @@ from agentcoin.config import NodeConfig, OperatorIdentityConfig, PeerConfig, Sco
 from agentcoin.net import OutboundNetworkConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.onchain import OnchainBindings
-from agentcoin.security import sign_document_with_ssh, sign_operator_request_headers, verify_document
+from agentcoin.security import sign_document_with_ssh, sign_identity_request_headers, sign_operator_request_headers, verify_document
 from agentcoin.worker import WorkerLoop
 
 
@@ -515,6 +515,40 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, dict(exc.headers.items()), exc.read().decode("utf-8")
 
+    def _identity_signed_post(
+        self,
+        url: str,
+        payload: dict,
+        *,
+        private_key_path: str,
+        principal: str,
+        public_key: str | None = None,
+        timestamp: str | None = None,
+        nonce: str | None = None,
+    ) -> tuple[int, dict]:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        parsed = urlparse(url)
+        headers = {
+            "Content-Type": "application/json",
+            **sign_identity_request_headers(
+                method="POST",
+                path=parsed.path,
+                query=parsed.query,
+                body=body,
+                private_key_path=private_key_path,
+                principal=principal,
+                public_key=public_key,
+                timestamp=timestamp,
+                nonce=nonce,
+            ),
+        }
+        req = request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def _wait_for_queue_item_status(
         self,
         node: NodeHarness,
@@ -644,6 +678,55 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
             payload = json.loads(body)
             self.assertEqual(payload["node_id"], "cors-node")
+        finally:
+            node.stop()
+
+    def test_identity_auth_challenge_and_signed_verify(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_auth", "frontend-local-1")
+        node = NodeHarness(
+            node_id="identity-auth-node",
+            token="token-identity-auth",
+            db_path=str(Path(self.tempdir.name) / "identity-auth.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, challenge_payload = self._get(f"{node.base_url}/v1/auth/challenge")
+            challenge = challenge_payload["challenge"]
+            self.assertEqual(challenge["namespace"], "agentcoin-client-request")
+            self.assertEqual(challenge["local_identity"]["principal"], "identity-auth-node")
+
+            status, verified = self._identity_signed_post(
+                f"{node.base_url}/v1/auth/verify",
+                {
+                    "challenge_id": challenge["challenge_id"],
+                    "principal": "frontend-local-1",
+                    "public_key": public_key,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-1",
+                public_key=public_key,
+            )
+            self.assertEqual(status, 200)
+            self.assertTrue(verified["ok"])
+            self.assertEqual(verified["identity"]["principal"], "frontend-local-1")
+            self.assertTrue(str(verified["identity"]["did"]).startswith("did:agentcoin:ssh-ed25519:"))
+            self.assertTrue(verified["challenge"]["consumed"])
+            self.assertEqual(verified["receipt"]["kind"], "agentcoin-identity-auth-receipt")
+
+            replay_status, replay_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/auth/verify",
+                {
+                    "challenge_id": challenge["challenge_id"],
+                    "principal": "frontend-local-1",
+                    "public_key": public_key,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-1",
+                public_key=public_key,
+            )
+            self.assertEqual(replay_status, 400)
+            self.assertIn("challenge", replay_payload["error"])
         finally:
             node.stop()
 

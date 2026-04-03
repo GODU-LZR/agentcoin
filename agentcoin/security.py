@@ -20,6 +20,7 @@ SIGNATURE_ALGORITHM = "hmac-sha256"
 IDENTITY_ALGORITHM = "ssh-ed25519"
 OPERATOR_REQUEST_NAMESPACE = "agentcoin-operator-request"
 LOCAL_IDENTITY_NAMESPACE = "did:agentcoin:ssh-ed25519"
+CLIENT_REQUEST_NAMESPACE = "agentcoin-client-request"
 
 
 class SignatureError(ValueError):
@@ -372,3 +373,98 @@ def sign_operator_request_headers(
         "X-Agentcoin-Body-Digest": digest,
         "X-Agentcoin-Signature": signature,
     }
+
+
+def sign_identity_request_headers(
+    *,
+    method: str,
+    path: str,
+    query: str | None,
+    body: bytes | str | None,
+    private_key_path: str,
+    principal: str,
+    public_key: str | None = None,
+    timestamp: str | None = None,
+    nonce: str | None = None,
+    namespace: str = CLIENT_REQUEST_NAMESPACE,
+) -> dict[str, str]:
+    resolved_timestamp = str(timestamp or utc_now()).strip()
+    resolved_nonce = str(nonce or uuid4()).strip()
+    digest = operator_request_body_digest(body)
+    envelope = build_operator_request_envelope(
+        method=method,
+        path=path,
+        canonical_query=canonicalize_query_string(query),
+        timestamp=resolved_timestamp,
+        nonce=resolved_nonce,
+        body_digest=digest,
+        key_id=principal,
+    )
+    signed = sign_document_with_ssh(
+        envelope,
+        private_key_path=private_key_path,
+        principal=principal,
+        namespace=namespace,
+        public_key=public_key,
+    )
+    signature = base64.b64encode(
+        str(signed[IDENTITY_SIGNATURE_FIELD]["value"] or "").encode("utf-8")
+    ).decode("ascii")
+    return {
+        "X-Agentcoin-Principal": str(principal or "").strip(),
+        "X-Agentcoin-Timestamp": resolved_timestamp,
+        "X-Agentcoin-Nonce": resolved_nonce,
+        "X-Agentcoin-Body-Digest": digest,
+        "X-Agentcoin-Identity-Namespace": str(namespace or CLIENT_REQUEST_NAMESPACE).strip(),
+        "X-Agentcoin-Identity-Signature": signature,
+    }
+
+
+def verify_identity_request_signature(
+    *,
+    method: str,
+    path: str,
+    query: str | None,
+    body: bytes | str | None,
+    principal: str,
+    public_key: str | None = None,
+    public_keys: list[str] | None = None,
+    revoked_public_keys: list[str] | None = None,
+    timestamp: str,
+    nonce: str,
+    body_digest: str,
+    signature_b64: str,
+    namespace: str = CLIENT_REQUEST_NAMESPACE,
+) -> dict[str, Any]:
+    expected_digest = operator_request_body_digest(body)
+    if body_digest != expected_digest:
+        raise SignatureError("identity request body digest mismatch")
+    signature_value = base64.b64decode(str(signature_b64 or "").encode("ascii")).decode("utf-8")
+    envelope = build_operator_request_envelope(
+        method=method,
+        path=path,
+        canonical_query=canonicalize_query_string(query),
+        timestamp=timestamp,
+        nonce=nonce,
+        body_digest=body_digest,
+        key_id=principal,
+    )
+    envelope[IDENTITY_SIGNATURE_FIELD] = {
+        "alg": IDENTITY_ALGORITHM,
+        "principal": principal,
+        "namespace": namespace,
+        "public_key": str(public_key or "").strip() or None,
+        "value": signature_value,
+    }
+    verification = verify_document_with_ssh(
+        envelope,
+        public_key=public_key,
+        public_keys=public_keys,
+        revoked_public_keys=revoked_public_keys,
+        principal=principal,
+        expected_namespace=namespace,
+    )
+    verification["body_digest"] = body_digest
+    verification["timestamp"] = timestamp
+    verification["nonce"] = nonce
+    return verification

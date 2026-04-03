@@ -311,10 +311,16 @@ Still missing for later milestones:
 - `GET /healthz`
 - `GET /v1/card`
 - `GET /v1/manifest`
+- `GET /v1/auth/challenge`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`
 - `GET /v1/bridges`
+
+### Auth bootstrap
+
+- `GET /v1/auth/challenge`
+- `POST /v1/auth/verify`
 
 ### Task operations
 

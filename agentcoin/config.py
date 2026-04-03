@@ -184,6 +184,7 @@ class NodeConfig:
     operator_allow_loopback_bearer_fallback: bool = False
     operator_auth_timestamp_skew_seconds: int = 300
     operator_auth_nonce_ttl_seconds: int = 900
+    identity_auth_challenge_ttl_seconds: int = 300
     cors_allowed_origins: list[str] = field(default_factory=lambda: ["*"])
     config_path: str | None = field(default=None, repr=False, compare=False)
     database_path: str = "./var/agentcoin.db"
@@ -270,6 +271,8 @@ class NodeConfig:
                 "health": f"{self.base_url}/healthz",
                 "card": f"{self.base_url}/v1/card",
                 "manifest": f"{self.base_url}/v1/manifest",
+                "auth_challenge": f"{self.base_url}/v1/auth/challenge",
+                "auth_verify": f"{self.base_url}/v1/auth/verify",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",
                 "peers": f"{self.base_url}/v1/peers",
