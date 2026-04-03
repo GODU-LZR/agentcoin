@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_config, prepare_runtime_config, preview_peer_identity_config_update
+from agentcoin.discovery import LocalAgentDiscovery
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.net import OutboundTransport
@@ -73,6 +74,7 @@ class AgentCoinNode:
         self.onchain = OnchainRuntime(self.config.onchain)
         self.bridges = BridgeRegistry(self.config.bridges)
         self.runtimes = RuntimeRegistry()
+        self.discovery = LocalAgentDiscovery()
         self._server = ThreadingHTTPServer((self.config.host, self.config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
@@ -125,6 +127,7 @@ class AgentCoinNode:
             "discovery": {
                 "card_url": card.get("endpoints", {}).get("card"),
                 "manifest_url": card.get("endpoints", {}).get("manifest"),
+                "local_agent_discovery_url": card.get("endpoints", {}).get("local_agent_discovery"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -4287,6 +4290,21 @@ class AgentCoinNode:
                 if path == "/v1/manifest":
                     self._json_response(HTTPStatus.OK, node.manifest())
                     return
+                if path == "/v1/discovery/local-agents":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/discovery/local-agents"},
+                    ):
+                        return
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "generated_at": utc_now(),
+                            "platform": node.discovery.system_name.lower(),
+                            "wsl": node.discovery.is_wsl,
+                            "items": node.discovery.discover(),
+                        },
+                    )
+                    return
                 if path == "/v1/auth/challenge":
                     self._json_response(HTTPStatus.OK, {"challenge": node.issue_identity_auth_challenge()})
                     return
@@ -4783,6 +4801,7 @@ class AgentCoinNode:
                                 "/v1/tasks",
                                 "/v1/tasks/dispatch",
                                 "/v1/tasks/dispatch/evaluate",
+                                "/v1/discovery/local-agents",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",

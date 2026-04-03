@@ -16,6 +16,7 @@ from urllib import error, request
 
 from agentcoin.adapters import AdapterPolicy
 from agentcoin.config import NodeConfig, OperatorIdentityConfig, PeerConfig, ScopedBearerTokenConfig
+from agentcoin.discovery import LocalAgentDiscovery
 from agentcoin.models import utc_now
 from agentcoin.net import OutboundNetworkConfig
 from agentcoin.node import AgentCoinNode
@@ -993,6 +994,69 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(denied_status, HTTPStatus.FORBIDDEN)
             self.assertIn("not allowed", denied_payload["error"])
+        finally:
+            node.stop()
+
+    def test_local_agent_discovery_reports_copilot_candidates(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_discovery",
+            "frontend-local-discovery",
+        )
+        local_appdata = Path(self.tempdir.name) / "AppData" / "Local"
+        home = Path(self.tempdir.name) / "home"
+        executable = local_appdata / "GitHub CLI" / "copilot" / "copilot.exe"
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_text("", encoding="utf-8")
+
+        package_json = local_appdata / "copilot" / "pkg" / "win32-x64" / "1.0.17" / "package.json"
+        package_json.parent.mkdir(parents=True, exist_ok=True)
+        package_json.write_text(
+            json.dumps({"name": "@github/copilot", "version": "1.0.17"}),
+            encoding="utf-8",
+        )
+
+        extension_json = home / ".vscode" / "extensions" / "github.copilot-chat-0.42.3" / "package.json"
+        extension_json.parent.mkdir(parents=True, exist_ok=True)
+        extension_json.write_text(
+            json.dumps({"name": "copilot-chat", "publisher": "GitHub", "version": "0.42.3"}),
+            encoding="utf-8",
+        )
+
+        def fake_runner(command: list[str]) -> tuple[int, str, str]:
+            if command[-1] == "--help":
+                return 0, "GitHub Copilot CLI\n  --acp  Start as Agent Client Protocol server\n", ""
+            if command[-1] == "--version":
+                return 0, "1.0.17", ""
+            return 1, "", "unsupported"
+
+        node = NodeHarness(
+            node_id="local-discovery-node",
+            token="token-local-discovery",
+            db_path=str(Path(self.tempdir.name) / "local-discovery.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = LocalAgentDiscovery(
+            env={"LOCALAPPDATA": str(local_appdata)},
+            home=home,
+            system_name="Windows",
+            which=lambda name: str(executable) if name == "copilot" else None,
+            command_runner=fake_runner,
+        )
+        node.start()
+        try:
+            status, payload = self._identity_signed_get(
+                f"{node.base_url}/v1/discovery/local-agents",
+                private_key_path=key_path,
+                principal="frontend-local-discovery",
+                public_key=public_key,
+            )
+            self.assertEqual(status, HTTPStatus.OK)
+            ids = {item["id"] for item in payload["items"]}
+            self.assertIn("github-copilot-cli", ids)
+            self.assertIn("github-copilot-chat-vscode", ids)
+            cli_item = [item for item in payload["items"] if item["id"] == "github-copilot-cli"][0]
+            self.assertIn("acp", cli_item["protocols"])
+            self.assertEqual(cli_item["agentcoin_compatibility"]["preferred_integration"], "acp-bridge")
         finally:
             node.stop()
 

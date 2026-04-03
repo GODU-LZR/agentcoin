@@ -29,6 +29,7 @@ The current test scope covers:
 - automatic payment dead-letter requeue for transient network or RPC failures
 - per-item manual disable and re-enable controls for payment relay auto-requeue
 - suppression reason and latest override visibility in payment queue and ops summaries
+- local agent discovery for GitHub Copilot CLI and VS Code Copilot Chat across Windows and WSL-style layouts
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

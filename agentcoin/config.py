@@ -280,6 +280,7 @@ class NodeConfig:
                 "health": f"{self.base_url}/healthz",
                 "card": f"{self.base_url}/v1/card",
                 "manifest": f"{self.base_url}/v1/manifest",
+                "local_agent_discovery": f"{self.base_url}/v1/discovery/local-agents",
                 "auth_challenge": f"{self.base_url}/v1/auth/challenge",
                 "auth_verify": f"{self.base_url}/v1/auth/verify",
                 "workflow_execute": f"{self.base_url}/v1/workflow/execute",
