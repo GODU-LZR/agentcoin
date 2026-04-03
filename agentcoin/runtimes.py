@@ -79,6 +79,15 @@ class RuntimeRegistry:
                 input_modes=["chat-messages", "json-schema"],
                 output_modes=["assistant-message", "structured-json"],
             ),
+            "claude-http": RuntimeAdapterDescriptor(
+                runtime="claude-http",
+                version="0.1",
+                title="Claude HTTP Messages Adapter",
+                description="Execute a task by calling an Anthropic-compatible Claude Messages endpoint over HTTP.",
+                supports_http=True,
+                input_modes=["messages-api", "system-prompt"],
+                output_modes=["assistant-message", "json-object"],
+            ),
             "ollama-chat": RuntimeAdapterDescriptor(
                 runtime="ollama-chat",
                 version="0.1",

@@ -190,6 +190,8 @@ class ExecutionAdapterRegistry:
             return self._execute_container_job_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "openai-chat":
             return self._execute_openai_chat_runtime(task, runtime=runtime, worker_id=worker_id)
+        if runtime_kind == "claude-http":
+            return self._execute_claude_http_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "ollama-chat":
             return self._execute_ollama_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "claude-code-cli":
@@ -707,6 +709,52 @@ class ExecutionAdapterRegistry:
             content = json.dumps(prompt, ensure_ascii=False)
         return [{"role": "user", "content": content}]
 
+    @staticmethod
+    def _normalize_claude_messages(task: dict[str, Any], runtime: dict[str, Any]) -> list[dict[str, Any]]:
+        raw_messages = runtime.get("messages") or task.get("payload", {}).get("messages")
+        if isinstance(raw_messages, list) and raw_messages:
+            normalized: list[dict[str, Any]] = []
+            for item in raw_messages:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role") or "user").strip() or "user"
+                content = item.get("content")
+                if isinstance(content, list):
+                    normalized.append({"role": role, "content": list(content)})
+                elif isinstance(content, str):
+                    normalized.append({"role": role, "content": content})
+                elif isinstance(content, dict):
+                    normalized.append({"role": role, "content": [dict(content)]})
+            if normalized:
+                return normalized
+        prompt = runtime.get("prompt")
+        if prompt is None:
+            prompt = task.get("payload", {}).get("input")
+        if prompt is None:
+            prompt = task.get("payload", {})
+        if isinstance(prompt, str):
+            content = prompt
+        else:
+            content = json.dumps(prompt, ensure_ascii=False)
+        return [{"role": "user", "content": content}]
+
+    @staticmethod
+    def _extract_claude_assistant_message(response: dict[str, Any]) -> dict[str, Any]:
+        content_blocks = list(response.get("content") or [])
+        text_parts: list[str] = []
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
+            if str(block.get("type") or "").strip().lower() == "text":
+                text = str(block.get("text") or "")
+                if text:
+                    text_parts.append(text)
+        return {
+            "role": str(response.get("role") or "assistant"),
+            "content": "\n".join(text_parts).strip(),
+            "content_blocks": content_blocks,
+        }
+
     def _execute_ollama_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
         endpoint = str(runtime.get("endpoint") or "http://127.0.0.1:11434/api/chat").strip()
         if not self.policy.http_host_allowed(endpoint):
@@ -908,6 +956,112 @@ class ExecutionAdapterRegistry:
                 "response_id": response.get("id"),
                 "structured_output": parsed_output,
                 "response_format": request_body.get("response_format"),
+            },
+        )
+        return result
+
+    def _execute_claude_http_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        endpoint = str(runtime.get("endpoint") or "").strip()
+        if not endpoint:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-http",
+                reason="runtime.endpoint is required",
+                extra={"runtime": "claude-http"},
+            )
+        if not self.policy.http_host_allowed(endpoint):
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-http",
+                reason="runtime endpoint host is not allowlisted",
+                extra={"runtime": "claude-http", "endpoint": endpoint},
+            )
+        model = str(runtime.get("model") or "").strip()
+        if not model:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-http",
+                reason="runtime.model is required",
+                extra={"runtime": "claude-http", "endpoint": endpoint},
+            )
+        request_body: dict[str, Any] = {
+            "model": model,
+            "messages": self._normalize_claude_messages(task, runtime),
+            "max_tokens": int(runtime.get("max_tokens") or 1024),
+        }
+        system_prompt = runtime.get("system")
+        if isinstance(system_prompt, str) and system_prompt.strip():
+            request_body["system"] = system_prompt.strip()
+        for optional_key in ("temperature", "top_p", "stream", "metadata"):
+            if optional_key in runtime:
+                request_body[optional_key] = runtime.get(optional_key)
+        if "stop_sequences" in runtime:
+            request_body["stop_sequences"] = list(runtime.get("stop_sequences") or [])
+        headers = {
+            "Content-Type": "application/json",
+            "anthropic-version": str(runtime.get("anthropic_version") or "2023-06-01"),
+        }
+        headers.update(dict(runtime.get("headers") or {}))
+        auth_token = str(runtime.get("auth_token") or "").strip()
+        if auth_token:
+            headers["x-api-key"] = auth_token
+        try:
+            response = self.transport.request_json(
+                endpoint,
+                method="POST",
+                payload=request_body,
+                headers=headers,
+                timeout=float(runtime.get("timeout_seconds") or 60),
+            )
+        except Exception as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-http",
+                reason=str(exc),
+                extra={"runtime": "claude-http", "endpoint": endpoint, "model": model},
+            )
+        assistant_message = self._extract_claude_assistant_message(response)
+        result = self._base_result(task, worker_id=worker_id)
+        result["adapter"] = {
+            "mode": "runtime-adapter",
+            "protocol": "claude-http",
+            "status": "completed",
+            "endpoint": endpoint,
+            "model": model,
+        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="claude-http",
+            decision="allowed",
+            reason="runtime endpoint allowlisted",
+            mode="runtime-adapter",
+            runtime="claude-http",
+            endpoint=endpoint,
+            model=model,
+        )
+        result["runtime_execution"] = {
+            "runtime": "claude-http",
+            "endpoint": endpoint,
+            "request": request_body,
+            "response": response,
+            "assistant_message": assistant_message,
+            "stop_reason": response.get("stop_reason"),
+            "usage": response.get("usage"),
+        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="claude-http",
+            status="completed",
+            outcome="runtime-chat",
+            artifacts={
+                "endpoint": endpoint,
+                "model": model,
+                "response_id": response.get("id"),
+                "stop_reason": response.get("stop_reason"),
             },
         )
         return result

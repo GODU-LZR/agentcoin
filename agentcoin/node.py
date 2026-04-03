@@ -5033,6 +5033,7 @@ class AgentCoinNode:
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                                 "/v1/integrations/claude-code/bind",
+                                "/v1/integrations/claude-http/bind",
                             ],
                         )
                         receipt = node._sign_document(
@@ -5805,6 +5806,56 @@ class AgentCoinNode:
                                 "task_id": task_id,
                                 "runtime": merged_payload.get("_runtime"),
                                 "provider": "claude-code-cli",
+                            },
+                        )
+                        return
+                    if self.path == "/v1/integrations/claude-http/bind":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/integrations/claude-http/bind"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        endpoint = str(payload.get("endpoint") or "").strip()
+                        model = str(payload.get("model") or "").strip()
+                        if not endpoint:
+                            raise ValueError("endpoint is required")
+                        if not model:
+                            raise ValueError("model is required")
+                        runtime_options = {
+                            "endpoint": endpoint,
+                            "model": model,
+                            "auth_token": str(payload.get("auth_token") or "").strip() or None,
+                            "system": payload.get("system"),
+                            "prompt": payload.get("prompt"),
+                            "messages": payload.get("messages"),
+                            "temperature": payload.get("temperature"),
+                            "top_p": payload.get("top_p"),
+                            "max_tokens": payload.get("max_tokens"),
+                            "timeout_seconds": int(payload.get("timeout_seconds") or 60),
+                            "anthropic_version": str(payload.get("anthropic_version") or "").strip() or None,
+                            "provider": "claude-http",
+                        }
+                        if isinstance(payload.get("headers"), dict):
+                            runtime_options["headers"] = dict(payload.get("headers") or {})
+                        merged_payload = dict(task["payload"])
+                        merged_payload["_runtime"] = node.runtimes.normalize_binding(
+                            "claude-http",
+                            {key: value for key, value in runtime_options.items() if value is not None},
+                        )
+                        updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": updated,
+                                "task_id": task_id,
+                                "runtime": merged_payload.get("_runtime"),
+                                "provider": "claude-http",
                             },
                         )
                         return

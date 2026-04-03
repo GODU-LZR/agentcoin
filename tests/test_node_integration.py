@@ -397,6 +397,62 @@ class OpenAICompatHarness:
         self.thread.join(timeout=2)
 
 
+class ClaudeHttpHarness:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.headers: list[dict[str, str]] = []
+        self.port = _free_port()
+        self._server = ThreadingHTTPServer(("127.0.0.1", self.port), self._build_handler())
+        self.thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}/v1/messages"
+
+    def _build_handler(self) -> type[BaseHTTPRequestHandler]:
+        harness = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
+                payload = json.loads(raw.decode("utf-8"))
+                harness.calls.append(payload)
+                harness.headers.append({key: value for key, value in self.headers.items()})
+                last_message = payload.get("messages", [{}])[-1]
+                content = last_message.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(str(item.get("text") or "") for item in content if isinstance(item, dict))
+                response = {
+                    "id": "msg_claude_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": f"claude-http:{content}"}],
+                    "model": payload.get("model"),
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                }
+                encoded = json.dumps(response).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        return Handler
+
+    def start(self) -> None:
+        self.thread.start()
+        time.sleep(0.2)
+
+    def stop(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self.thread.join(timeout=2)
+
+
 class NodeIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -10339,6 +10395,76 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(task["result"]["runtime_execution"]["prompt_transport"], "stdin")
         finally:
             node.stop()
+
+    def test_runtime_adapter_claude_http(self) -> None:
+        gateway = ClaudeHttpHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-claude-http-node",
+            token="token-claude-http",
+            db_path=str(Path(self.tempdir.name) / "runtime-claude-http.db"),
+            capabilities=["worker"],
+            runtimes=["claude-http"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("claude-http", runtime_names)
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-http",
+                {
+                    "id": "runtime-claude-http-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "hello remote claude"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/integrations/claude-http/bind",
+                "token-claude-http",
+                {
+                    "task_id": "runtime-claude-http-1",
+                    "endpoint": gateway.url,
+                    "model": "claude-3-7-sonnet-latest",
+                    "auth_token": "anthropic-secret",
+                    "system": "You are a coding assistant.",
+                    "prompt": "hello remote claude",
+                    "max_tokens": 256,
+                    "timeout_seconds": 10,
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["provider"], "claude-http")
+            self.assertEqual(bound["runtime"]["runtime"], "claude-http")
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-claude-http",
+                worker_id="worker-claude-http-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["claude-http"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-claude-http-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "claude-http")
+            self.assertEqual(task["result"]["runtime_execution"]["assistant_message"]["content"], "claude-http:hello remote claude")
+            self.assertEqual(gateway.calls[0]["model"], "claude-3-7-sonnet-latest")
+            self.assertEqual(gateway.calls[0]["system"], "You are a coding assistant.")
+            headers = {str(key).lower(): value for key, value in gateway.headers[0].items()}
+            self.assertEqual(headers["x-api-key"], "anthropic-secret")
+            self.assertEqual(headers["anthropic-version"], "2023-06-01")
+        finally:
+            node.stop()
+            gateway.stop()
 
     def test_runtime_adapter_langgraph_http(self) -> None:
         langgraph = LangGraphHarness()

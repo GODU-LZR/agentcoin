@@ -327,6 +327,7 @@ class NodeConfig:
                 "runtime_bind": f"{self.base_url}/v1/runtimes/bind",
                 "openclaw_bind": f"{self.base_url}/v1/integrations/openclaw/bind",
                 "claude_code_bind": f"{self.base_url}/v1/integrations/claude-code/bind",
+                "claude_http_bind": f"{self.base_url}/v1/integrations/claude-http/bind",
                 "schema_context": f"{self.base_url}/v1/schema/context",
                 "schema_capabilities": f"{self.base_url}/v1/schema/capabilities",
                 "schema_examples": f"{self.base_url}/v1/schema/examples",
