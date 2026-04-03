@@ -19,6 +19,7 @@ IDENTITY_SIGNATURE_FIELD = "_identity_signature"
 SIGNATURE_ALGORITHM = "hmac-sha256"
 IDENTITY_ALGORITHM = "ssh-ed25519"
 OPERATOR_REQUEST_NAMESPACE = "agentcoin-operator-request"
+LOCAL_IDENTITY_NAMESPACE = "did:agentcoin:ssh-ed25519"
 
 
 class SignatureError(ValueError):
@@ -115,6 +116,14 @@ def resolve_public_key(*, private_key_path: str | None = None, public_key: str |
     return None
 
 
+def derive_local_did(*, public_key: str | None = None, private_key_path: str | None = None) -> str | None:
+    resolved_public_key = resolve_public_key(private_key_path=private_key_path, public_key=public_key)
+    if not resolved_public_key:
+        return None
+    digest = hashlib.sha256(resolved_public_key.encode("utf-8")).hexdigest()[:32]
+    return f"{LOCAL_IDENTITY_NAMESPACE}:{digest}"
+
+
 def _require_ssh_keygen() -> str:
     executable = shutil.which("ssh-keygen")
     if not executable:
@@ -133,6 +142,34 @@ def _run_ssh_keygen(args: list[str], *, input_bytes: bytes | None = None) -> Non
         return
     message = completed.stderr.decode("utf-8", "ignore").strip() or completed.stdout.decode("utf-8", "ignore").strip()
     raise SignatureError(message or "ssh-keygen failed")
+
+
+def ensure_local_ssh_identity(*, private_key_path: str, principal: str) -> dict[str, str]:
+    resolved_private_key_path = Path(private_key_path).expanduser().resolve()
+    resolved_private_key_path.parent.mkdir(parents=True, exist_ok=True)
+    public_key_path = Path(f"{resolved_private_key_path}.pub")
+    if not resolved_private_key_path.exists() or not public_key_path.exists():
+        _run_ssh_keygen(
+            [
+                "-q",
+                "-t",
+                "ed25519",
+                "-N",
+                "",
+                "-C",
+                principal,
+                "-f",
+                str(resolved_private_key_path),
+            ]
+        )
+    public_key = public_key_path.read_text(encoding="utf-8").strip()
+    return {
+        "private_key_path": str(resolved_private_key_path),
+        "public_key_path": str(public_key_path),
+        "public_key": public_key,
+        "principal": principal,
+        "did": derive_local_did(public_key=public_key) or "",
+    }
 
 
 def sign_document_with_ssh(

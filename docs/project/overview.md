@@ -29,6 +29,7 @@ The current repository contains:
 - Agent-compatible: generic HTTP + JSON protocol boundary
 - Offline-first: useful behavior even under unstable or interrupted networking
 - Secure-by-default: loopback bind and bearer-token protected write APIs
+- Passwordless-ready: local SSH/Ed25519 identity bootstrap and DID exposure for browser or agent discovery
 - Workflow-native: branch, merge, lineage, and replay semantics
 
 ## Repository Layout
@@ -98,6 +99,7 @@ It is a reference execution adapter, not yet a full production executor.
 Configuration defines:
 
 - node identity and bind settings
+- optional automatic local identity bootstrap, CORS-friendly local manifest exposure, and derived DID state
 - auth token
 - HMAC signing secret
 - inbound signature requirement
@@ -281,6 +283,9 @@ This means the system degrades into durable local queues instead of losing inten
 Current baseline:
 
 - binds to `127.0.0.1` by default
+- auto-bootstraps a local SSH/Ed25519 node identity when one is not configured
+- derives a local DID from the bootstrapped public key when no explicit on-chain DID is configured
+- exposes a CORS-friendly local manifest endpoint for browser and agent discovery
 - protects write APIs with bearer token when configured
 - supports HMAC-signed capability cards and task envelopes
 - supports `ssh-keygen` compatible asymmetric signatures for cards, task envelopes, and delivery receipts
@@ -305,6 +310,7 @@ Still missing for later milestones:
 
 - `GET /healthz`
 - `GET /v1/card`
+- `GET /v1/manifest`
 - `GET /v1/peers`
 - `GET /v1/peer-cards`
 - `GET /v1/audits`

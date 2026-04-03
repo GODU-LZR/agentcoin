@@ -9,6 +9,8 @@ This document defines how the current AgentCoin reference implementation should 
 The current test scope covers:
 
 - node startup and health endpoints
+- local SSH/Ed25519 identity bootstrap and derived DID exposure
+- local manifest endpoint and CORS preflight handling
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

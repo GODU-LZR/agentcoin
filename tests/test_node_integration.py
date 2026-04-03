@@ -500,6 +500,21 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def _request_raw(
+        self,
+        url: str,
+        *,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+    ) -> tuple[int, dict[str, str], str]:
+        req = request.Request(url, data=body, headers=headers or {}, method=method)
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, dict(resp.headers.items()), resp.read().decode("utf-8")
+        except error.HTTPError as exc:
+            return exc.code, dict(exc.headers.items()), exc.read().decode("utf-8")
+
     def _wait_for_queue_item_status(
         self,
         node: NodeHarness,
@@ -572,6 +587,65 @@ class NodeIntegrationTests(unittest.TestCase):
         }
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return str(path)
+
+    def test_node_bootstraps_local_identity_and_exposes_manifest(self) -> None:
+        node = NodeHarness(
+            node_id="bootstrap-manifest-node",
+            token="token-bootstrap-manifest",
+            db_path=str(Path(self.tempdir.name) / "bootstrap-manifest.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["local_identity"]["principal"], "bootstrap-manifest-node")
+            self.assertTrue(str(health["local_identity"]["public_key"]).startswith("ssh-ed25519 "))
+            self.assertTrue(str(health["local_identity"]["did"]).startswith("did:agentcoin:ssh-ed25519:"))
+            self.assertTrue(Path(str(health["local_identity"]["private_key_path"])).exists())
+
+            _, manifest = self._get(f"{node.base_url}/v1/manifest")
+            self.assertEqual(manifest["kind"], "agentcoin-manifest")
+            self.assertTrue(manifest["auth"]["passwordless"])
+            self.assertEqual(manifest["identity"]["principal"], "bootstrap-manifest-node")
+            self.assertEqual(manifest["identity"]["did"], health["local_identity"]["did"])
+            self.assertEqual(manifest["routes"]["manifest"], f"{node.base_url}/v1/manifest")
+            self.assertIn("eip-191", manifest["auth"]["request_signing"]["planned"])
+
+            _, card = self._get(f"{node.base_url}/v1/card")
+            self.assertEqual(card["identity"]["did"], health["local_identity"]["did"])
+            self.assertEqual(card["endpoints"]["manifest"], f"{node.base_url}/v1/manifest")
+        finally:
+            node.stop()
+
+    def test_manifest_and_card_support_cors_preflight(self) -> None:
+        node = NodeHarness(
+            node_id="cors-node",
+            token="token-cors",
+            db_path=str(Path(self.tempdir.name) / "cors.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            status, headers, _ = self._request_raw(
+                f"{node.base_url}/v1/manifest",
+                method="OPTIONS",
+                headers={"Origin": "http://127.0.0.1:5173"},
+            )
+            self.assertEqual(status, HTTPStatus.NO_CONTENT)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
+            self.assertIn("Authorization", headers.get("Access-Control-Allow-Headers", ""))
+
+            status, headers, body = self._request_raw(
+                f"{node.base_url}/v1/card",
+                method="GET",
+                headers={"Origin": "http://127.0.0.1:5173"},
+            )
+            self.assertEqual(status, HTTPStatus.OK)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
+            payload = json.loads(body)
+            self.assertEqual(payload["node_id"], "cors-node")
+        finally:
+            node.stop()
 
     def test_outbox_delivery_ack_and_inbox_dedupe(self) -> None:
         node_b = NodeHarness(

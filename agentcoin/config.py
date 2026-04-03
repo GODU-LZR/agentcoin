@@ -10,7 +10,7 @@ from typing import Any
 from agentcoin.models import AgentCard
 from agentcoin.net import OutboundNetworkConfig
 from agentcoin.onchain import OnchainBindings
-from agentcoin.security import resolve_public_key
+from agentcoin.security import derive_local_did, ensure_local_ssh_identity, resolve_public_key
 
 DEFAULT_POAW_SCORE_WEIGHTS: dict[str, int] = {
     "worker_base": 10,
@@ -173,6 +173,7 @@ class NodeConfig:
     auth_token: str = "change-me"
     signing_secret: str | None = None
     require_signed_inbox: bool = False
+    auto_bootstrap_identity: bool = True
     identity_principal: str | None = None
     identity_private_key_path: str | None = None
     identity_public_key: str | None = None
@@ -183,6 +184,7 @@ class NodeConfig:
     operator_allow_loopback_bearer_fallback: bool = False
     operator_auth_timestamp_skew_seconds: int = 300
     operator_auth_nonce_ttl_seconds: int = 900
+    cors_allowed_origins: list[str] = field(default_factory=lambda: ["*"])
     config_path: str | None = field(default=None, repr=False, compare=False)
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
@@ -243,6 +245,13 @@ class NodeConfig:
         return keys
 
     @property
+    def resolved_local_did(self) -> str | None:
+        return str(self.onchain.local_did or "").strip() or derive_local_did(
+            private_key_path=self.identity_private_key_path,
+            public_key=self.resolved_identity_public_key,
+        )
+
+    @property
     def card(self) -> AgentCard:
         from agentcoin.runtimes import RuntimeRegistry
 
@@ -260,6 +269,7 @@ class NodeConfig:
             endpoints={
                 "health": f"{self.base_url}/healthz",
                 "card": f"{self.base_url}/v1/card",
+                "manifest": f"{self.base_url}/v1/manifest",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",
                 "peers": f"{self.base_url}/v1/peers",
@@ -313,7 +323,7 @@ class NodeConfig:
                 "public_key": self.resolved_identity_public_key,
                 "public_keys": self.advertised_identity_public_keys,
                 "revoked_public_keys": self.advertised_identity_revoked_public_keys,
-                "did": self.onchain.local_did,
+                "did": self.resolved_local_did,
                 "controller_address": self.onchain.local_controller_address,
             },
         )
@@ -350,7 +360,7 @@ class NodeConfig:
 
 def load_config(path: str | None) -> NodeConfig:
     if not path:
-        return NodeConfig()
+        return prepare_runtime_config(NodeConfig())
 
     resolved_path = str(Path(path).resolve())
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
@@ -363,7 +373,43 @@ def load_config(path: str | None) -> NodeConfig:
     ]
     data["network"] = OutboundNetworkConfig(**data.get("network", {}))
     data["onchain"] = OnchainBindings(**data.get("onchain", {}))
-    return NodeConfig(config_path=resolved_path, **data)
+    return prepare_runtime_config(NodeConfig(config_path=resolved_path, **data))
+
+
+def _config_runtime_base_dir(config: NodeConfig) -> Path:
+    if config.config_path:
+        return Path(config.config_path).resolve().parent
+    database_path = str(config.database_path or "").strip()
+    if database_path:
+        return Path(database_path).expanduser().resolve().parent
+    return Path.cwd()
+
+
+def prepare_runtime_config(config: NodeConfig) -> NodeConfig:
+    if config.auto_bootstrap_identity:
+        principal = str(config.identity_principal or "").strip() or str(config.node_id or "agentcoin-local").strip()
+        runtime_base_dir = _config_runtime_base_dir(config)
+        private_key_path = str(config.identity_private_key_path or "").strip()
+        if private_key_path:
+            resolved_private_key_path = Path(private_key_path)
+            if not resolved_private_key_path.is_absolute():
+                resolved_private_key_path = (runtime_base_dir / resolved_private_key_path).resolve()
+        else:
+            resolved_private_key_path = (runtime_base_dir / "identity" / "id_ed25519").resolve()
+        identity = ensure_local_ssh_identity(
+            private_key_path=str(resolved_private_key_path),
+            principal=principal,
+        )
+        config.identity_principal = identity["principal"]
+        config.identity_private_key_path = identity["private_key_path"]
+        if not str(config.identity_public_key or "").strip():
+            config.identity_public_key = identity["public_key"]
+
+    if not str(config.onchain.local_did or "").strip():
+        resolved_did = config.resolved_local_did
+        if resolved_did:
+            config.onchain.local_did = resolved_did
+    return config
 
 
 def _assign_optional_text(payload: dict[str, Any], key: str, value: str | None) -> None:

@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from agentcoin.bridges import BridgeRegistry
-from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_config, preview_peer_identity_config_update
+from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_config, prepare_runtime_config, preview_peer_identity_config_update
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_now
 from agentcoin.net import OutboundTransport
@@ -57,18 +57,18 @@ LOG = logging.getLogger("agentcoin.node")
 
 class AgentCoinNode:
     def __init__(self, config: NodeConfig) -> None:
-        self.config = config
+        self.config = prepare_runtime_config(config)
         self.store = NodeStore(
-            config.database_path,
-            poaw_policy_version=config.poaw_policy_version,
-            poaw_score_weights=config.poaw_score_weights,
+            self.config.database_path,
+            poaw_policy_version=self.config.poaw_policy_version,
+            poaw_score_weights=self.config.poaw_score_weights,
         )
-        self.git = GitWorkspace(config.git_root) if config.git_root else None
-        self.transport = OutboundTransport(config.network)
-        self.onchain = OnchainRuntime(config.onchain)
-        self.bridges = BridgeRegistry(config.bridges)
+        self.git = GitWorkspace(self.config.git_root) if self.config.git_root else None
+        self.transport = OutboundTransport(self.config.network)
+        self.onchain = OnchainRuntime(self.config.onchain)
+        self.bridges = BridgeRegistry(self.config.bridges)
         self.runtimes = RuntimeRegistry()
-        self._server = ThreadingHTTPServer((config.host, config.port), self._build_handler())
+        self._server = ThreadingHTTPServer((self.config.host, self.config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
         self._settlement_relay_thread = threading.Thread(
@@ -76,6 +76,90 @@ class AgentCoinNode:
             name="agentcoin-settlement-relay",
             daemon=True,
         )
+
+    def local_identity_view(self) -> dict[str, Any]:
+        return {
+            "scheme": "ssh-ed25519" if self.config.resolved_identity_public_key and self.config.identity_principal else "",
+            "principal": self.config.identity_principal,
+            "public_key": self.config.resolved_identity_public_key,
+            "did": self.config.resolved_local_did,
+            "auto_bootstrap_identity": bool(self.config.auto_bootstrap_identity),
+            "private_key_path": self.config.identity_private_key_path,
+        }
+
+    def manifest(self) -> dict[str, Any]:
+        card = self.config.card.to_dict()
+        return {
+            "kind": "agentcoin-manifest",
+            "version": "0.1",
+            "generated_at": utc_now(),
+            "node_id": self.config.node_id,
+            "name": self.config.name,
+            "description": self.config.description,
+            "identity": dict(card.get("identity") or {}),
+            "service": {
+                "base_url": self.config.base_url,
+                "host": self.config.host,
+                "port": self.config.port,
+                "offline_first": True,
+                "secure_by_default": True,
+            },
+            "discovery": {
+                "card_url": card.get("endpoints", {}).get("card"),
+                "manifest_url": card.get("endpoints", {}).get("manifest"),
+                "cors_allowed_origins": list(self.config.cors_allowed_origins),
+                "mdns": {
+                    "enabled": False,
+                    "planned": True,
+                },
+            },
+            "auth": {
+                "passwordless": True,
+                "shared_bearer_enabled": bool(self.config.auth_token),
+                "scoped_bearer_token_count": len(self.config.scoped_bearer_tokens),
+                "operator_identity_count": len(self.config.operator_identities),
+                "request_signing": {
+                    "supported": ["ssh-ed25519"],
+                    "operator_namespace": OPERATOR_REQUEST_NAMESPACE,
+                    "planned": ["eip-191", "eip-712", "secp256k1"],
+                },
+            },
+            "payment": {
+                "http_payment_required_status": 402,
+                "enabled": False,
+                "planned": True,
+                "note": "HTTP 402 payment challenge middleware is not enabled in this build.",
+            },
+            "protocols": {
+                "native": "agentcoin/0.1",
+                "bridges": list(self.config.bridges),
+                "manifest_format": "json",
+            },
+            "capabilities": list(card.get("capabilities") or []),
+            "runtimes": list(card.get("runtimes") or []),
+            "runtime_capabilities": dict(card.get("runtime_capabilities") or {}),
+            "routes": {
+                "health": card.get("endpoints", {}).get("health"),
+                "card": card.get("endpoints", {}).get("card"),
+                "manifest": card.get("endpoints", {}).get("manifest"),
+                "tasks": card.get("endpoints", {}).get("tasks"),
+                "schema_context": card.get("endpoints", {}).get("schema_context"),
+            },
+            "card": card,
+        }
+
+    def _resolve_cors_origin(self, origin: str | None) -> str | None:
+        allowed_origins = [str(item or "").strip() for item in self.config.cors_allowed_origins if str(item or "").strip()]
+        if not allowed_origins:
+            return None
+        if "*" in allowed_origins:
+            return "*"
+        normalized_origin = str(origin or "").strip()
+        if not normalized_origin:
+            return None
+        if normalized_origin in allowed_origins:
+            return normalized_origin
+        return None
 
     def _resolve_delivery(self, target: str) -> tuple[str, str | None, str]:
         parsed = urlparse(target)
@@ -2255,13 +2339,34 @@ class AgentCoinNode:
         class Handler(BaseHTTPRequestHandler):
             server_version = "AgentCoin/0.1"
 
+            def _send_cors_headers(self) -> None:
+                allowed_origin = node._resolve_cors_origin(self.headers.get("Origin"))
+                if not allowed_origin:
+                    return
+                self.send_header("Access-Control-Allow-Origin", allowed_origin)
+                self.send_header(
+                    "Access-Control-Allow-Headers",
+                    "Authorization, Content-Type, X-Agentcoin-Key-Id, X-Agentcoin-Timestamp, "
+                    "X-Agentcoin-Nonce, X-Agentcoin-Body-Digest, X-Agentcoin-Signature",
+                )
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Max-Age", "600")
+                self.send_header("Vary", "Origin")
+
             def _json_response(self, status: int, payload: dict) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
+                self._send_cors_headers()
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def do_OPTIONS(self) -> None:
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self._send_cors_headers()
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def _read_body_bytes(self) -> bytes:
                 if hasattr(self, "_cached_body_bytes"):
@@ -2938,6 +3043,7 @@ class AgentCoinNode:
                         {
                             "status": "ok",
                             "node_id": node.config.node_id,
+                            "local_identity": node.local_identity_view(),
                             "stats": node.store.stats(),
                         },
                     )
@@ -2947,6 +3053,9 @@ class AgentCoinNode:
                         HTTPStatus.OK,
                         node._sign_document(node.config.card.to_dict(), hmac_scope="agent-card", identity_namespace="agentcoin-card"),
                     )
+                    return
+                if path == "/v1/manifest":
+                    self._json_response(HTTPStatus.OK, node.manifest())
                     return
                 if path == "/v1/schema/context":
                     self._json_response(HTTPStatus.OK, context_document())
@@ -2960,6 +3069,12 @@ class AgentCoinNode:
                 if path == "/v1/onchain/status":
                     status_payload = node.onchain.status()
                     status_payload["transport"] = node.config.network.transport_profile()
+                    status_payload["local_identity"] = {
+                        **dict(status_payload.get("local_identity") or {}),
+                        "did": node.config.resolved_local_did,
+                        "principal": node.config.identity_principal,
+                        "public_key": node.config.resolved_identity_public_key,
+                    }
                     self._json_response(HTTPStatus.OK, status_payload)
                     return
                 if path == "/v1/onchain/settlement-preview":

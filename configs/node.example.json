@@ -8,8 +8,12 @@
   "auth_token": "change-me",
   "signing_secret": "replace-with-node-shared-secret",
   "require_signed_inbox": true,
+  "auto_bootstrap_identity": true,
   "identity_principal": "agentcoin-local",
   "identity_private_key_path": "./var/identity/id_ed25519",
+  "cors_allowed_origins": [
+    "*"
+  ],
   "operator_allow_loopback_bearer_fallback": false,
   "operator_auth_timestamp_skew_seconds": 300,
   "operator_auth_nonce_ttl_seconds": 900,

@@ -9,6 +9,31 @@ from agentcoin.config import load_config, persist_peer_identity_config, preview_
 
 
 class ConfigTests(unittest.TestCase):
+    def test_load_config_bootstraps_local_identity_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "node.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "node_id": "bootstrap-node",
+                        "auth_token": "token-bootstrap",
+                        "database_path": "./var/agentcoin.db",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(str(config_path))
+
+            self.assertEqual(config.identity_principal, "bootstrap-node")
+            self.assertTrue(Path(str(config.identity_private_key_path)).exists())
+            self.assertTrue(Path(f"{config.identity_private_key_path}.pub").exists())
+            self.assertTrue(str(config.resolved_identity_public_key or "").startswith("ssh-ed25519 "))
+            self.assertTrue(str(config.resolved_local_did or "").startswith("did:agentcoin:ssh-ed25519:"))
+
     def test_load_config_sets_resolved_config_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "node.json"
