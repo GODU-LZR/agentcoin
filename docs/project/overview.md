@@ -287,6 +287,7 @@ Current baseline:
 - auto-bootstraps a local SSH/Ed25519 node identity when one is not configured
 - derives a local DID from the bootstrapped public key when no explicit on-chain DID is configured
 - exposes a CORS-friendly local manifest endpoint for browser and agent discovery
+- supports loopback-only signed client identity requests for a narrow set of local self-service task and runtime endpoints
 - protects write APIs with bearer token when configured
 - supports HMAC-signed capability cards and task envelopes
 - supports `ssh-keygen` compatible asymmetric signatures for cards, task envelopes, and delivery receipts

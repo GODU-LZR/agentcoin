@@ -12,6 +12,7 @@ The current test scope covers:
 - local SSH/Ed25519 identity bootstrap and derived DID exposure
 - local manifest endpoint and CORS preflight handling
 - one-time identity auth challenge plus signed request verification
+- loopback-only signed client identity access for local task creation, dispatch evaluation, and runtime binding
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

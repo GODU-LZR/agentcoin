@@ -16,6 +16,7 @@ from urllib import error, request
 
 from agentcoin.adapters import AdapterPolicy
 from agentcoin.config import NodeConfig, OperatorIdentityConfig, PeerConfig, ScopedBearerTokenConfig
+from agentcoin.models import utc_now
 from agentcoin.net import OutboundNetworkConfig
 from agentcoin.node import AgentCoinNode
 from agentcoin.onchain import OnchainBindings
@@ -727,6 +728,122 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(replay_status, 400)
             self.assertIn("challenge", replay_payload["error"])
+        finally:
+            node.stop()
+
+    def test_signed_client_identity_can_create_and_bind_local_tasks_without_bearer(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_local_task", "frontend-local-2")
+        node = NodeHarness(
+            node_id="client-local-node",
+            token="token-client-local",
+            db_path=str(Path(self.tempdir.name) / "client-local.db"),
+            capabilities=["worker"],
+            runtimes=["openai-chat"],
+        )
+        node.start()
+        try:
+            status, created = self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "client-local-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["reviewer"],
+                    "payload": {"input": {"prompt": "review local diff"}},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-2",
+                public_key=public_key,
+            )
+            self.assertEqual(status, HTTPStatus.CREATED)
+            self.assertEqual(created["task"]["id"], "client-local-task-1")
+
+            bind_status, bound = self._identity_signed_post(
+                f"{node.base_url}/v1/runtimes/bind",
+                {
+                    "task_id": "client-local-task-1",
+                    "runtime": "openai-chat",
+                    "options": {
+                        "endpoint": "http://127.0.0.1:12345/v1/chat/completions",
+                        "model": "openclaw/gateway",
+                        "prompt": "review local diff",
+                    },
+                },
+                private_key_path=key_path,
+                principal="frontend-local-2",
+                public_key=public_key,
+            )
+            self.assertEqual(bind_status, HTTPStatus.OK)
+            self.assertEqual(bound["runtime"]["runtime"], "openai-chat")
+
+            eval_status, evaluated = self._identity_signed_post(
+                f"{node.base_url}/v1/tasks/dispatch/evaluate",
+                {
+                    "id": "client-local-task-eval-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "required_capabilities": ["worker"],
+                    "payload": {
+                        "_runtime": {
+                            "runtime": "openai-chat",
+                        }
+                    },
+                },
+                private_key_path=key_path,
+                principal="frontend-local-2",
+                public_key=public_key,
+            )
+            self.assertEqual(eval_status, HTTPStatus.OK)
+            self.assertEqual(evaluated["requirements"]["runtime"], "openai-chat")
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "client-local-task-1"][0]
+            self.assertEqual(task["payload"]["_runtime"]["runtime"], "openai-chat")
+        finally:
+            node.stop()
+
+    def test_signed_client_identity_request_rejects_replayed_nonce(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_nonce", "frontend-local-3")
+        node = NodeHarness(
+            node_id="client-nonce-node",
+            token="token-client-nonce",
+            db_path=str(Path(self.tempdir.name) / "client-nonce.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            shared_nonce = "nonce-client-local-replay"
+            shared_timestamp = utc_now()
+            status, _ = self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "client-replay-task-1",
+                    "kind": "generic",
+                    "payload": {"input": "first"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-3",
+                public_key=public_key,
+                nonce=shared_nonce,
+                timestamp=shared_timestamp,
+            )
+            self.assertEqual(status, HTTPStatus.CREATED)
+
+            replay_status, replay_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "client-replay-task-2",
+                    "kind": "generic",
+                    "payload": {"input": "second"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-3",
+                public_key=public_key,
+                nonce=shared_nonce,
+                timestamp=shared_timestamp,
+            )
+            self.assertEqual(replay_status, HTTPStatus.UNAUTHORIZED)
+            self.assertIn("nonce", replay_payload["error"])
         finally:
             node.stop()
 

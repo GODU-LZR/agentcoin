@@ -412,6 +412,7 @@ def sign_identity_request_headers(
     ).decode("ascii")
     return {
         "X-Agentcoin-Principal": str(principal or "").strip(),
+        "X-Agentcoin-Public-Key": str(public_key or "").strip(),
         "X-Agentcoin-Timestamp": resolved_timestamp,
         "X-Agentcoin-Nonce": resolved_nonce,
         "X-Agentcoin-Body-Digest": digest,

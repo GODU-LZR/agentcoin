@@ -2411,7 +2411,9 @@ class AgentCoinNode:
                 self.send_header(
                     "Access-Control-Allow-Headers",
                     "Authorization, Content-Type, X-Agentcoin-Key-Id, X-Agentcoin-Timestamp, "
-                    "X-Agentcoin-Nonce, X-Agentcoin-Body-Digest, X-Agentcoin-Signature",
+                    "X-Agentcoin-Nonce, X-Agentcoin-Body-Digest, X-Agentcoin-Signature, "
+                    "X-Agentcoin-Principal, X-Agentcoin-Public-Key, X-Agentcoin-Identity-Namespace, "
+                    "X-Agentcoin-Identity-Signature",
                 )
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 self.send_header("Access-Control-Max-Age", "600")
@@ -2508,6 +2510,75 @@ class AgentCoinNode:
                     signature_b64=signature,
                     namespace=namespace,
                 )
+
+            def _require_client_identity(
+                self,
+                *,
+                allow_endpoints: set[str],
+            ) -> dict[str, Any] | None:
+                parsed_request = urlparse(self.path)
+                if parsed_request.path not in allow_endpoints:
+                    self._json_response(HTTPStatus.FORBIDDEN, {"error": "client identity auth is not allowed for this endpoint"})
+                    return None
+                if not self._is_loopback_request():
+                    self._json_response(HTTPStatus.FORBIDDEN, {"error": "client identity auth is restricted to loopback access"})
+                    return None
+
+                principal = str(self.headers.get("X-Agentcoin-Principal") or "").strip()
+                public_key = str(self.headers.get("X-Agentcoin-Public-Key") or "").strip()
+                if not principal or not public_key:
+                    self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "client identity principal and public key are required"})
+                    return None
+
+                timestamp = str(self.headers.get("X-Agentcoin-Timestamp") or "").strip()
+                nonce = str(self.headers.get("X-Agentcoin-Nonce") or "").strip()
+                if not timestamp or not nonce:
+                    self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "client identity timestamp and nonce are required"})
+                    return None
+
+                try:
+                    verification = self._identity_request_verification(
+                        principal=principal,
+                        public_key=public_key,
+                    )
+                except SignatureError as exc:
+                    self._json_response(HTTPStatus.UNAUTHORIZED, {"error": str(exc)})
+                    return None
+
+                did = derive_local_did(public_key=public_key)
+                nonce_key = str(did or principal or "client-identity")
+                if not node.store.reserve_operator_auth_nonce(
+                    key_id=f"client:{nonce_key}",
+                    nonce=nonce,
+                    ttl_seconds=int(node.config.operator_auth_nonce_ttl_seconds or 900),
+                ):
+                    self._json_response(HTTPStatus.UNAUTHORIZED, {"error": "client identity nonce has already been used"})
+                    return None
+
+                return {
+                    "mode": "client-signed-ssh",
+                    "principal": principal,
+                    "public_key": public_key,
+                    "did": did,
+                    "verification": verification,
+                    "loopback_only": True,
+                }
+
+            def _require_local_client_or_auth(
+                self,
+                *,
+                allow_endpoints: set[str],
+                policy_tier: str | None = None,
+                policy_level: int = 0,
+                required_scopes: list[str] | None = None,
+            ) -> dict[str, Any] | None:
+                if self._resolve_bearer_auth() is not None:
+                    return self._require_auth(
+                        policy_tier=policy_tier,
+                        policy_level=policy_level,
+                        required_scopes=required_scopes,
+                    )
+                return self._require_client_identity(allow_endpoints=allow_endpoints)
 
             def _resolve_bearer_auth(self) -> dict[str, Any] | None:
                 header = self.headers.get("Authorization", "")
@@ -3558,7 +3629,9 @@ class AgentCoinNode:
                         )
                         return
                     if self.path == "/v1/tasks":
-                        if not self._require_auth():
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/tasks"},
+                        ):
                             return
                         payload = self._read_json()
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
@@ -3592,7 +3665,9 @@ class AgentCoinNode:
                         )
                         return
                     if self.path == "/v1/runtimes/bind":
-                        if not self._require_auth():
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/runtimes/bind"},
+                        ):
                             return
                         payload = self._read_json()
                         task_id = str(payload.get("task_id") or "").strip()
@@ -3613,7 +3688,9 @@ class AgentCoinNode:
                         )
                         return
                     if self.path == "/v1/integrations/openclaw/bind":
-                        if not self._require_auth():
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/integrations/openclaw/bind"},
+                        ):
                             return
                         payload = self._read_json()
                         task_id = str(payload.get("task_id") or "").strip()
@@ -4311,7 +4388,9 @@ class AgentCoinNode:
                         self._json_response(status, finalized)
                         return
                     if self.path == "/v1/tasks/dispatch":
-                        if not self._require_auth():
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/tasks/dispatch"},
+                        ):
                             return
                         payload = self._read_json()
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
@@ -4422,7 +4501,9 @@ class AgentCoinNode:
                         )
                         return
                     if self.path == "/v1/tasks/dispatch/evaluate":
-                        if not self._require_auth():
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/tasks/dispatch/evaluate"},
+                        ):
                             return
                         payload = self._read_json()
                         task = node._normalize_task(TaskEnvelope.from_dict(payload), node.config)
