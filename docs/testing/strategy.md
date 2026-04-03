@@ -30,6 +30,7 @@ The current test scope covers:
 - per-item manual disable and re-enable controls for payment relay auto-requeue
 - suppression reason and latest override visibility in payment queue and ops summaries
 - local agent discovery for GitHub Copilot CLI plus VS Code Codex, GitHub Copilot, and Cline across Windows and WSL-style layouts
+- ACP-capable local agent registration plus managed start / stop lifecycle coverage
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

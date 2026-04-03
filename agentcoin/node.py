@@ -19,6 +19,7 @@ from agentcoin.bridges import BridgeRegistry
 from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_config, prepare_runtime_config, preview_peer_identity_config_update
 from agentcoin.discovery import LocalAgentDiscovery
 from agentcoin.gitops import GitWorkspace
+from agentcoin.local_agents import LocalAgentManager
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.net import OutboundTransport
 from agentcoin.onchain import OnchainRuntime, as_bytes32_hex, sha256_hex
@@ -75,6 +76,7 @@ class AgentCoinNode:
         self.bridges = BridgeRegistry(self.config.bridges)
         self.runtimes = RuntimeRegistry()
         self.discovery = LocalAgentDiscovery()
+        self.local_agents = LocalAgentManager()
         self._server = ThreadingHTTPServer((self.config.host, self.config.port), self._build_handler())
         self._sync_stop = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
@@ -128,6 +130,10 @@ class AgentCoinNode:
                 "card_url": card.get("endpoints", {}).get("card"),
                 "manifest_url": card.get("endpoints", {}).get("manifest"),
                 "local_agent_discovery_url": card.get("endpoints", {}).get("local_agent_discovery"),
+                "local_agent_registrations_url": card.get("endpoints", {}).get("local_agent_registrations"),
+                "local_agent_register_url": card.get("endpoints", {}).get("local_agent_register"),
+                "local_agent_start_url": card.get("endpoints", {}).get("local_agent_start"),
+                "local_agent_stop_url": card.get("endpoints", {}).get("local_agent_stop"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -1039,6 +1045,19 @@ class AgentCoinNode:
         if not updated:
             raise ValueError("payment relay queue item not found")
         return updated
+
+    def register_local_discovered_agent(self, discovered_id: str) -> dict[str, Any]:
+        normalized_id = str(discovered_id or "").strip()
+        if not normalized_id:
+            raise ValueError("discovered_id is required")
+        discovered = next((item for item in self.discovery.discover() if str(item.get("id") or "").strip() == normalized_id), None)
+        if not discovered:
+            raise ValueError("discovered local agent not found")
+        if "acp" not in set(discovered.get("protocols") or []) and not list(
+            discovered.get("agentcoin_compatibility", {}).get("launch_hint") or []
+        ):
+            raise ValueError("discovered local agent is not launchable")
+        return self.local_agents.register_discovered_agent(discovered)
 
     def payment_ops_summary(self, *, receipt_id: str | None = None, relay_limit: int = 5) -> dict[str, Any]:
         normalized_receipt_id = str(receipt_id or "").strip() or None
@@ -4305,6 +4324,19 @@ class AgentCoinNode:
                         },
                     )
                     return
+                if path == "/v1/discovery/local-agents/managed":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/discovery/local-agents/managed"},
+                    ):
+                        return
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "generated_at": utc_now(),
+                            "items": node.local_agents.list_registrations(),
+                        },
+                    )
+                    return
                 if path == "/v1/auth/challenge":
                     self._json_response(HTTPStatus.OK, {"challenge": node.issue_identity_auth_challenge()})
                     return
@@ -4802,6 +4834,10 @@ class AgentCoinNode:
                                 "/v1/tasks/dispatch",
                                 "/v1/tasks/dispatch/evaluate",
                                 "/v1/discovery/local-agents",
+                                "/v1/discovery/local-agents/managed",
+                                "/v1/discovery/local-agents/register",
+                                "/v1/discovery/local-agents/start",
+                                "/v1/discovery/local-agents/stop",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
@@ -5041,6 +5077,39 @@ class AgentCoinNode:
                             delay_seconds=int(payload.get("delay_seconds") or 0),
                         )
                         self._json_response(HTTPStatus.CREATED, {"item": item})
+                        return
+                    if self.path == "/v1/discovery/local-agents/register":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/register"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        item = node.register_local_discovered_agent(str(payload.get("discovered_id") or "").strip())
+                        self._json_response(HTTPStatus.CREATED, {"item": item})
+                        return
+                    if self.path == "/v1/discovery/local-agents/start":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/start"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        registration_id = str(payload.get("registration_id") or "").strip()
+                        if not registration_id:
+                            raise ValueError("registration_id is required")
+                        item = node.local_agents.start_registration(registration_id)
+                        self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/discovery/local-agents/stop":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/stop"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        registration_id = str(payload.get("registration_id") or "").strip()
+                        if not registration_id:
+                            raise ValueError("registration_id is required")
+                        item = node.local_agents.stop_registration(registration_id)
+                        self._json_response(HTTPStatus.OK, {"item": item})
                         return
                     if self.path == "/v1/payments/receipts/onchain-relay-queue/requeue":
                         if not self._require_local_client_or_auth(
@@ -6909,6 +6978,7 @@ class AgentCoinNode:
         finally:
             self._sync_stop.set()
             self._server.server_close()
+            self.local_agents.shutdown()
             if self._sync_thread.is_alive():
                 self._sync_thread.join(timeout=2)
             if self._settlement_relay_thread.is_alive():
@@ -6918,5 +6988,6 @@ class AgentCoinNode:
 
     def shutdown(self) -> None:
         self._sync_stop.set()
+        self.local_agents.shutdown()
         self._server.shutdown()
         self._server.server_close()

@@ -1092,6 +1092,108 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_local_agent_registration_start_and_stop_for_acp_cli(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_manage",
+            "frontend-local-agent-manage",
+        )
+        sleeper = Path(self.tempdir.name) / "fake_acp_agent.py"
+        sleeper.write_text(
+            "import time\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": False,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-manage-node",
+            token="token-local-agent-manage",
+            db_path=str(Path(self.tempdir.name) / "local-agent-manage.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            register_status, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-manage",
+                public_key=public_key,
+            )
+            self.assertEqual(register_status, HTTPStatus.CREATED)
+            registration = register_payload["item"]
+            self.assertEqual(registration["status"], "registered")
+            self.assertEqual(registration["preferred_integration"], "acp-bridge")
+
+            managed_status, managed_payload = self._identity_signed_get(
+                f"{node.base_url}/v1/discovery/local-agents/managed",
+                private_key_path=key_path,
+                principal="frontend-local-agent-manage",
+                public_key=public_key,
+            )
+            self.assertEqual(managed_status, HTTPStatus.OK)
+            self.assertEqual(len(managed_payload["items"]), 1)
+            self.assertEqual(managed_payload["items"][0]["status"], "registered")
+
+            start_status, start_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/start",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-manage",
+                public_key=public_key,
+            )
+            self.assertEqual(start_status, HTTPStatus.OK)
+            self.assertEqual(start_payload["item"]["status"], "running")
+            self.assertTrue(int(start_payload["item"]["pid"] or 0) > 0)
+
+            running_status, running_payload = self._identity_signed_get(
+                f"{node.base_url}/v1/discovery/local-agents/managed",
+                private_key_path=key_path,
+                principal="frontend-local-agent-manage",
+                public_key=public_key,
+            )
+            self.assertEqual(running_status, HTTPStatus.OK)
+            self.assertEqual(running_payload["items"][0]["status"], "running")
+
+            stop_status, stop_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/stop",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-manage",
+                public_key=public_key,
+            )
+            self.assertEqual(stop_status, HTTPStatus.OK)
+            self.assertEqual(stop_payload["item"]["status"], "stopped")
+            self.assertIsNone(stop_payload["item"]["pid"])
+        finally:
+            node.stop()
+
     def test_workflow_execute_returns_402_without_payment_receipt(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_payment_402", "frontend-local-payment-402")
         onchain = OnchainBindings(
