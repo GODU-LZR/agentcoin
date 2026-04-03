@@ -81,6 +81,11 @@ class AgentCoinNode:
             name="agentcoin-settlement-relay",
             daemon=True,
         )
+        self._payment_relay_thread = threading.Thread(
+            target=self._payment_relay_loop,
+            name="agentcoin-payment-relay",
+            daemon=True,
+        )
         self._auth_challenges: dict[str, dict[str, Any]] = {}
         self._auth_challenge_lock = threading.Lock()
         self._identity_sessions: dict[str, dict[str, Any]] = {}
@@ -150,6 +155,9 @@ class AgentCoinNode:
                 "receipt_onchain_rpc_plan_url": self.config.card.endpoints.get("payment_receipt_onchain_rpc_plan"),
                 "receipt_onchain_raw_bundle_url": self.config.card.endpoints.get("payment_receipt_onchain_raw_bundle"),
                 "receipt_onchain_relay_url": self.config.card.endpoints.get("payment_receipt_onchain_relay"),
+                "receipt_onchain_relays_url": self.config.card.endpoints.get("payment_receipt_onchain_relays"),
+                "receipt_onchain_relay_latest_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_latest"),
+                "receipt_onchain_relay_queue_url": self.config.card.endpoints.get("payment_receipt_onchain_relay_queue"),
                 "receipt_kind": "agentcoin-payment-receipt",
                 "proof_type": "local-operator-attestation",
                 "quote": {
@@ -774,11 +782,89 @@ class AgentCoinNode:
             "transport": self.config.network.transport_profile(),
             "generated_at": utc_now(),
         }
+        persisted = self.store.save_payment_relay(relay)
+        relay["relay_record_id"] = persisted["id"]
         return self._sign_document(
             relay,
             hmac_scope="payment-onchain-relay",
             identity_namespace="agentcoin-payment-onchain-relay",
         )
+
+    def process_payment_relay_queue(self, *, max_items: int | None = None) -> list[dict[str, Any]]:
+        processed: list[dict[str, Any]] = []
+        max_in_flight = int(self.config.settlement_relay_max_in_flight or 0)
+        claim_limit = max_in_flight if max_in_flight > 0 else None
+        while max_items is None or len(processed) < max_items:
+            item = self.store.claim_next_payment_relay_queue_item(max_in_flight=claim_limit)
+            if not item:
+                break
+
+            payload = dict(item.get("payload") or {})
+            try:
+                receipt = dict(payload.get("payment_receipt") or {})
+                if not receipt:
+                    raise ValueError("payment_receipt is required")
+                relay = self.execute_payment_onchain_relay(
+                    receipt,
+                    workflow_name=str(payload.get("workflow_name") or item.get("workflow_name") or "").strip() or None,
+                    raw_transactions=list(payload.get("raw_transactions") or []),
+                    rpc=dict(payload.get("rpc") or {}),
+                    rpc_url=str(payload.get("rpc_url") or "").strip() or None,
+                    timeout=float(payload.get("timeout_seconds") or 10),
+                    continue_on_error=bool(payload.get("continue_on_error")),
+                )
+                last_relay_id = str(relay.get("relay_record_id") or "").strip() or None
+                if relay.get("final_status") == "completed":
+                    queue_item = self.store.complete_payment_relay_queue_item(item["id"], last_relay_id=last_relay_id)
+                else:
+                    failure_message = str(relay.get("final_status") or "payment relay incomplete")
+                    if relay.get("failures"):
+                        failure_message = str(relay["failures"][0].get("error") or failure_message)
+                    queue_item = self.store.fail_payment_relay_queue_item(
+                        item["id"],
+                        error=failure_message,
+                        last_relay_id=last_relay_id,
+                        payload=payload,
+                    )
+                processed.append({"item": queue_item, "relay": relay})
+            except Exception as exc:
+                LOG.warning(
+                    "payment relay queue execution failed queue_id=%s receipt_id=%s error=%s",
+                    item.get("id"),
+                    item.get("receipt_id"),
+                    exc,
+                )
+                queue_item = self.store.fail_payment_relay_queue_item(
+                    item["id"],
+                    error=str(exc),
+                    last_relay_id=str(item.get("last_relay_id") or "").strip() or None,
+                    payload=payload,
+                )
+                processed.append({"item": queue_item, "error": str(exc)})
+        return processed
+
+    @staticmethod
+    def _merge_payment_relay_queue_payload(
+        current_payload: dict[str, Any],
+        overrides: dict[str, Any],
+        *,
+        receipt: dict[str, Any],
+        workflow_name: str,
+    ) -> dict[str, Any]:
+        merged = dict(current_payload or {})
+        merged["payment_receipt"] = dict(receipt or {})
+        merged["workflow_name"] = workflow_name
+        if "raw_transactions" in overrides:
+            merged["raw_transactions"] = list(overrides.get("raw_transactions") or [])
+        if "rpc" in overrides:
+            merged["rpc"] = dict(overrides.get("rpc") or {})
+        if "rpc_url" in overrides:
+            merged["rpc_url"] = str(overrides.get("rpc_url") or "").strip() or None
+        if "timeout_seconds" in overrides:
+            merged["timeout_seconds"] = float(overrides.get("timeout_seconds") or 10)
+        if "continue_on_error" in overrides:
+            merged["continue_on_error"] = bool(overrides.get("continue_on_error"))
+        return merged
 
     def consume_payment_receipt(self, receipt_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
         normalized_receipt_id = str(receipt_id or "").strip()
@@ -3980,6 +4066,46 @@ class AgentCoinNode:
                     receipt = node.get_payment_receipt(receipt_id)
                     self._json_response(HTTPStatus.OK, {"receipt": receipt})
                     return
+                if path == "/v1/payments/receipts/onchain-relays":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/receipts/onchain-relays"},
+                    ):
+                        return
+                    receipt_id = (query.get("receipt_id") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": node.store.list_payment_relays(receipt_id=receipt_id, limit=limit)},
+                    )
+                    return
+                if path == "/v1/payments/receipts/onchain-relays/latest":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/receipts/onchain-relays/latest"},
+                    ):
+                        return
+                    receipt_id = (query.get("receipt_id") or [""])[0]
+                    if not receipt_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "receipt_id is required"})
+                        return
+                    item = node.store.get_latest_payment_relay(receipt_id)
+                    if not item:
+                        self._json_response(HTTPStatus.NOT_FOUND, {"error": "payment relay not found"})
+                        return
+                    self._json_response(HTTPStatus.OK, item)
+                    return
+                if path == "/v1/payments/receipts/onchain-relay-queue":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/receipts/onchain-relay-queue"},
+                    ):
+                        return
+                    receipt_id = (query.get("receipt_id") or [None])[0]
+                    status_name = (query.get("status") or [None])[0]
+                    limit = int((query.get("limit") or ["200"])[0])
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {"items": node.store.list_payment_relay_queue(receipt_id=receipt_id, status=status_name, limit=limit)},
+                    )
+                    return
                 if path == "/v1/schema/context":
                     self._json_response(HTTPStatus.OK, context_document())
                     return
@@ -4299,6 +4425,21 @@ class AgentCoinNode:
                             "settlement_relay_queue": node.store.list_settlement_relay_queue(task_id=task_id, limit=200),
                             "latest_settlement_relay": node.store.get_latest_settlement_relay(task_id),
                             "settlement_reconciliation": node._task_settlement_reconciliation(task_id),
+                            "payment_relays": node.store.list_payment_relays(
+                                receipt_id=str(dict(task.get("payload") or {}).get("_payment_receipt", {}).get("receipt_id") or "").strip() or None,
+                                limit=200,
+                            ),
+                            "payment_relay_queue": node.store.list_payment_relay_queue(
+                                receipt_id=str(dict(task.get("payload") or {}).get("_payment_receipt", {}).get("receipt_id") or "").strip() or None,
+                                limit=200,
+                            ),
+                            "latest_payment_relay": (
+                                node.store.get_latest_payment_relay(
+                                    str(dict(task.get("payload") or {}).get("_payment_receipt", {}).get("receipt_id") or "").strip()
+                                )
+                                if str(dict(task.get("payload") or {}).get("_payment_receipt", {}).get("receipt_id") or "").strip()
+                                else None
+                            ),
                             "bridge_export_preview": export_preview,
                             "git_proof_bundle": git_proof_bundle,
                             "onchain_status": task.get("payload", {}).get("_onchain"),
@@ -4364,6 +4505,10 @@ class AgentCoinNode:
                                 "/v1/payments/receipts/onchain-rpc-plan",
                                 "/v1/payments/receipts/onchain-raw-bundle",
                                 "/v1/payments/receipts/onchain-relay",
+                                "/v1/payments/receipts/onchain-relays",
+                                "/v1/payments/receipts/onchain-relays/latest",
+                                "/v1/payments/receipts/onchain-relay-queue",
+                                "/v1/payments/receipts/onchain-relay-queue/requeue",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -4545,6 +4690,84 @@ class AgentCoinNode:
                             continue_on_error=bool(payload.get("continue_on_error")),
                         )
                         self._json_response(HTTPStatus.OK, {"relay": relay})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(
+                            payload.get("workflow_name")
+                            or payment_receipt.get("workflow_name")
+                            or payload.get("workflow")
+                            or ""
+                        ).strip()
+                        if not workflow_name:
+                            raise ValueError("workflow_name is required")
+                        receipt_id = str(payment_receipt.get("receipt_id") or "").strip()
+                        if not receipt_id:
+                            raise ValueError("payment_receipt.receipt_id is required")
+                        queue_payload = {
+                            "payment_receipt": payment_receipt,
+                            "workflow_name": workflow_name,
+                            "raw_transactions": list(payload.get("raw_transactions") or []),
+                            "rpc": dict(payload.get("rpc") or {}),
+                            "rpc_url": str(payload.get("rpc_url") or "").strip() or None,
+                            "timeout_seconds": float(payload.get("timeout_seconds") or 10),
+                            "continue_on_error": bool(payload.get("continue_on_error")),
+                        }
+                        item = node.store.enqueue_payment_relay(
+                            receipt_id=receipt_id,
+                            workflow_name=workflow_name,
+                            payload=queue_payload,
+                            max_attempts=int(payload.get("max_attempts") or 3),
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                        )
+                        self._json_response(HTTPStatus.CREATED, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/requeue":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/requeue"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        queue_id = str(payload.get("queue_id") or "").strip()
+                        if not queue_id:
+                            raise ValueError("queue_id is required")
+                        existing = node.store.get_payment_relay_queue_item(queue_id)
+                        if not existing:
+                            raise ValueError("payment relay queue item not found")
+                        receipt = dict(payload.get("payment_receipt") or existing.get("payload", {}).get("payment_receipt") or {})
+                        receipt_id = str(receipt.get("receipt_id") or existing.get("receipt_id") or "").strip()
+                        if not receipt_id:
+                            raise ValueError("payment_receipt.receipt_id is required")
+                        workflow_name = str(
+                            payload.get("workflow_name")
+                            or existing.get("workflow_name")
+                            or receipt.get("workflow_name")
+                            or ""
+                        ).strip()
+                        if not workflow_name:
+                            raise ValueError("workflow_name is required")
+                        queue_payload = node._merge_payment_relay_queue_payload(
+                            dict(existing.get("payload") or {}),
+                            payload,
+                            receipt=receipt,
+                            workflow_name=workflow_name,
+                        )
+                        item = node.store.requeue_payment_relay_queue_item(
+                            queue_id,
+                            delay_seconds=int(payload.get("delay_seconds") or 0),
+                            payload=queue_payload,
+                            max_attempts=int(payload.get("max_attempts")) if payload.get("max_attempts") is not None else None,
+                        )
+                        if not item or item.get("status") != "queued":
+                            raise ValueError("queue item cannot be requeued")
+                        self._json_response(HTTPStatus.OK, {"item": item})
                         return
                     if self.path == "/v1/workflow/execute":
                         if not self._require_local_client_or_auth(
@@ -6231,14 +6454,30 @@ class AgentCoinNode:
             if self._sync_stop.wait(poll_seconds):
                 break
 
+    def _payment_relay_loop(self) -> None:
+        poll_seconds = float(self.config.settlement_relay_poll_seconds or 0)
+        if poll_seconds <= 0:
+            return
+        while not self._sync_stop.is_set():
+            try:
+                self.process_payment_relay_queue()
+            except Exception:
+                LOG.exception("payment relay queue loop failed")
+            if self._sync_stop.wait(poll_seconds):
+                break
+
     def serve_forever(self) -> None:
         LOG.info("starting AgentCoin node on %s:%s", self.config.host, self.config.port)
         recovered = self.store.recover_running_settlement_relay_queue_items()
         if recovered:
             LOG.info("recovered %s running settlement relay queue item(s)", recovered)
+        recovered_payment = self.store.recover_running_payment_relay_queue_items()
+        if recovered_payment:
+            LOG.info("recovered %s running payment relay queue item(s)", recovered_payment)
         self._sync_thread.start()
         if float(self.config.settlement_relay_poll_seconds or 0) > 0:
             self._settlement_relay_thread.start()
+            self._payment_relay_thread.start()
         try:
             self._server.serve_forever()
         except KeyboardInterrupt:
@@ -6250,6 +6489,8 @@ class AgentCoinNode:
                 self._sync_thread.join(timeout=2)
             if self._settlement_relay_thread.is_alive():
                 self._settlement_relay_thread.join(timeout=2)
+            if self._payment_relay_thread.is_alive():
+                self._payment_relay_thread.join(timeout=2)
 
     def shutdown(self) -> None:
         self._sync_stop.set()

@@ -31,6 +31,8 @@ The current repository contains:
 - signed on-chain payment proof projection from local receipt and attestation state
 - signed payment on-chain RPC plan projection for external signer or wallet handoff
 - payment raw-bundle and relay skeleton for externally signed proof submission
+- persisted payment relay history and latest-relay lookup by receipt id
+- background payment relay queue processing for deferred proof submission and operator replay
 
 ## Design Goals
 

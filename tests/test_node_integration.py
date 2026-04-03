@@ -627,6 +627,23 @@ class NodeIntegrationTests(unittest.TestCase):
             time.sleep(0.05)
         raise AssertionError(f"queue item {queue_id} did not reach status {status!r}; last_item={last_item!r}")
 
+    def _wait_for_payment_queue_item_status(
+        self,
+        node: NodeHarness,
+        queue_id: str,
+        *,
+        status: str,
+        timeout: float = 5.0,
+    ) -> dict:
+        deadline = time.monotonic() + timeout
+        last_item = None
+        while time.monotonic() < deadline:
+            last_item = node.node.store.get_payment_relay_queue_item(queue_id)
+            if last_item and last_item["status"] == status:
+                return last_item
+            time.sleep(0.05)
+        raise AssertionError(f"payment queue item {queue_id} did not reach status {status!r}; last_item={last_item!r}")
+
     def _wait_until(self, predicate, *, timeout: float = 5.0, interval: float = 0.05, message: str = "condition not met"):
         deadline = time.monotonic() + timeout
         last_value = None
@@ -1345,6 +1362,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(relay["kind"], "evm-payment-relay")
             self.assertEqual(relay["completed_steps"], 1)
             self.assertEqual(relay["final_status"], "completed")
+            self.assertTrue(relay["relay_record_id"])
             self.assertEqual(relay["submitted_steps"][0]["tx_hash"], "0xpaymentproof1")
             relay_verification = verify_document(
                 relay,
@@ -1353,7 +1371,187 @@ class NodeIntegrationTests(unittest.TestCase):
                 expected_key_id="payment-relay-node",
             )
             self.assertTrue(relay_verification["verified"])
+            history_status, history_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relays?receipt_id={receipt['receipt_id']}",
+                "token-payment-relay",
+            )
+            self.assertEqual(history_status, HTTPStatus.OK)
+            self.assertEqual(len(history_payload["items"]), 1)
+            self.assertEqual(history_payload["items"][0]["id"], relay["relay_record_id"])
+
+            latest_status, latest_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relays/latest?receipt_id={receipt['receipt_id']}",
+                "token-payment-relay",
+            )
+            self.assertEqual(latest_status, HTTPStatus.OK)
+            self.assertEqual(latest_payload["id"], relay["relay_record_id"])
             self.assertEqual([call["method"] for call in rpc.calls], ["eth_sendRawTransaction"])
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_payment_onchain_relay_queue_persists_items(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_queue",
+            "frontend-local-payment-queue",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-queue-node",
+            token="token-payment-queue",
+            db_path=str(Path(self.tempdir.name) / "payment-queue.db"),
+            capabilities=["worker"],
+            signing_secret="payment-queue-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "queue this proof"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-queue",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-queue",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xqueueproof",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaa"},
+                    ],
+                    "rpc_url": "https://bsc-testnet.example/rpc",
+                    "max_attempts": 4,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-queue",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+            self.assertEqual(item["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(item["workflow_name"], "premium-review")
+            self.assertEqual(item["status"], "queued")
+            self.assertEqual(item["max_attempts"], 4)
+
+            list_status, list_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue?receipt_id={receipt['receipt_id']}",
+                "token-payment-queue",
+            )
+            self.assertEqual(list_status, HTTPStatus.OK)
+            self.assertEqual(len(list_payload["items"]), 1)
+            self.assertEqual(list_payload["items"][0]["id"], item["id"])
+
+            _, health = self._get(f"{node.base_url}/healthz")
+            self.assertEqual(health["stats"]["payment_relay_queue"], 1)
+            self.assertEqual(health["stats"]["payment_relay_queue_queued"], 1)
+        finally:
+            node.stop()
+
+    def test_background_payment_relay_worker_processes_queued_items(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentqueue1"})
+        rpc.start()
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_queue_bg",
+            "frontend-local-payment-queue-bg",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-queue-worker-node",
+            token="token-payment-queue-worker",
+            db_path=str(Path(self.tempdir.name) / "payment-queue-worker.db"),
+            capabilities=["worker"],
+            signing_secret="payment-queue-worker-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "queue this proof in background"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-queue-bg",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-queue-worker",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xqueueproofbg",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-queue-bg",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertTrue(completed["last_relay_id"])
+            self.assertEqual(len(rpc.calls), 1)
+
+            latest_status, latest_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relays/latest?receipt_id={receipt['receipt_id']}",
+                "token-payment-queue-worker",
+            )
+            self.assertEqual(latest_status, HTTPStatus.OK)
+            self.assertEqual(latest_payload["id"], completed["last_relay_id"])
+            self.assertEqual(latest_payload["final_status"], "completed")
         finally:
             node.stop()
             rpc.stop()
