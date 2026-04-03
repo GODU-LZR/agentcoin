@@ -134,6 +134,9 @@ class AgentCoinNode:
                 "local_agent_register_url": card.get("endpoints", {}).get("local_agent_register"),
                 "local_agent_start_url": card.get("endpoints", {}).get("local_agent_start"),
                 "local_agent_stop_url": card.get("endpoints", {}).get("local_agent_stop"),
+                "local_agent_acp_sessions_url": card.get("endpoints", {}).get("local_agent_acp_sessions"),
+                "local_agent_acp_session_open_url": card.get("endpoints", {}).get("local_agent_acp_session_open"),
+                "local_agent_acp_session_close_url": card.get("endpoints", {}).get("local_agent_acp_session_close"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -4337,6 +4340,27 @@ class AgentCoinNode:
                         },
                     )
                     return
+                if path == "/v1/discovery/local-agents/acp-sessions":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/discovery/local-agents/acp-sessions"},
+                    ):
+                        return
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "generated_at": utc_now(),
+                            "items": node.local_agents.list_acp_sessions(),
+                            "protocol_boundary": {
+                                "transport_ready": True,
+                                "protocol_messages_implemented": False,
+                                "notes": [
+                                    "ACP transport sessions are tracked, but AgentCoin does not yet exchange ACP protocol messages.",
+                                    "Use these endpoints to manage local ACP process lifecycles and pending session handshakes.",
+                                ],
+                            },
+                        },
+                    )
+                    return
                 if path == "/v1/auth/challenge":
                     self._json_response(HTTPStatus.OK, {"challenge": node.issue_identity_auth_challenge()})
                     return
@@ -4838,6 +4862,9 @@ class AgentCoinNode:
                                 "/v1/discovery/local-agents/register",
                                 "/v1/discovery/local-agents/start",
                                 "/v1/discovery/local-agents/stop",
+                                "/v1/discovery/local-agents/acp-sessions",
+                                "/v1/discovery/local-agents/acp-session/open",
+                                "/v1/discovery/local-agents/acp-session/close",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
@@ -5110,6 +5137,40 @@ class AgentCoinNode:
                             raise ValueError("registration_id is required")
                         item = node.local_agents.stop_registration(registration_id)
                         self._json_response(HTTPStatus.OK, {"item": item})
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/open":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/open"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        registration_id = str(payload.get("registration_id") or "").strip()
+                        if not registration_id:
+                            raise ValueError("registration_id is required")
+                        session = node.local_agents.open_acp_session(registration_id)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                "session": session,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                },
+                            },
+                        )
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/close":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/close"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        session_id = str(payload.get("session_id") or "").strip()
+                        if not session_id:
+                            raise ValueError("session_id is required")
+                        session = node.local_agents.close_acp_session(session_id)
+                        self._json_response(HTTPStatus.OK, {"ok": True, "session": session})
                         return
                     if self.path == "/v1/payments/receipts/onchain-relay-queue/requeue":
                         if not self._require_local_client_or_auth(
