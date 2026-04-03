@@ -17,6 +17,9 @@ class LocalAgentDiscoveryTests(unittest.TestCase):
             executable = local_appdata / "GitHub CLI" / "copilot" / "copilot.exe"
             executable.parent.mkdir(parents=True, exist_ok=True)
             executable.write_text("", encoding="utf-8")
+            claude_executable = local_appdata / "Programs" / "Claude Code" / "claude.exe"
+            claude_executable.parent.mkdir(parents=True, exist_ok=True)
+            claude_executable.write_text("", encoding="utf-8")
 
             package_json = local_appdata / "copilot" / "pkg" / "win32-x64" / "1.0.17" / "package.json"
             package_json.parent.mkdir(parents=True, exist_ok=True)
@@ -59,6 +62,10 @@ class LocalAgentDiscoveryTests(unittest.TestCase):
             )
 
             def fake_runner(command: list[str]) -> tuple[int, str, str]:
+                if command[0] == str(claude_executable) and command[-1] == "--help":
+                    return 0, "Claude Code CLI\n  --mcp  Start Model Context Protocol transport\n", ""
+                if command[0] == str(claude_executable) and command[-1] == "--version":
+                    return 0, "0.9.3", ""
                 if command[-1] == "--help":
                     return 0, "GitHub Copilot CLI\n  --acp  Start as Agent Client Protocol server\n", ""
                 if command[-1] == "--version":
@@ -69,12 +76,13 @@ class LocalAgentDiscoveryTests(unittest.TestCase):
                 env={"LOCALAPPDATA": str(local_appdata)},
                 home=home,
                 system_name="Windows",
-                which=lambda name: str(executable) if name == "copilot" else None,
+                which=lambda name: str(executable) if name == "copilot" else (str(claude_executable) if name == "claude" else None),
                 command_runner=fake_runner,
             )
             items = discovery.discover()
             ids = {item["id"] for item in items}
             self.assertIn("github-copilot-cli", ids)
+            self.assertIn("claude-code-cli", ids)
             self.assertIn("github-copilot-chat-vscode", ids)
             self.assertIn("openai-codex-vscode", ids)
             self.assertIn("cline-vscode", ids)
@@ -84,6 +92,11 @@ class LocalAgentDiscoveryTests(unittest.TestCase):
             self.assertIn("acp", cli_item["protocols"])
             self.assertEqual(cli_item["agentcoin_compatibility"]["preferred_integration"], "acp-bridge")
             self.assertEqual(cli_item["agentcoin_compatibility"]["launch_hint"][0], str(executable))
+            claude_item = [item for item in items if item["id"] == "claude-code-cli"][0]
+            self.assertEqual(claude_item["version"], "0.9.3")
+            self.assertIn("mcp", claude_item["protocols"])
+            self.assertEqual(claude_item["agentcoin_compatibility"]["preferred_integration"], "mcp-host-adapter")
+            self.assertEqual(claude_item["agentcoin_compatibility"]["launch_hint"][0], str(claude_executable))
             codex_item = [item for item in items if item["id"] == "openai-codex-vscode"][0]
             self.assertEqual(codex_item["publisher"], "openai")
             self.assertEqual(codex_item["display_name"], "Codex – OpenAI’s coding agent")
@@ -100,6 +113,9 @@ class LocalAgentDiscoveryTests(unittest.TestCase):
                 json.dumps({"name": "@github/copilot", "version": "1.0.17"}),
                 encoding="utf-8",
             )
+            claude_executable = home / ".local" / "bin" / "claude"
+            claude_executable.parent.mkdir(parents=True, exist_ok=True)
+            claude_executable.write_text("", encoding="utf-8")
 
             extension_json = home / ".vscode-server" / "extensions" / "github.copilot-chat-0.42.3" / "package.json"
             extension_json.parent.mkdir(parents=True, exist_ok=True)
@@ -118,18 +134,22 @@ class LocalAgentDiscoveryTests(unittest.TestCase):
                 env={"WSL_DISTRO_NAME": "Ubuntu"},
                 home=home,
                 system_name="Linux",
-                which=lambda name: None,
-                command_runner=lambda command: (1, "", "not-found"),
+                which=lambda name: str(claude_executable) if name == "claude" else None,
+                command_runner=lambda command: (0, "Claude Code CLI\n", "") if command[0] == str(claude_executable) and command[-1] == "--help" else ((0, "0.9.3", "") if command[0] == str(claude_executable) and command[-1] == "--version" else (1, "", "not-found")),
             )
             items = discovery.discover()
             ids = {item["id"] for item in items}
             self.assertIn("github-copilot-cli", ids)
+            self.assertIn("claude-code-cli", ids)
             self.assertIn("github-copilot-chat-vscode", ids)
             self.assertIn("openai-codex-vscode", ids)
 
             cli_item = [item for item in items if item["id"] == "github-copilot-cli"][0]
             self.assertTrue(cli_item["wsl"])
             self.assertFalse(cli_item["agentcoin_compatibility"]["attachable_today"])
+            claude_item = [item for item in items if item["id"] == "claude-code-cli"][0]
+            self.assertTrue(claude_item["wsl"])
+            self.assertEqual(claude_item["agentcoin_compatibility"]["preferred_integration"], "cli-wrapper")
 
 
 if __name__ == "__main__":

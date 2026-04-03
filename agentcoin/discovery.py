@@ -55,6 +55,7 @@ class LocalAgentDiscovery:
     def discover(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         items.extend(self._discover_copilot_cli())
+        items.extend(self._discover_claude_code_cli())
         items.extend(self._discover_vscode_agent_extensions())
         items.sort(key=lambda item: (str(item.get("family") or ""), str(item.get("title") or ""), str(item.get("id") or "")))
         return items
@@ -140,6 +141,82 @@ class LocalAgentDiscovery:
                 },
                 "evidence": evidence,
                 "help_summary": "GitHub Copilot CLI with ACP support detected." if supports_acp else "GitHub Copilot CLI detected.",
+            }
+        ]
+
+    def _discover_claude_code_cli(self) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        for command_name in ("claude", "claude-code"):
+            executable_path = self.which(command_name)
+            if executable_path:
+                evidence.append({"kind": "which", "path": executable_path, "command": command_name})
+        for candidate in self._claude_code_cli_candidates():
+            normalized = str(candidate).strip()
+            if normalized and not any(item.get("path") == normalized for item in evidence):
+                evidence.append({"kind": "path", "path": normalized})
+        if not evidence:
+            return []
+
+        resolved_executable = next((str(item.get("path") or "").strip() for item in evidence if str(item.get("path") or "").strip()), "")
+        version_text = ""
+        help_text = ""
+        supports_mcp = False
+        if resolved_executable:
+            return_code, stdout, stderr = self._safe_run([resolved_executable, "--help"])
+            help_text = f"{stdout}\n{stderr}".strip()
+            lowered_help = help_text.lower()
+            supports_mcp = "--mcp" in help_text or " mcp " in lowered_help or "model context protocol" in lowered_help
+            version_code, version_stdout, version_stderr = self._safe_run([resolved_executable, "--version"])
+            if version_code == 0:
+                version_text = str(version_stdout or version_stderr).strip()
+            evidence.append(
+                {
+                    "kind": "probe",
+                    "path": resolved_executable,
+                    "supports_mcp": supports_mcp,
+                    "probe_ok": return_code == 0,
+                }
+            )
+
+        integration_candidates = ["cli-wrapper"]
+        preferred_integration = "cli-wrapper"
+        notes = [
+            "Detected locally as a CLI-oriented coding agent, not as a standalone AgentCoin node.",
+            "AgentCoin can discover it today, but a dedicated Claude Code adapter is still required before direct task execution.",
+        ]
+        if supports_mcp:
+            preferred_integration = "mcp-host-adapter"
+            integration_candidates = ["mcp-host-adapter", "cli-wrapper"]
+            notes.append("The local help output suggests MCP-related capabilities, so an MCP host adapter is the cleanest future path.")
+
+        return [
+            {
+                "id": "claude-code-cli",
+                "family": "claude-code",
+                "title": "Claude Code CLI",
+                "type": "local-cli-agent",
+                "publisher": "Anthropic",
+                "discovery_platform": self.system_name.lower(),
+                "wsl": self.is_wsl,
+                "version": version_text,
+                "executable_path": resolved_executable or None,
+                "protocols": ["mcp"] if supports_mcp else [],
+                "capabilities": [
+                    "interactive-chat",
+                    "non-interactive-prompt",
+                    "code-editing",
+                    "workspace-tools",
+                ],
+                "agentcoin_compatibility": {
+                    "discovered": True,
+                    "attachable_today": False,
+                    "preferred_integration": preferred_integration,
+                    "integration_candidates": integration_candidates,
+                    "launch_hint": [resolved_executable] if resolved_executable else [],
+                    "notes": notes,
+                },
+                "evidence": evidence,
+                "help_summary": "Claude Code CLI with MCP hints detected." if supports_mcp else "Claude Code CLI detected.",
             }
         ]
 
@@ -308,6 +385,41 @@ class LocalAgentDiscovery:
                 continue
             package_jsons.extend(root.glob("*/*/package.json"))
         return package_jsons
+
+    def _claude_code_cli_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        system = self.system_name.lower()
+        if system == "windows":
+            local_appdata = Path(str(self.env.get("LOCALAPPDATA") or "").strip() or self.home / "AppData" / "Local")
+            candidates.extend(
+                [
+                    str(local_appdata / "Programs" / "Claude" / "claude.exe"),
+                    str(local_appdata / "Programs" / "Claude Code" / "claude.exe"),
+                    str(local_appdata / "Anthropic" / "Claude Code" / "claude.exe"),
+                    str(self.home / ".claude" / "bin" / "claude.exe"),
+                ]
+            )
+        elif system == "darwin":
+            app_support = self.home / "Library" / "Application Support"
+            candidates.extend(
+                [
+                    str(app_support / "Claude" / "bin" / "claude"),
+                    str(self.home / ".local" / "bin" / "claude"),
+                    str(self.home / ".claude" / "bin" / "claude"),
+                    "/usr/local/bin/claude",
+                    "/opt/homebrew/bin/claude",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    str(self.home / ".local" / "bin" / "claude"),
+                    str(self.home / ".claude" / "bin" / "claude"),
+                    "/usr/local/bin/claude",
+                    "/usr/bin/claude",
+                ]
+            )
+        return [candidate for candidate in candidates if candidate]
 
     def _vscode_extension_roots(self) -> list[Path]:
         roots = [self.home / ".vscode" / "extensions"]
