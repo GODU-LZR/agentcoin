@@ -192,6 +192,8 @@ class ExecutionAdapterRegistry:
             return self._execute_openai_chat_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "ollama-chat":
             return self._execute_ollama_runtime(task, runtime=runtime, worker_id=worker_id)
+        if runtime_kind == "claude-code-cli":
+            return self._execute_claude_code_runtime(task, runtime=runtime, worker_id=worker_id)
         if runtime_kind == "cli-json":
             return self._execute_cli_runtime(task, runtime=runtime, worker_id=worker_id)
         return self._rejected_result(
@@ -951,6 +953,169 @@ class ExecutionAdapterRegistry:
             status="completed",
             outcome="subprocess-json",
             artifacts={"command": execution["command"], "returncode": execution["returncode"]},
+        )
+        return result
+
+    @staticmethod
+    def _prompt_text_from_task(task: dict[str, Any], runtime: dict[str, Any]) -> str:
+        prompt = runtime.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt.strip()
+        payload = dict(task.get("payload") or {})
+        task_input = payload.get("input")
+        if isinstance(task_input, str) and task_input.strip():
+            return task_input.strip()
+        if isinstance(task_input, dict):
+            for key in ("prompt", "content", "text", "query", "instruction"):
+                value = task_input.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        messages = runtime.get("messages") or payload.get("messages")
+        if isinstance(messages, list):
+            texts: list[str] = []
+            for item in messages:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if isinstance(content, str) and content.strip():
+                    texts.append(content.strip())
+            if texts:
+                return "\n\n".join(texts)
+        return json.dumps(payload or task, ensure_ascii=False)
+
+    def _execute_claude_code_runtime(self, task: dict[str, Any], *, runtime: dict[str, Any], worker_id: str) -> dict[str, Any]:
+        raw_command = runtime.get("command")
+        executable_path = str(runtime.get("executable_path") or "").strip()
+        if raw_command is None and executable_path:
+            raw_command = [executable_path]
+        try:
+            command = self._normalize_command(raw_command, field_name="runtime.command or runtime.executable_path")
+        except ValueError as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-code-cli",
+                reason=str(exc),
+                extra={"runtime": "claude-code-cli"},
+            )
+        executable = command[0]
+        if not self.policy.allow_subprocess:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-code-cli",
+                reason="subprocess execution is disabled",
+                extra={"runtime": "claude-code-cli", "command": command},
+            )
+        if not self.policy.command_allowed(executable):
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-code-cli",
+                reason=f"command is not allowlisted: {executable}",
+                extra={"runtime": "claude-code-cli", "command": command},
+            )
+        prompt_text = self._prompt_text_from_task(task, runtime)
+        prompt_transport = str(runtime.get("prompt_transport") or "stdin").strip().lower() or "stdin"
+        prompt_flag = str(runtime.get("prompt_flag") or "").strip()
+        raw_args = runtime.get("args")
+        if isinstance(raw_args, list):
+            args = [str(item) for item in raw_args if str(item).strip()]
+        elif isinstance(raw_args, str) and raw_args.strip():
+            args = [raw_args.strip()]
+        else:
+            args = []
+        final_command = list(command) + list(args)
+        stdin_text: str | None = None
+        if prompt_transport == "stdin":
+            stdin_text = prompt_text
+        elif prompt_transport == "argv":
+            if prompt_flag:
+                final_command.extend([prompt_flag, prompt_text])
+            else:
+                final_command.append(prompt_text)
+        else:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-code-cli",
+                reason="runtime.prompt_transport must be stdin or argv",
+                extra={"runtime": "claude-code-cli", "command": final_command},
+            )
+        env = os.environ.copy()
+        env.update({str(key): str(value) for key, value in dict(runtime.get("env") or {}).items()})
+        try:
+            completed = subprocess.run(
+                final_command,
+                cwd=self._resolve_cwd(runtime.get("cwd")),
+                input=stdin_text,
+                capture_output=True,
+                text=True,
+                timeout=int(runtime.get("timeout_seconds") or self.policy.subprocess_timeout_seconds),
+                check=False,
+                env=env,
+            )
+        except (ValueError, subprocess.TimeoutExpired) as exc:
+            return self._rejected_result(
+                task,
+                worker_id=worker_id,
+                protocol="runtime:claude-code-cli",
+                reason=str(exc),
+                extra={"runtime": "claude-code-cli", "command": final_command},
+            )
+        stdout_text = str(completed.stdout or "")[:4000]
+        stderr_text = str(completed.stderr or "")[:4000]
+        stdout_json = None
+        if stdout_text.strip():
+            try:
+                stdout_json = json.loads(stdout_text)
+            except json.JSONDecodeError:
+                stdout_json = None
+        assistant_message = None
+        if isinstance(stdout_json, dict):
+            if isinstance(stdout_json.get("assistant_message"), dict):
+                assistant_message = dict(stdout_json.get("assistant_message") or {})
+            elif isinstance(stdout_json.get("content"), str):
+                assistant_message = {"role": "assistant", "content": str(stdout_json.get("content") or "")}
+        if assistant_message is None:
+            assistant_message = {"role": "assistant", "content": stdout_text.strip()}
+        result = self._base_result(task, worker_id=worker_id)
+        result["adapter"] = {
+            "mode": "runtime-adapter",
+            "protocol": "claude-code-cli",
+            "status": "completed",
+            "command": final_command,
+        }
+        result["policy_receipt"] = build_policy_receipt(
+            protocol="claude-code-cli",
+            decision="allowed",
+            reason="command allowlisted",
+            mode="runtime-adapter",
+            runtime="claude-code-cli",
+            command=final_command,
+        )
+        result["runtime_execution"] = {
+            "runtime": "claude-code-cli",
+            "command": final_command,
+            "prompt_transport": prompt_transport,
+            "prompt_flag": prompt_flag or None,
+            "returncode": completed.returncode,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "stdout_json": stdout_json,
+            "assistant_message": assistant_message,
+        }
+        result["execution_receipt"] = build_deterministic_execution_receipt(
+            task,
+            worker_id=worker_id,
+            protocol="claude-code-cli",
+            status="completed",
+            outcome="runtime-cli-prompt",
+            artifacts={
+                "command": final_command,
+                "prompt_transport": prompt_transport,
+                "returncode": completed.returncode,
+            },
         )
         return result
 

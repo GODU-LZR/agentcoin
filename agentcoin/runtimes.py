@@ -97,6 +97,15 @@ class RuntimeRegistry:
                 input_modes=["task-envelope"],
                 output_modes=["json-object"],
             ),
+            "claude-code-cli": RuntimeAdapterDescriptor(
+                runtime="claude-code-cli",
+                version="0.1",
+                title="Claude Code CLI Adapter",
+                description="Execute a task by invoking a local Claude Code style CLI with prompt text over stdin or argv and normalizing stdout back into an assistant result.",
+                supports_local=True,
+                input_modes=["prompt-text", "stdin", "argv"],
+                output_modes=["assistant-message", "stdout", "json-object"],
+            ),
         }
 
     def list_runtimes(self) -> list[dict[str, Any]]:

@@ -67,7 +67,7 @@ class LocalAgentDiscovery:
             evidence.append({"kind": "which", "path": executable_path})
         for candidate in self._copilot_cli_candidates():
             normalized = str(candidate).strip()
-            if normalized and not any(item.get("path") == normalized for item in evidence):
+            if normalized and Path(normalized).is_file() and not any(item.get("path") == normalized for item in evidence):
                 evidence.append({"kind": "path", "path": normalized})
 
         package_version = ""
@@ -152,7 +152,7 @@ class LocalAgentDiscovery:
                 evidence.append({"kind": "which", "path": executable_path, "command": command_name})
         for candidate in self._claude_code_cli_candidates():
             normalized = str(candidate).strip()
-            if normalized and not any(item.get("path") == normalized for item in evidence):
+            if normalized and Path(normalized).is_file() and not any(item.get("path") == normalized for item in evidence):
                 evidence.append({"kind": "path", "path": normalized})
         if not evidence:
             return []

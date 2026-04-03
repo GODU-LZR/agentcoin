@@ -5032,6 +5032,7 @@ class AgentCoinNode:
                                 "/v1/payments/receipts/onchain-relay/replay-helper",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
+                                "/v1/integrations/claude-code/bind",
                             ],
                         )
                         receipt = node._sign_document(
@@ -5753,6 +5754,57 @@ class AgentCoinNode:
                                 "task_id": task_id,
                                 "runtime": merged_payload.get("_runtime"),
                                 "provider": "openclaw-gateway",
+                            },
+                        )
+                        return
+                    if self.path == "/v1/integrations/claude-code/bind":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/integrations/claude-code/bind"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        task = node.store.get_task(task_id)
+                        if not task:
+                            raise ValueError("task not found")
+                        command = payload.get("command")
+                        executable_path = str(payload.get("executable_path") or "").strip() or None
+                        if command is None and not executable_path:
+                            for item in node.discovery.discover():
+                                if str(item.get("id") or "") == "claude-code-cli":
+                                    executable_path = str(item.get("executable_path") or "").strip() or None
+                                    break
+                        if command is None and not executable_path:
+                            raise ValueError("command or executable_path is required")
+                        runtime_options = {
+                            "command": command,
+                            "executable_path": executable_path,
+                            "args": payload.get("args"),
+                            "prompt": payload.get("prompt"),
+                            "messages": payload.get("messages"),
+                            "prompt_transport": str(payload.get("prompt_transport") or "").strip() or None,
+                            "prompt_flag": str(payload.get("prompt_flag") or "").strip() or None,
+                            "cwd": str(payload.get("cwd") or "").strip() or None,
+                            "timeout_seconds": int(payload.get("timeout_seconds") or 60),
+                            "provider": "claude-code-cli",
+                        }
+                        if isinstance(payload.get("env"), dict):
+                            runtime_options["env"] = dict(payload.get("env") or {})
+                        merged_payload = dict(task["payload"])
+                        merged_payload["_runtime"] = node.runtimes.normalize_binding(
+                            "claude-code-cli",
+                            {key: value for key, value in runtime_options.items() if value is not None},
+                        )
+                        updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": updated,
+                                "task_id": task_id,
+                                "runtime": merged_payload.get("_runtime"),
+                                "provider": "claude-code-cli",
                             },
                         )
                         return

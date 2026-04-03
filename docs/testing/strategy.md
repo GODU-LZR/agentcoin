@@ -30,6 +30,7 @@ The current test scope covers:
 - per-item manual disable and re-enable controls for payment relay auto-requeue
 - suppression reason and latest override visibility in payment queue and ops summaries
 - local agent discovery for GitHub Copilot CLI, Claude Code CLI, plus VS Code Codex, GitHub Copilot, and Cline across Windows and WSL-style layouts
+- runtime adapter execution for a local `claude-code-cli` subprocess skeleton
 - ACP-capable local agent registration plus managed start / stop lifecycle coverage
 - ACP session skeleton coverage for managed local agents, including transport-ready open/list/close behavior without claiming full ACP protocol exchange
 - ACP initialize-intent coverage, including optional stdio dispatch of a best-effort `initialize` frame candidate and explicit non-coverage of server response parsing

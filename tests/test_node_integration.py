@@ -10267,6 +10267,79 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             ollama.stop()
 
+    def test_runtime_adapter_claude_code_cli(self) -> None:
+        node = NodeHarness(
+            node_id="runtime-claude-code-node",
+            token="token-claude-code",
+            db_path=str(Path(self.tempdir.name) / "runtime-claude-code.db"),
+            capabilities=["worker"],
+            runtimes=["claude-code-cli"],
+        )
+        node.start()
+        try:
+            _, runtimes = self._get(f"{node.base_url}/v1/runtimes")
+            runtime_names = {item["runtime"] for item in runtimes["items"]}
+            self.assertIn("claude-code-cli", runtime_names)
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-code",
+                {
+                    "id": "runtime-claude-code-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "hello claude code"}},
+                },
+            )
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/integrations/claude-code/bind",
+                "token-claude-code",
+                {
+                    "task_id": "runtime-claude-code-1",
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import json,sys;"
+                            "prompt=sys.stdin.read().strip();"
+                            "print(json.dumps({"
+                            "'assistant_message': {'role': 'assistant', 'content': 'claude:' + prompt},"
+                            "'provider': 'claude-code-cli'"
+                            "}))"
+                        ),
+                    ],
+                    "prompt": "hello claude code",
+                    "prompt_transport": "stdin",
+                    "timeout_seconds": 10,
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["provider"], "claude-code-cli")
+            self.assertEqual(bound["runtime"]["runtime"], "claude-code-cli")
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-claude-code",
+                worker_id="worker-claude-code-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["claude-code-cli"],
+                    allow_subprocess=True,
+                    allowed_commands=[sys.executable, Path(sys.executable).name],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "runtime-claude-code-1"][0]
+            self.assertEqual(task["result"]["adapter"]["protocol"], "claude-code-cli")
+            self.assertEqual(task["result"]["runtime_execution"]["assistant_message"]["content"], "claude:hello claude code")
+            self.assertEqual(task["result"]["runtime_execution"]["stdout_json"]["provider"], "claude-code-cli")
+            self.assertEqual(task["result"]["runtime_execution"]["prompt_transport"], "stdin")
+        finally:
+            node.stop()
+
     def test_runtime_adapter_langgraph_http(self) -> None:
         langgraph = LangGraphHarness()
         langgraph.start()
