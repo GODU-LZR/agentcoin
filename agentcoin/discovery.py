@@ -55,7 +55,7 @@ class LocalAgentDiscovery:
     def discover(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         items.extend(self._discover_copilot_cli())
-        items.extend(self._discover_vscode_copilot_chat())
+        items.extend(self._discover_vscode_agent_extensions())
         items.sort(key=lambda item: (str(item.get("family") or ""), str(item.get("title") or ""), str(item.get("id") or "")))
         return items
 
@@ -143,11 +143,72 @@ class LocalAgentDiscovery:
             }
         ]
 
-    def _discover_vscode_copilot_chat(self) -> list[dict[str, Any]]:
+    def _discover_vscode_agent_extensions(self) -> list[dict[str, Any]]:
+        discovered: list[dict[str, Any]] = []
+        specs = {
+            "github.copilot-chat": {
+                "expected_name": "copilot-chat",
+                "id": "github-copilot-chat-vscode",
+                "family": "github-copilot",
+                "title": "GitHub Copilot Chat VS Code Extension",
+                "capabilities": ["editor-chat", "workspace-tools"],
+                "preferred_integration": "vscode-host-adapter",
+                "integration_candidates": ["vscode-host-adapter", "mcp-host-adapter"],
+                "notes": [
+                    "Detected as a VS Code extension, not a standalone AgentCoin node.",
+                    "This needs a host-side adapter rather than direct peer registration.",
+                ],
+            },
+            "github.copilot": {
+                "expected_name": "copilot",
+                "id": "github-copilot-vscode",
+                "family": "github-copilot",
+                "title": "GitHub Copilot VS Code Extension",
+                "capabilities": ["inline-completions", "editor-assist"],
+                "preferred_integration": "vscode-host-adapter",
+                "integration_candidates": ["vscode-host-adapter"],
+                "notes": [
+                    "Detected as a VS Code editor extension.",
+                    "Direct AgentCoin integration would require a VS Code host adapter rather than peer registration.",
+                ],
+            },
+            "openai.chatgpt": {
+                "expected_name": "chatgpt",
+                "id": "openai-codex-vscode",
+                "family": "openai-codex",
+                "title": "OpenAI Codex VS Code Extension",
+                "capabilities": ["editor-chat", "agent-sidebar", "workspace-tools"],
+                "preferred_integration": "vscode-host-adapter",
+                "integration_candidates": ["vscode-host-adapter", "lsp-mcp-adapter"],
+                "notes": [
+                    "Detected as the OpenAI Codex VS Code extension.",
+                    "It is discoverable locally, but joining AgentCoin needs a host adapter rather than direct node registration.",
+                ],
+            },
+            "saoudrizwan.claude-dev": {
+                "expected_name": "claude-dev",
+                "id": "cline-vscode",
+                "family": "cline",
+                "title": "Cline VS Code Extension",
+                "capabilities": ["editor-chat", "workspace-tools", "mcp-tools"],
+                "preferred_integration": "vscode-host-adapter",
+                "integration_candidates": ["vscode-host-adapter", "mcp-host-adapter"],
+                "notes": [
+                    "Detected as the Cline VS Code extension.",
+                    "This is a host-side IDE agent and would need an adapter rather than direct peer registration.",
+                ],
+            },
+        }
         for root in self._vscode_extension_roots():
             if not root.exists():
                 continue
-            for extension_dir in root.glob("github.copilot-chat-*"):
+            for extension_dir in root.iterdir():
+                if not extension_dir.is_dir():
+                    continue
+                extension_name = str(extension_dir.name or "").strip()
+                matched_prefix = next((prefix for prefix in specs if extension_name.startswith(f"{prefix}-")), None)
+                if not matched_prefix:
+                    continue
                 package_json = extension_dir / "package.json"
                 if not package_json.is_file():
                     continue
@@ -155,30 +216,29 @@ class LocalAgentDiscovery:
                     payload = json.loads(package_json.read_text(encoding="utf-8"))
                 except Exception:
                     continue
-                if str(payload.get("name") or "").strip() != "copilot-chat":
+                spec = specs[matched_prefix]
+                if str(payload.get("name") or "").strip() != str(spec["expected_name"]):
                     continue
-                return [
+                discovered.append(
                     {
-                        "id": "github-copilot-chat-vscode",
-                        "family": "github-copilot",
-                        "title": "GitHub Copilot Chat VS Code Extension",
+                        "id": str(spec["id"]),
+                        "family": str(spec["family"]),
+                        "title": str(spec["title"]),
                         "type": "editor-extension",
-                        "publisher": str(payload.get("publisher") or "GitHub"),
+                        "publisher": str(payload.get("publisher") or ""),
                         "discovery_platform": self.system_name.lower(),
                         "wsl": self.is_wsl,
                         "version": str(payload.get("version") or "").strip(),
+                        "display_name": str(payload.get("displayName") or "").strip() or None,
                         "extension_path": str(extension_dir),
                         "protocols": [],
-                        "capabilities": ["editor-chat", "workspace-tools"],
+                        "capabilities": list(spec["capabilities"]),
                         "agentcoin_compatibility": {
                             "discovered": True,
                             "attachable_today": False,
-                            "preferred_integration": "vscode-host-adapter",
-                            "integration_candidates": ["vscode-host-adapter", "mcp-host-adapter"],
-                            "notes": [
-                                "Detected as a VS Code extension, not a standalone AgentCoin node.",
-                                "This needs a host-side adapter rather than direct peer registration.",
-                            ],
+                            "preferred_integration": str(spec["preferred_integration"]),
+                            "integration_candidates": list(spec["integration_candidates"]),
+                            "notes": list(spec["notes"]),
                         },
                         "evidence": [
                             {
@@ -187,8 +247,8 @@ class LocalAgentDiscovery:
                             }
                         ],
                     }
-                ]
-        return []
+                )
+        return discovered
 
     def _copilot_cli_candidates(self) -> list[str]:
         candidates: list[str] = []

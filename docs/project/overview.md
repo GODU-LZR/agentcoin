@@ -39,7 +39,7 @@ The current repository contains:
 - optional background auto-requeue for transient payment proof dead-letter failures
 - per-item manual disable and re-enable controls for payment relay auto-requeue governance
 - queue and ops summaries now expose suppression reasons plus the latest manual auto-requeue override
-- a loopback-only local agent discovery endpoint can now scan for GitHub Copilot CLI and VS Code Copilot Chat installations
+- a loopback-only local agent discovery endpoint can now scan for GitHub Copilot CLI plus VS Code Codex, GitHub Copilot, and Cline installations
 
 ## Design Goals
 

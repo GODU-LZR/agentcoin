@@ -1021,6 +1021,32 @@ class NodeIntegrationTests(unittest.TestCase):
             json.dumps({"name": "copilot-chat", "publisher": "GitHub", "version": "0.42.3"}),
             encoding="utf-8",
         )
+        codex_json = home / ".vscode" / "extensions" / "openai.chatgpt-26.5401.11717-win32-x64" / "package.json"
+        codex_json.parent.mkdir(parents=True, exist_ok=True)
+        codex_json.write_text(
+            json.dumps(
+                {
+                    "name": "chatgpt",
+                    "publisher": "openai",
+                    "version": "26.5401.11717",
+                    "displayName": "Codex – OpenAI’s coding agent",
+                }
+            ),
+            encoding="utf-8",
+        )
+        cline_json = home / ".vscode" / "extensions" / "saoudrizwan.claude-dev-3.77.0" / "package.json"
+        cline_json.parent.mkdir(parents=True, exist_ok=True)
+        cline_json.write_text(
+            json.dumps(
+                {
+                    "name": "claude-dev",
+                    "publisher": "saoudrizwan",
+                    "version": "3.77.0",
+                    "displayName": "Cline",
+                }
+            ),
+            encoding="utf-8",
+        )
 
         def fake_runner(command: list[str]) -> tuple[int, str, str]:
             if command[-1] == "--help":
@@ -1054,9 +1080,15 @@ class NodeIntegrationTests(unittest.TestCase):
             ids = {item["id"] for item in payload["items"]}
             self.assertIn("github-copilot-cli", ids)
             self.assertIn("github-copilot-chat-vscode", ids)
+            self.assertIn("openai-codex-vscode", ids)
+            self.assertIn("cline-vscode", ids)
             cli_item = [item for item in payload["items"] if item["id"] == "github-copilot-cli"][0]
             self.assertIn("acp", cli_item["protocols"])
             self.assertEqual(cli_item["agentcoin_compatibility"]["preferred_integration"], "acp-bridge")
+            codex_item = [item for item in payload["items"] if item["id"] == "openai-codex-vscode"][0]
+            self.assertEqual(codex_item["publisher"], "openai")
+            cline_item = [item for item in payload["items"] if item["id"] == "cline-vscode"][0]
+            self.assertEqual(cline_item["display_name"], "Cline")
         finally:
             node.stop()
 
