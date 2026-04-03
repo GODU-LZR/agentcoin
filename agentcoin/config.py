@@ -203,6 +203,9 @@ class NodeConfig:
     payment_quote_asset: str = "AGENT"
     payment_quote_ttl_seconds: int = 300
     payment_receipt_ttl_seconds: int = 3600
+    payment_relay_auto_requeue_enabled: bool = False
+    payment_relay_auto_requeue_delay_seconds: int = 30
+    payment_relay_auto_requeue_max_requeues: int = 1
     challenge_bond_required_wei: int = 0
     poaw_policy_version: str = "0.2"
     poaw_score_weights: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_POAW_SCORE_WEIGHTS))

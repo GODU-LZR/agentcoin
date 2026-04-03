@@ -847,6 +847,44 @@ class AgentCoinNode:
                 processed.append({"item": queue_item, "error": str(exc)})
         return processed
 
+    def auto_requeue_dead_letter_payment_relays(self, *, max_items: int | None = None) -> list[dict[str, Any]]:
+        if not bool(self.config.payment_relay_auto_requeue_enabled):
+            return []
+        processed: list[dict[str, Any]] = []
+        max_requeues = max(0, int(self.config.payment_relay_auto_requeue_max_requeues or 0))
+        delay_seconds = max(0, int(self.config.payment_relay_auto_requeue_delay_seconds or 0))
+        if max_requeues <= 0:
+            return []
+        items = self.store.list_payment_relay_queue(status="dead-letter", limit=200)
+        retryable_categories = {"network", "transport", "rpc"}
+        for item in items:
+            if max_items is not None and len(processed) >= max_items:
+                break
+            payload = dict(item.get("payload") or {})
+            auto_requeue_count = int(payload.get("_auto_requeue_count") or 0)
+            if auto_requeue_count >= max_requeues:
+                continue
+            failure_category = self._classify_relay_failure(str(item.get("last_error") or ""))
+            if failure_category not in retryable_categories:
+                continue
+            updated_payload = dict(payload)
+            updated_payload["_auto_requeue_count"] = auto_requeue_count + 1
+            updated_payload["_auto_requeue_reason"] = "transient-payment-relay-failure"
+            queue_item = self.store.requeue_payment_relay_queue_item(
+                str(item.get("id") or ""),
+                delay_seconds=delay_seconds,
+                payload=updated_payload,
+            )
+            if queue_item and str(queue_item.get("status") or "") == "queued":
+                processed.append(
+                    {
+                        "item": queue_item,
+                        "auto_requeue_count": auto_requeue_count + 1,
+                        "failure_category": failure_category,
+                    }
+                )
+        return processed
+
     @staticmethod
     def _merge_payment_relay_queue_payload(
         current_payload: dict[str, Any],
@@ -989,6 +1027,11 @@ class AgentCoinNode:
             "receipt_id": normalized_receipt_id,
             "required_workflows": list(self.config.payment_required_workflows),
             "quote_template": quote_template,
+            "auto_requeue_policy": {
+                "enabled": bool(self.config.payment_relay_auto_requeue_enabled),
+                "delay_seconds": int(self.config.payment_relay_auto_requeue_delay_seconds or 0),
+                "max_requeues": int(self.config.payment_relay_auto_requeue_max_requeues or 0),
+            },
             "latest_relay": self.store.get_latest_payment_relay(normalized_receipt_id),
             "latest_failed_relay": self.store.get_latest_failed_payment_relay(normalized_receipt_id),
             "queue_summary": queue_summary,
@@ -6762,6 +6805,7 @@ class AgentCoinNode:
             return
         while not self._sync_stop.is_set():
             try:
+                self.auto_requeue_dead_letter_payment_relays()
                 self.process_payment_relay_queue()
             except Exception:
                 LOG.exception("payment relay queue loop failed")

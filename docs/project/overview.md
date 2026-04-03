@@ -36,6 +36,7 @@ The current repository contains:
 - payment relay queue pause, resume, requeue, cancel, and delete controls for local operator or browser workflows
 - payment relay diagnostics including queue summary, latest failed relay lookup, and signed replay-helper payload generation
 - signed payment ops summary payload for browser or operator dashboards
+- optional background auto-requeue for transient payment proof dead-letter failures
 
 ## Design Goals
 
@@ -117,6 +118,7 @@ Configuration defines:
 - optional automatic local identity bootstrap, CORS-friendly local manifest exposure, and derived DID state
 - metered workflow policy and local 402 payment quote settings
 - local payment receipt lifetime and introspection settings
+- optional payment relay auto-requeue settings for transient dead-letter recovery
 - auth token
 - HMAC signing secret
 - inbound signature requirement
