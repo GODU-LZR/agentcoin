@@ -138,6 +138,7 @@ class AgentCoinNode:
                 "local_agent_acp_session_open_url": card.get("endpoints", {}).get("local_agent_acp_session_open"),
                 "local_agent_acp_session_close_url": card.get("endpoints", {}).get("local_agent_acp_session_close"),
                 "local_agent_acp_session_initialize_url": card.get("endpoints", {}).get("local_agent_acp_session_initialize"),
+                "local_agent_acp_session_poll_url": card.get("endpoints", {}).get("local_agent_acp_session_poll"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -4867,6 +4868,7 @@ class AgentCoinNode:
                                 "/v1/discovery/local-agents/acp-session/open",
                                 "/v1/discovery/local-agents/acp-session/close",
                                 "/v1/discovery/local-agents/acp-session/initialize",
+                                "/v1/discovery/local-agents/acp-session/poll",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
@@ -5199,6 +5201,29 @@ class AgentCoinNode:
                                     "transport_ready": True,
                                     "protocol_messages_implemented": False,
                                     "server_response_parsing_implemented": False,
+                                },
+                            },
+                        )
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/poll":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/poll"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        session_id = str(payload.get("session_id") or "").strip()
+                        if not session_id:
+                            raise ValueError("session_id is required")
+                        polled = node.local_agents.poll_acp_session(session_id)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                **polled,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                    "server_response_parsing_implemented": "best-effort-json-frame-capture-only",
                                 },
                             },
                         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -13,6 +14,51 @@ class LocalAgentManager:
         self._registrations: dict[str, dict[str, Any]] = {}
         self._processes: dict[str, subprocess.Popen[Any]] = {}
         self._acp_sessions: dict[str, dict[str, Any]] = {}
+        self._acp_stdout_threads: dict[str, threading.Thread] = {}
+        self._acp_stdout_frames: dict[str, list[dict[str, Any]]] = {}
+        self._acp_lock = threading.Lock()
+
+    def _capture_acp_stdout(self, registration_id: str, process: subprocess.Popen[Any]) -> None:
+        stream = process.stdout
+        if stream is None:
+            return
+        try:
+            while True:
+                line = stream.readline()
+                if not line:
+                    break
+                raw = str(line).strip()
+                if not raw:
+                    continue
+                frame: dict[str, Any] = {
+                    "received_at": utc_now(),
+                    "raw": raw,
+                    "parsed": None,
+                    "parse_error": None,
+                }
+                try:
+                    frame["parsed"] = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    frame["parse_error"] = str(exc)
+                with self._acp_lock:
+                    self._acp_stdout_frames.setdefault(registration_id, []).append(frame)
+        finally:
+            with self._acp_lock:
+                self._acp_stdout_threads.pop(registration_id, None)
+
+    def _captured_frames_for_registration(self, registration_id: str) -> list[dict[str, Any]]:
+        with self._acp_lock:
+            return [dict(item) for item in self._acp_stdout_frames.get(registration_id, [])]
+
+    @staticmethod
+    def _summarize_latest_server_frame(frames: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not frames:
+            return None
+        latest = dict(frames[-1])
+        parsed = latest.get("parsed")
+        if isinstance(parsed, dict):
+            latest["parsed"] = dict(parsed)
+        return latest
 
     def _update_session_states_for_registration(self, registration_id: str, process_state: str) -> None:
         for record in self._acp_sessions.values():
@@ -84,6 +130,17 @@ class LocalAgentManager:
             record["process_state"] = "running"
             record["updated_at"] = utc_now()
             record["pid"] = registration.get("pid")
+        frames = self._captured_frames_for_registration(str(record.get("registration_id") or ""))
+        record["server_frames_seen"] = len(frames)
+        latest_frame = self._summarize_latest_server_frame(frames)
+        if latest_frame:
+            record["latest_server_frame"] = latest_frame
+            if bool(record.get("initialize_sent")):
+                record["handshake_state"] = "initialize-response-captured"
+                record["protocol_state"] = "server-response-captured"
+                record["initialize_response_captured"] = True
+                if not record.get("initialize_response_received_at"):
+                    record["initialize_response_received_at"] = latest_frame.get("received_at")
         return dict(record)
 
     def _build_acp_initialize_intent(
@@ -168,6 +225,19 @@ class LocalAgentManager:
             stored["protocol_state"] = "initialize-dispatch-pending"
         return {"session": dict(stored), "initialize_intent": intent, "dispatched": bool(dispatch)}
 
+    def poll_acp_session(self, session_id: str) -> dict[str, Any]:
+        session = self.get_acp_session(session_id)
+        if not session:
+            raise ValueError("acp session not found")
+        registration_id = str(session.get("registration_id") or "")
+        frames = self._captured_frames_for_registration(registration_id)
+        refreshed = self.get_acp_session(session_id)
+        return {
+            "session": refreshed or session,
+            "captured_frames": frames,
+            "latest_server_frame": self._summarize_latest_server_frame(frames),
+        }
+
     def register_discovered_agent(
         self,
         discovered_item: dict[str, Any],
@@ -236,6 +306,17 @@ class LocalAgentManager:
         stored["last_exit_code"] = None
         stored["transport"] = "stdio" if stdio_enabled else "subprocess"
         self._processes[registration_id] = process
+        if stdio_enabled:
+            with self._acp_lock:
+                self._acp_stdout_frames[registration_id] = []
+            thread = threading.Thread(
+                target=self._capture_acp_stdout,
+                args=(registration_id, process),
+                name=f"agentcoin-acp-{registration_id}",
+                daemon=True,
+            )
+            self._acp_stdout_threads[registration_id] = thread
+            thread.start()
         self._update_session_states_for_registration(registration_id, "running")
         return dict(stored)
 
@@ -270,6 +351,9 @@ class LocalAgentManager:
                 stream.close()
             except Exception:
                 continue
+        reader = self._acp_stdout_threads.pop(registration_id, None)
+        if reader and reader.is_alive():
+            reader.join(timeout=1)
         self._update_session_states_for_registration(registration_id, "stopped")
         return dict(stored)
 

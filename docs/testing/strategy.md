@@ -33,6 +33,7 @@ The current test scope covers:
 - ACP-capable local agent registration plus managed start / stop lifecycle coverage
 - ACP session skeleton coverage for managed local agents, including transport-ready open/list/close behavior without claiming full ACP protocol exchange
 - ACP initialize-intent coverage, including optional stdio dispatch of a best-effort `initialize` frame candidate and explicit non-coverage of server response parsing
+- ACP stdout polling coverage, including capture of a fake initialize response frame and best-effort JSON parsing into session state
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

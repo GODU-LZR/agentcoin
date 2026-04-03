@@ -1325,6 +1325,17 @@ class NodeIntegrationTests(unittest.TestCase):
             "with open(capture_path, 'w', encoding='utf-8') as handle:\n"
             "    handle.write(line)\n"
             "    handle.flush()\n"
+            "request = json.loads(line)\n"
+            "response = {\n"
+            "    'id': request.get('id'),\n"
+            "    'result': {\n"
+            "        'protocolVersion': request.get('params', {}).get('protocolVersion'),\n"
+            "        'serverInfo': {'name': 'fake-acp-server', 'version': '0.1-test'},\n"
+            "        'serverCapabilities': {'tasks': True},\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response) + '\\n')\n"
+            "sys.stdout.flush()\n"
             "try:\n"
             "    time.sleep(30)\n"
             "except KeyboardInterrupt:\n"
@@ -1413,6 +1424,33 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(captured["params"]["protocolVersion"], "0.1-preview")
             self.assertEqual(captured["params"]["clientCapabilities"], {"tasks": True})
             self.assertEqual(captured["params"]["clientInfo"]["name"], "agentcoin-test")
+
+            poll_deadline = time.time() + 5
+            poll_status = HTTPStatus.OK
+            poll_payload: dict[str, object] = {}
+            while time.time() < poll_deadline:
+                poll_status, polled = self._identity_signed_post(
+                    f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                    {"session_id": session_id},
+                    private_key_path=key_path,
+                    principal="frontend-local-agent-acp-init",
+                    public_key=public_key,
+                )
+                poll_payload = polled
+                if polled.get("latest_server_frame"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(poll_status, HTTPStatus.OK)
+            self.assertEqual(poll_payload["session"]["handshake_state"], "initialize-response-captured")
+            self.assertEqual(poll_payload["session"]["protocol_state"], "server-response-captured")
+            latest_server_frame = poll_payload["latest_server_frame"]
+            self.assertIsNotNone(latest_server_frame)
+            self.assertEqual(latest_server_frame["parsed"]["result"]["serverInfo"]["name"], "fake-acp-server")
+            self.assertEqual(latest_server_frame["parsed"]["result"]["serverCapabilities"], {"tasks": True})
+            self.assertEqual(
+                poll_payload["protocol_boundary"]["server_response_parsing_implemented"],
+                "best-effort-json-frame-capture-only",
+            )
         finally:
             node.stop()
 
