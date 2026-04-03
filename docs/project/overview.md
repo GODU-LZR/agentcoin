@@ -417,3 +417,5 @@ The current automated coverage focuses on the stable MVP paths rather than exhau
 - Connectivity: [docs/architecture/e2ee-connectivity.md](../architecture/e2ee-connectivity.md)
 - Testing: [docs/testing/strategy.md](../testing/strategy.md)
 - License notice: [docs/legal/gpl-notice.md](../legal/gpl-notice.md)
+d o c s   u p d a t e  
+ 
