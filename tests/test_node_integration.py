@@ -2172,6 +2172,15 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(summary_status, HTTPStatus.OK)
             self.assertEqual(summary_payload["auto_requeue_disabled_count"], 1)
+            self.assertEqual(len(summary_payload["auto_requeue_disabled_items"]), 1)
+            self.assertEqual(
+                summary_payload["auto_requeue_disabled_items"][0]["reason"],
+                "manual-review-pending",
+            )
+            self.assertEqual(
+                summary_payload["latest_auto_requeue_override"]["state"],
+                "disabled",
+            )
 
             rpc.start()
             node.node.config.onchain.rpc_url = rpc.url
@@ -2196,6 +2205,23 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(completed["payload"]["_auto_requeue_count"], 1)
             self.assertIn("_auto_requeue_reenabled_at", completed["payload"])
             self.assertEqual(len(rpc.calls), 1)
+
+            ops_status, ops_summary = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/ops/summary?receipt_id={receipt['receipt_id']}",
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-override",
+                public_key=public_key,
+            )
+            self.assertEqual(ops_status, HTTPStatus.OK)
+            self.assertEqual(ops_summary["auto_requeue_disabled_items"], [])
+            self.assertEqual(
+                ops_summary["latest_auto_requeue_override"]["state"],
+                "enabled",
+            )
+            self.assertEqual(
+                ops_summary["latest_auto_requeue_override"]["id"],
+                item["id"],
+            )
         finally:
             node.stop()
             rpc.stop()

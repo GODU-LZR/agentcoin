@@ -1062,6 +1062,8 @@ class AgentCoinNode:
             "latest_relay": self.store.get_latest_payment_relay(normalized_receipt_id),
             "latest_failed_relay": self.store.get_latest_failed_payment_relay(normalized_receipt_id),
             "queue_summary": queue_summary,
+            "auto_requeue_disabled_items": list(queue_summary.get("auto_requeue_disabled_items") or []),
+            "latest_auto_requeue_override": queue_summary.get("latest_auto_requeue_override"),
             "recent_relays": recent_relays,
             "stats": {
                 key: value

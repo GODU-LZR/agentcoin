@@ -2728,19 +2728,62 @@ class NodeStore:
             "dead-letter": 0,
         }
         auto_requeue_disabled_count = 0
+        auto_requeue_disabled_items: list[dict[str, Any]] = []
+        latest_auto_requeue_override: dict[str, Any] | None = None
         latest_item = items[0] if items else None
         latest_failed_item = next((item for item in items if str(item.get("status") or "") == "dead-letter"), None)
         for item in items:
             status_name = str(item.get("status") or "").strip()
             if status_name in counts:
                 counts[status_name] += 1
-            if bool(dict(item.get("payload") or {}).get("_auto_requeue_disabled")):
+            payload = dict(item.get("payload") or {})
+            disabled = bool(payload.get("_auto_requeue_disabled"))
+            disabled_at = str(payload.get("_auto_requeue_disabled_at") or "").strip() or None
+            reenabled_at = str(payload.get("_auto_requeue_reenabled_at") or "").strip() or None
+            if disabled:
                 auto_requeue_disabled_count += 1
+                auto_requeue_disabled_items.append(
+                    {
+                        "id": item.get("id"),
+                        "receipt_id": item.get("receipt_id"),
+                        "workflow_name": item.get("workflow_name"),
+                        "status": item.get("status"),
+                        "reason": str(payload.get("_auto_requeue_disabled_reason") or "").strip() or "manual-override",
+                        "disabled_at": disabled_at,
+                        "attempts": int(item.get("attempts") or 0),
+                        "updated_at": item.get("updated_at"),
+                    }
+                )
+            override_state: str | None = None
+            override_changed_at: str | None = None
+            if disabled and disabled_at:
+                override_state = "disabled"
+                override_changed_at = disabled_at
+            elif reenabled_at:
+                override_state = "enabled"
+                override_changed_at = reenabled_at
+            if override_state and override_changed_at:
+                candidate = {
+                    "id": item.get("id"),
+                    "receipt_id": item.get("receipt_id"),
+                    "workflow_name": item.get("workflow_name"),
+                    "status": item.get("status"),
+                    "state": override_state,
+                    "reason": str(payload.get("_auto_requeue_disabled_reason") or "").strip() or None,
+                    "changed_at": override_changed_at,
+                    "updated_at": item.get("updated_at"),
+                }
+                if latest_auto_requeue_override is None or str(candidate["changed_at"]) > str(
+                    latest_auto_requeue_override.get("changed_at") or ""
+                ):
+                    latest_auto_requeue_override = candidate
         return {
             "receipt_id": receipt_id,
             "item_count": len(items),
             "counts": counts,
             "auto_requeue_disabled_count": auto_requeue_disabled_count,
+            "auto_requeue_disabled_items": auto_requeue_disabled_items[:10],
+            "latest_auto_requeue_override": latest_auto_requeue_override,
             "latest_item": latest_item,
             "latest_failed_item": latest_failed_item,
         }

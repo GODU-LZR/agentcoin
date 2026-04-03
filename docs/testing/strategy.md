@@ -28,6 +28,7 @@ The current test scope covers:
 - signed payment ops summary payload for dashboard-style local inspection
 - automatic payment dead-letter requeue for transient network or RPC failures
 - per-item manual disable and re-enable controls for payment relay auto-requeue
+- suppression reason and latest override visibility in payment queue and ops summaries
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery
@@ -169,6 +170,7 @@ The following behaviors are now covered either by automated tests or previously 
 - payment ops summary now aggregates recent relays, queue counts, quote defaults, and latest failed relay state
 - payment relay background worker can now auto-requeue transient dead-letter items under explicit config
 - payment relay auto-requeue now supports per-item manual disable and re-enable governance
+- payment queue and ops summaries now surface current suppression reasons and the latest manual override state
 - worker loop tolerance of temporary node connectivity failure
 - repeated policy rejection lowers reputation and eventually quarantines a worker id
 

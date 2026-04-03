@@ -38,6 +38,7 @@ The current repository contains:
 - signed payment ops summary payload for browser or operator dashboards
 - optional background auto-requeue for transient payment proof dead-letter failures
 - per-item manual disable and re-enable controls for payment relay auto-requeue governance
+- queue and ops summaries now expose suppression reasons plus the latest manual auto-requeue override
 
 ## Design Goals
 
