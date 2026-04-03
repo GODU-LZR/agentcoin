@@ -174,6 +174,8 @@ Current implementation status:
 - loopback-only scoped bearer tokens now exist for explicitly scoped endpoints
 - scoped bearer requests are audited and scope-checked
 - scoped bearer tokens are treated as an explicit downgraded local-automation path, not the preferred high-risk steady state
+- Tier 1 local operational endpoints such as `tasks/requeue`, `outbox/flush`, `outbox/requeue`, `git/branch`, and `git/task-context` now have explicit `local-admin` scope policies
+- shared bearer remains accepted on loopback for those Tier 1 endpoints during migration
 
 ### Phase 3: Signed operator requests
 

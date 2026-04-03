@@ -2125,6 +2125,31 @@ class AgentCoinNode:
                 "policy_level": 1,
                 "required_scopes": ["read-only"],
             },
+            "/v1/tasks/requeue": {
+                "policy_tier": "local-admin",
+                "policy_level": 1,
+                "required_scopes": ["local-admin"],
+            },
+            "/v1/outbox/flush": {
+                "policy_tier": "local-admin",
+                "policy_level": 1,
+                "required_scopes": ["local-admin"],
+            },
+            "/v1/outbox/requeue": {
+                "policy_tier": "local-admin",
+                "policy_level": 1,
+                "required_scopes": ["local-admin"],
+            },
+            "/v1/git/branch": {
+                "policy_tier": "local-admin",
+                "policy_level": 1,
+                "required_scopes": ["local-admin"],
+            },
+            "/v1/git/task-context": {
+                "policy_tier": "local-admin",
+                "policy_level": 1,
+                "required_scopes": ["local-admin"],
+            },
             "/v1/workflows/fanout": {
                 "policy_tier": "workflow-admin",
                 "policy_level": 2,
@@ -2818,6 +2843,32 @@ class AgentCoinNode:
                         reason="loopback scoped bearer accepted",
                         auth_context=auth_context,
                         payload={"fallback": True, "token_kind": "scoped"},
+                    )
+                    return auth_context
+
+                if str(bearer_auth.get("kind") or "") == "shared" and policy_tier == "local-admin":
+                    auth_context = self._auth_context(
+                        policy_tier=policy_tier,
+                        policy_level=policy_level,
+                        required_scopes=normalized_scopes,
+                        mode="bearer-downgrade",
+                        granted_scopes=["local-admin"],
+                        downgraded=True,
+                    )
+                    if not self._is_loopback_request():
+                        self._deny_operator_auth(
+                            status=HTTPStatus.FORBIDDEN,
+                            error_message="shared bearer downgrade is restricted to loopback access",
+                            reason="shared bearer downgrade for local-admin endpoints is only allowed from loopback",
+                            reason_code="non-loopback-downgrade-denied",
+                            auth_context=auth_context,
+                        )
+                        return None
+                    self._record_operator_auth_audit(
+                        decision="allowed",
+                        reason="loopback shared bearer accepted for local-admin endpoint",
+                        auth_context=auth_context,
+                        payload={"fallback": True, "token_kind": "shared"},
                     )
                     return auth_context
 

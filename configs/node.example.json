@@ -27,6 +27,18 @@
       "enabled": true
     },
     {
+      "token_id": "bearer:local-admin-local",
+      "name": "Local Tier 1 Automation Token",
+      "token": "replace-with-local-admin-bearer-token",
+      "scopes": [
+        "local-admin"
+      ],
+      "source_restrictions": [
+        "loopback-only"
+      ],
+      "enabled": true
+    },
+    {
       "token_id": "bearer:workflow-local",
       "name": "Local Workflow Automation Token",
       "token": "replace-with-workflow-admin-bearer-token",

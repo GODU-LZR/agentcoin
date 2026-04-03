@@ -4213,6 +4213,204 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_shared_bearer_remains_accepted_for_local_admin_endpoints_on_loopback(self) -> None:
+        repo_path = Path(self.tempdir.name) / "local-admin-shared-repo"
+        self._init_git_repo(repo_path)
+        (repo_path / "README.txt").write_text("hello\nchange\n", encoding="utf-8")
+
+        node = NodeHarness(
+            node_id="local-admin-shared-bearer-node",
+            token="token-local-admin-shared",
+            db_path=str(Path(self.tempdir.name) / "local-admin-shared.db"),
+            capabilities=["planner", "worker"],
+            git_root=str(repo_path),
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-shared-local-secret",
+                    scopes=["read-only"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-local-admin-shared",
+                {
+                    "id": "local-admin-dead-task",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {},
+                    "max_attempts": 1,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-local-admin-shared",
+                {"worker_id": "worker-local-admin-shared", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-local-admin-shared",
+                {
+                    "task_id": "local-admin-dead-task",
+                    "worker_id": "worker-local-admin-shared",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": False,
+                    "error_message": "failed once",
+                    "requeue": True,
+                },
+            )
+
+            branch_status, branch_payload = self._post(
+                f"{node.base_url}/v1/git/branch",
+                "token-local-admin-shared",
+                {"name": "agentcoin/local-admin-shared", "from_ref": "HEAD", "checkout": False},
+            )
+            self.assertEqual(branch_status, 201)
+            self.assertEqual(branch_payload["branch"], "agentcoin/local-admin-shared")
+
+            requeue_status, requeue_payload = self._post(
+                f"{node.base_url}/v1/tasks/requeue",
+                "token-local-admin-shared",
+                {"task_id": "local-admin-dead-task", "delay_seconds": 0},
+            )
+            self.assertEqual(requeue_status, 200)
+            self.assertTrue(requeue_payload["ok"])
+
+            flush_status, flush_payload = self._post(
+                f"{node.base_url}/v1/outbox/flush",
+                "token-local-admin-shared",
+                {},
+            )
+            self.assertEqual(flush_status, 200)
+            self.assertIn("flushed", flush_payload)
+
+            branch_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/git/branch", limit=10)
+            self.assertEqual(branch_audits[0]["decision"], "allowed")
+            self.assertEqual(branch_audits[0]["auth_mode"], "bearer-downgrade")
+            self.assertTrue(branch_audits[0]["payload"]["downgraded"])
+
+            requeue_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/tasks/requeue", limit=10)
+            self.assertEqual(requeue_audits[0]["decision"], "allowed")
+            self.assertEqual(requeue_audits[0]["auth_mode"], "bearer-downgrade")
+        finally:
+            node.stop()
+
+    def test_local_admin_scoped_bearer_controls_tier1_endpoints(self) -> None:
+        repo_path = Path(self.tempdir.name) / "local-admin-scoped-repo"
+        self._init_git_repo(repo_path)
+        (repo_path / "README.txt").write_text("hello\nchange\n", encoding="utf-8")
+
+        node = NodeHarness(
+            node_id="local-admin-scoped-bearer-node",
+            token="token-local-admin-scoped",
+            db_path=str(Path(self.tempdir.name) / "local-admin-scoped.db"),
+            capabilities=["planner", "worker"],
+            git_root=str(repo_path),
+            operator_identities=[
+                OperatorIdentityConfig(
+                    key_id="read-only:observer-1",
+                    shared_secret="read-only-local-admin-secret",
+                    scopes=["read-only"],
+                ),
+            ],
+            scoped_bearer_tokens=[
+                ScopedBearerTokenConfig(
+                    token_id="bearer:local-admin-1",
+                    token="local-admin-bearer-token",
+                    scopes=["local-admin"],
+                    source_restrictions=["loopback-only"],
+                ),
+                ScopedBearerTokenConfig(
+                    token_id="bearer:observer-1",
+                    token="read-only-local-token",
+                    scopes=["read-only"],
+                    source_restrictions=["loopback-only"],
+                ),
+            ],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-local-admin-scoped",
+                {
+                    "id": "local-admin-scope-task",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {},
+                    "max_attempts": 1,
+                },
+            )
+            _, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-local-admin-scoped",
+                {"worker_id": "worker-local-admin-scope", "worker_capabilities": ["worker"], "lease_seconds": 30},
+            )
+            self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-local-admin-scoped",
+                {
+                    "task_id": "local-admin-scope-task",
+                    "worker_id": "worker-local-admin-scope",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": False,
+                    "error_message": "failed once",
+                    "requeue": True,
+                },
+            )
+
+            denied_branch_status, denied_branch = self._post(
+                f"{node.base_url}/v1/git/branch",
+                "read-only-local-token",
+                {"name": "agentcoin/local-admin-denied", "from_ref": "HEAD", "checkout": False},
+            )
+            self.assertEqual(denied_branch_status, 403)
+            self.assertEqual(denied_branch["policy_receipt"]["reason_code"], "scope-denied")
+
+            branch_status, branch_payload = self._post(
+                f"{node.base_url}/v1/git/branch",
+                "local-admin-bearer-token",
+                {"name": "agentcoin/local-admin-allowed", "from_ref": "HEAD", "checkout": False},
+            )
+            self.assertEqual(branch_status, 201)
+            self.assertEqual(branch_payload["branch"], "agentcoin/local-admin-allowed")
+
+            attached_status, attached = self._post(
+                f"{node.base_url}/v1/git/task-context",
+                "local-admin-bearer-token",
+                {"task_id": "local-admin-scope-task", "base_ref": "HEAD"},
+            )
+            self.assertEqual(attached_status, 200)
+            self.assertTrue(attached["updated"])
+
+            requeue_status, requeue_payload = self._post(
+                f"{node.base_url}/v1/tasks/requeue",
+                "local-admin-bearer-token",
+                {"task_id": "local-admin-scope-task", "delay_seconds": 0},
+            )
+            self.assertEqual(requeue_status, 200)
+            self.assertTrue(requeue_payload["ok"])
+
+            branch_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/git/branch", limit=10)
+            self.assertEqual([item["decision"] for item in branch_audits[:2]], ["allowed", "denied"])
+            self.assertEqual(branch_audits[0]["key_id"], "bearer:local-admin-1")
+            self.assertEqual(branch_audits[0]["auth_mode"], "scoped-bearer")
+            self.assertEqual(branch_audits[1]["key_id"], "bearer:observer-1")
+            self.assertEqual(branch_audits[1]["payload"]["policy_receipt"]["reason_code"], "scope-denied")
+
+            task_context_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/git/task-context", limit=10)
+            self.assertEqual(task_context_audits[0]["decision"], "allowed")
+            self.assertEqual(task_context_audits[0]["key_id"], "bearer:local-admin-1")
+
+            requeue_audits = node.node.store.list_operator_auth_audits(endpoint="/v1/tasks/requeue", limit=10)
+            self.assertEqual(requeue_audits[0]["decision"], "allowed")
+            self.assertEqual(requeue_audits[0]["key_id"], "bearer:local-admin-1")
+        finally:
+            node.stop()
+
     def test_protected_merge_requires_review_approval(self) -> None:
         node = NodeHarness(
             node_id="protected-workflow-node",
