@@ -4173,6 +4173,83 @@ class NodeStore:
         finally:
             conn.close()
 
+    def apply_external_task_result(self, task_id: str, worker_id: str, result: dict[str, Any]) -> bool:
+        normalized_task_id = str(task_id or "").strip()
+        normalized_worker_id = str(worker_id or "").strip()
+        if not normalized_task_id or not normalized_worker_id:
+            return False
+        now = utc_now()
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, role, kind, workflow_id, branch, delivery_status, required_capabilities_json, status
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return False
+            current_status = str(row["status"] or "").strip().lower()
+            if current_status == "completed":
+                conn.commit()
+                return False
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'completed',
+                    result_json = ?,
+                    last_error = NULL,
+                    completed_at = ?,
+                    locked_by = NULL,
+                    lease_token = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (json.dumps(result or {}, ensure_ascii=False), now, now, normalized_task_id),
+            ).rowcount
+            if not updated:
+                conn.commit()
+                return False
+            self._insert_execution_audit(
+                conn,
+                audit_id=str(uuid4()),
+                task_id=normalized_task_id,
+                worker_id=normalized_worker_id,
+                event_type="external-result",
+                status="completed",
+                payload={"result": result or {}, "source": "local-acp-session"},
+                created_at=now,
+            )
+            event_type, points, event_payload = self._completion_score_event(
+                task_id=normalized_task_id,
+                worker_id=normalized_worker_id,
+                role=str(row["role"] or "worker"),
+                kind=str(row["kind"] or "generic"),
+                workflow_id=row["workflow_id"],
+                branch=str(row["branch"] or "main"),
+                delivery_status=str(row["delivery_status"] or "local"),
+                required_capabilities=json.loads(row["required_capabilities_json"] or "[]"),
+                result=result or {},
+            )
+            self._insert_score_event(
+                conn,
+                actor_id=normalized_worker_id,
+                actor_type="worker",
+                task_id=normalized_task_id,
+                event_type=event_type,
+                points=points,
+                payload=event_payload,
+                created_at=now,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
     def list_workflow_tasks(self, workflow_id: str) -> list[dict[str, Any]]:
         conn = self._connect()
         try:

@@ -140,6 +140,7 @@ class AgentCoinNode:
                 "local_agent_acp_session_initialize_url": card.get("endpoints", {}).get("local_agent_acp_session_initialize"),
                 "local_agent_acp_session_poll_url": card.get("endpoints", {}).get("local_agent_acp_session_poll"),
                 "local_agent_acp_session_task_request_url": card.get("endpoints", {}).get("local_agent_acp_session_task_request"),
+                "local_agent_acp_session_apply_task_result_url": card.get("endpoints", {}).get("local_agent_acp_session_apply_task_result"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
                 "cors_allowed_origins": list(self.config.cors_allowed_origins),
@@ -1121,6 +1122,85 @@ class AgentCoinNode:
             task_ref=task_ref,
             dispatch=dispatch,
         )
+
+    def apply_local_acp_task_result(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        worker_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            raise ValueError("task_id is required")
+        task = self.store.get_task(normalized_task_id)
+        if not task:
+            raise ValueError("task not found")
+        polled = self.local_agents.poll_acp_session(session_id)
+        session = dict(polled.get("session") or {})
+        latest_frame = dict(polled.get("latest_server_frame") or {})
+        parsed = latest_frame.get("parsed")
+        if not isinstance(parsed, dict):
+            raise ValueError("acp session has not captured a parseable server frame")
+        result_block = parsed.get("result")
+        if not isinstance(result_block, dict):
+            raise ValueError("acp response does not include a result object")
+        normalized_worker_id = str(worker_id or session.get("registration_id") or "").strip()
+        if not normalized_worker_id:
+            raise ValueError("worker_id is required")
+        content_items = list(result_block.get("content") or [])
+        text_parts: list[str] = []
+        normalized_content: list[dict[str, Any]] = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            normalized_item = dict(item)
+            normalized_content.append(normalized_item)
+            if str(item.get("type") or "").strip().lower() == "text":
+                text_value = str(item.get("text") or "").strip()
+                if text_value:
+                    text_parts.append(text_value)
+        assistant_message = {
+            "role": "assistant",
+            "content": "\n".join(part for part in text_parts if part).strip(),
+        }
+        raw_result = {
+            "worker_id": normalized_worker_id,
+            "adapter": {
+                "protocol": "acp",
+                "status": "completed",
+                "runtime": "managed-local-acp",
+                "mode": "session-apply",
+                "registration_id": session.get("registration_id"),
+            },
+            "runtime_execution": {
+                "runtime": "managed-local-acp",
+                "session_id": session.get("session_id"),
+                "server_session_id": session.get("last_task_request_intent", {}).get("server_session_id"),
+                "assistant_message": assistant_message,
+                "response": dict(result_block),
+            },
+            "acp_execution": {
+                "session_id": session.get("session_id"),
+                "registration_id": session.get("registration_id"),
+                "latest_server_frame": latest_frame,
+                "captured_frames_seen": int(session.get("server_frames_seen") or 0),
+                "response_content": normalized_content,
+            },
+        }
+        if text_parts:
+            raw_result["output_text"] = assistant_message["content"]
+        result = self._attach_result_receipts(task, raw_result)
+        applied = self.store.apply_external_task_result(normalized_task_id, normalized_worker_id, result)
+        if not applied:
+            raise ValueError("task result could not be applied")
+        stored_task = self.store.get_task(normalized_task_id)
+        return {
+            "task": stored_task,
+            "result": result,
+            "session": session,
+            "latest_server_frame": latest_frame,
+        }
 
     def payment_ops_summary(self, *, receipt_id: str | None = None, relay_limit: int = 5) -> dict[str, Any]:
         normalized_receipt_id = str(receipt_id or "").strip() or None
@@ -4928,6 +5008,7 @@ class AgentCoinNode:
                                 "/v1/discovery/local-agents/acp-session/initialize",
                                 "/v1/discovery/local-agents/acp-session/poll",
                                 "/v1/discovery/local-agents/acp-session/task-request",
+                                "/v1/discovery/local-agents/acp-session/apply-task-result",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
@@ -5311,6 +5392,30 @@ class AgentCoinNode:
                                     "transport_ready": True,
                                     "protocol_messages_implemented": False,
                                     "task_semantics_implemented": "prompt-request-skeleton-only",
+                                },
+                            },
+                        )
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/apply-task-result":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/apply-task-result"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        applied = node.apply_local_acp_task_result(
+                            session_id=str(payload.get("session_id") or "").strip(),
+                            task_id=str(payload.get("task_id") or "").strip(),
+                            worker_id=str(payload.get("worker_id") or "").strip() or None,
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                **applied,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                    "result_mapping_implemented": "latest-response-frame-to-task-result-skeleton",
                                 },
                             },
                         )

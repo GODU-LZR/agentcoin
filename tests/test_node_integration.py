@@ -1631,6 +1631,39 @@ class NodeIntegrationTests(unittest.TestCase):
             latest_server_frame = poll_payload["latest_server_frame"]
             self.assertEqual(poll_payload["session"]["protocol_state"], "task-response-captured")
             self.assertEqual(latest_server_frame["parsed"]["result"]["content"][0]["text"], "task-ok")
+
+            apply_status, applied = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/apply-task-result",
+                {"session_id": session_id, "task_id": "acp-task-1"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-task",
+                public_key=public_key,
+            )
+            self.assertEqual(apply_status, HTTPStatus.OK)
+            self.assertEqual(
+                applied["protocol_boundary"]["result_mapping_implemented"],
+                "latest-response-frame-to-task-result-skeleton",
+            )
+            self.assertEqual(applied["task"]["status"], "completed")
+            self.assertEqual(applied["result"]["output_text"], "task-ok")
+            self.assertEqual(applied["result"]["adapter"]["protocol"], "acp")
+            self.assertEqual(
+                applied["result"]["runtime_execution"]["assistant_message"]["content"],
+                "task-ok",
+            )
+            self.assertEqual(
+                applied["result"]["execution_receipt"]["protocol"],
+                "acp",
+            )
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "acp-task-1"][0]
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["result"]["runtime_execution"]["assistant_message"]["content"], "task-ok")
+
+            _, audits = self._get(f"{node.base_url}/v1/audits?task_id=acp-task-1")
+            self.assertEqual(len(audits["items"]), 1)
+            self.assertEqual(audits["items"][0]["event_type"], "external-result")
         finally:
             node.stop()
 
