@@ -20,7 +20,7 @@ from agentcoin.config import NodeConfig, PeerConfig, persist_peer_identity_confi
 from agentcoin.gitops import GitWorkspace
 from agentcoin.models import TaskEnvelope, utc_after, utc_now
 from agentcoin.net import OutboundTransport
-from agentcoin.onchain import OnchainRuntime, sha256_hex
+from agentcoin.onchain import OnchainRuntime, as_bytes32_hex, sha256_hex
 from agentcoin.receipts import (
     build_deterministic_execution_receipt,
     build_governance_action_receipt,
@@ -147,6 +147,7 @@ class AgentCoinNode:
                 "required_workflows": list(self.config.payment_required_workflows),
                 "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
                 "receipt_onchain_proof_url": self.config.card.endpoints.get("payment_receipt_onchain_proof"),
+                "receipt_onchain_rpc_plan_url": self.config.card.endpoints.get("payment_receipt_onchain_rpc_plan"),
                 "receipt_kind": "agentcoin-payment-receipt",
                 "proof_type": "local-operator-attestation",
                 "quote": {
@@ -578,6 +579,63 @@ class AgentCoinNode:
             proof,
             hmac_scope="payment-onchain-proof",
             identity_namespace="agentcoin-payment-onchain",
+        )
+
+    def build_payment_onchain_intent(self, proof: dict[str, Any]) -> dict[str, Any]:
+        if not self.onchain.enabled:
+            raise ValueError("onchain payment intent requires onchain bindings to be enabled")
+        contracts = dict(proof.get("contracts") or {})
+        projection = dict(proof.get("projection") or {})
+        args = dict(projection.get("args") or {})
+        return {
+            "kind": "evm-transaction-intent",
+            "action": str(projection.get("action") or "submitPaymentProof"),
+            "task_id": str(proof.get("receipt_id") or ""),
+            "workflow_id": str(proof.get("workflow_name") or ""),
+            "job_id": None,
+            "job_ref": None,
+            "chain_id": self.config.onchain.chain_id,
+            "rpc_url": self.config.onchain.rpc_url,
+            "from": self.config.onchain.local_controller_address,
+            "to": contracts.get("bounty_escrow"),
+            "contract": "BountyEscrow",
+            "function": "submitPaymentProof",
+            "signature": "submitPaymentProof(bytes32,bytes32,bytes32,bytes32,bytes32)",
+            "args": {
+                "challenge_id": as_bytes32_hex(str(args.get("challenge_id") or "")),
+                "receipt_id": as_bytes32_hex(str(args.get("receipt_id") or "")),
+                "quote_digest": as_bytes32_hex(str(args.get("quote_digest") or "")),
+                "payment_proof_digest": as_bytes32_hex(str(args.get("payment_proof_digest") or "")),
+                "attestation_digest": as_bytes32_hex(str(args.get("attestation_digest") or "")),
+            },
+            "value_wei": "0",
+            "generated_at": utc_now(),
+            "proof_kind": proof.get("kind"),
+        }
+
+    def build_payment_onchain_rpc_plan(
+        self,
+        receipt: dict[str, Any],
+        *,
+        workflow_name: str | None = None,
+        rpc: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        proof = self.build_payment_onchain_proof(receipt, workflow_name=workflow_name)
+        intent = self.build_payment_onchain_intent(proof)
+        rpc_payload = self.onchain.rpc_payload_for_intent(intent, rpc=rpc or {})
+        probes = self.onchain.rpc_probe_payloads(rpc_payload, rpc=rpc or {})
+        plan = {
+            "kind": "agentcoin-payment-onchain-rpc-plan",
+            "proof": proof,
+            "intent": intent,
+            "rpc_payload": rpc_payload,
+            "probes": probes,
+            "generated_at": utc_now(),
+        }
+        return self._sign_document(
+            plan,
+            hmac_scope="payment-onchain-rpc-plan",
+            identity_namespace="agentcoin-payment-onchain-rpc-plan",
         )
 
     def consume_payment_receipt(self, receipt_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
@@ -4161,6 +4219,7 @@ class AgentCoinNode:
                                 "/v1/workflow/execute",
                                 "/v1/payments/receipts/introspect",
                                 "/v1/payments/receipts/onchain-proof",
+                                "/v1/payments/receipts/onchain-rpc-plan",
                                 "/v1/runtimes/bind",
                                 "/v1/integrations/openclaw/bind",
                             ],
@@ -4277,6 +4336,29 @@ class AgentCoinNode:
                             HTTPStatus.OK,
                             {
                                 "proof": proof,
+                            },
+                        )
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-rpc-plan":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-rpc-plan"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip() or None
+                        rpc_options = dict(payload.get("rpc") or {})
+                        plan = node.build_payment_onchain_rpc_plan(
+                            payment_receipt,
+                            workflow_name=workflow_name,
+                            rpc=rpc_options,
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "plan": plan,
                             },
                         )
                         return

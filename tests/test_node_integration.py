@@ -881,6 +881,18 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(proof_status, HTTPStatus.BAD_REQUEST)
             self.assertIn("onchain", proof_payload["error"])
+
+            plan_status, plan_payload = self._session_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-rpc-plan",
+                {
+                    "payment_receipt": {
+                        "kind": "agentcoin-payment-receipt",
+                    }
+                },
+                session_token=session_token,
+            )
+            self.assertEqual(plan_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("onchain", plan_payload["error"])
         finally:
             node.stop()
 
@@ -1086,6 +1098,41 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(proof_verification["verified"])
 
+            plan_before_status, plan_before = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-rpc-plan",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(plan_before_status, HTTPStatus.OK)
+            self.assertEqual(plan_before["plan"]["kind"], "agentcoin-payment-onchain-rpc-plan")
+            self.assertEqual(plan_before["plan"]["proof"]["status"], "issued")
+            self.assertEqual(plan_before["plan"]["intent"]["function"], "submitPaymentProof")
+            self.assertEqual(
+                plan_before["plan"]["intent"]["signature"],
+                "submitPaymentProof(bytes32,bytes32,bytes32,bytes32,bytes32)",
+            )
+            self.assertEqual(
+                plan_before["plan"]["proof"]["payment_proof_digest"],
+                receipt["payment_proof_digest"],
+            )
+            self.assertEqual(
+                plan_before["plan"]["rpc_payload"]["call"]["signature"],
+                "submitPaymentProof(bytes32,bytes32,bytes32,bytes32,bytes32)",
+            )
+            self.assertGreaterEqual(len(plan_before["plan"]["probes"]), 2)
+            plan_verification = verify_document(
+                plan_before["plan"],
+                secret="payment-ok-secret",
+                expected_scope="payment-onchain-rpc-plan",
+                expected_key_id="payment-ok-node",
+            )
+            self.assertTrue(plan_verification["verified"])
+
             execute_status, executed = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
                 {
@@ -1156,6 +1203,24 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 proof_after["proof"]["projection"]["args"]["attestation_digest"],
                 proof_after["proof"]["attestation_digest"],
+            )
+
+            plan_after_status, plan_after = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-rpc-plan",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(plan_after_status, HTTPStatus.OK)
+            self.assertEqual(plan_after["plan"]["proof"]["status"], "consumed")
+            self.assertFalse(plan_after["plan"]["proof"]["active"])
+            self.assertEqual(
+                plan_after["plan"]["proof"]["payment_proof_digest"],
+                receipt["payment_proof_digest"],
             )
 
             replay_status, replay_payload = self._identity_signed_post(

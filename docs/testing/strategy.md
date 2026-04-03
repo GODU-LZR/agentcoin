@@ -19,6 +19,7 @@ The current test scope covers:
 - standardized quote and payment-proof payload consistency across challenge, receipt issue, and introspection
 - signed payment attestation consistency across receipt issue and introspection state changes
 - on-chain payment proof projection consistency before and after receipt consumption
+- signed payment on-chain RPC plan projection and probe generation consistency
 - local task persistence
 - peer-card synchronization
 - durable outbox and inbox delivery

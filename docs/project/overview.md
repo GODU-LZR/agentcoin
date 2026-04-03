@@ -29,6 +29,7 @@ The current repository contains:
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state
+- signed payment on-chain RPC plan projection for external signer or wallet handoff
 
 ## Design Goals
 

@@ -283,6 +283,7 @@ class NodeConfig:
                 "payment_receipt_issue": f"{self.base_url}/v1/payments/receipts/issue",
                 "payment_receipt_introspect": f"{self.base_url}/v1/payments/receipts/introspect",
                 "payment_receipt_onchain_proof": f"{self.base_url}/v1/payments/receipts/onchain-proof",
+                "payment_receipt_onchain_rpc_plan": f"{self.base_url}/v1/payments/receipts/onchain-rpc-plan",
                 "payment_receipt_status": f"{self.base_url}/v1/payments/receipts/status",
                 "tasks": f"{self.base_url}/v1/tasks",
                 "inbox": f"{self.base_url}/v1/inbox",
