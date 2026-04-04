@@ -174,6 +174,8 @@ class AgentCoinNode:
                 "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
                 "renter_token_issue_url": self.config.card.endpoints.get("payment_renter_token_issue"),
                 "renter_token_introspection_url": self.config.card.endpoints.get("payment_renter_token_introspect"),
+                "renter_token_status_url": self.config.card.endpoints.get("payment_renter_token_status"),
+                "renter_token_summary_url": self.config.card.endpoints.get("payment_renter_token_summary"),
                 "receipt_onchain_proof_url": self.config.card.endpoints.get("payment_receipt_onchain_proof"),
                 "receipt_onchain_rpc_plan_url": self.config.card.endpoints.get("payment_receipt_onchain_rpc_plan"),
                 "receipt_onchain_raw_bundle_url": self.config.card.endpoints.get("payment_receipt_onchain_raw_bundle"),
@@ -595,6 +597,48 @@ class AgentCoinNode:
         if not token:
             raise ValueError("renter token not found or expired")
         return dict(token)
+
+    def summarize_renter_tokens(
+        self,
+        *,
+        workflow_name: str | None = None,
+        service_id: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        normalized_workflow = str(workflow_name or "").strip()
+        normalized_service = str(service_id or "").strip()
+        with self._renter_token_lock:
+            self._prune_renter_tokens_locked()
+            items = [dict(item) for item in self._renter_tokens.values()]
+        if normalized_workflow:
+            items = [item for item in items if str(item.get("workflow_name") or "").strip() == normalized_workflow]
+        if normalized_service:
+            items = [item for item in items if str(item.get("service_id") or "").strip() == normalized_service]
+        items.sort(key=lambda item: str(item.get("issued_at") or ""), reverse=True)
+        counts: dict[str, int] = {}
+        active_count = 0
+        total_remaining_uses = 0
+        total_usage_count = 0
+        for item in items:
+            status = str(item.get("status") or "").strip() or "unknown"
+            counts[status] = counts.get(status, 0) + 1
+            remaining_uses = int(item.get("remaining_uses") or 0)
+            total_remaining_uses += remaining_uses
+            total_usage_count += int(item.get("usage_count") or 0)
+            if status == "issued" and remaining_uses > 0:
+                active_count += 1
+        latest_token = dict(items[0]) if items else None
+        return {
+            "workflow_name": normalized_workflow or None,
+            "service_id": normalized_service or None,
+            "item_count": len(items),
+            "active_count": active_count,
+            "counts": counts,
+            "total_remaining_uses": total_remaining_uses,
+            "total_usage_count": total_usage_count,
+            "latest_token": latest_token,
+            "items": items[: max(1, int(limit or 10))],
+        }
 
     def issue_renter_token(
         self,
@@ -4853,6 +4897,35 @@ class AgentCoinNode:
                     receipt = node.get_payment_receipt(receipt_id)
                     self._json_response(HTTPStatus.OK, {"receipt": receipt})
                     return
+                if path == "/v1/payments/renter-tokens/status":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/renter-tokens/status"},
+                    ):
+                        return
+                    token_id = (query.get("token_id") or [""])[0]
+                    if not token_id:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": "token_id is required"})
+                        return
+                    token = node.get_renter_token(token_id)
+                    self._json_response(HTTPStatus.OK, {"token": token})
+                    return
+                if path == "/v1/payments/renter-tokens/summary":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/renter-tokens/summary"},
+                    ):
+                        return
+                    workflow_name = (query.get("workflow_name") or query.get("workflow") or [""])[0]
+                    service_id = (query.get("service_id") or [""])[0]
+                    limit = int((query.get("limit") or ["10"])[0] or "10")
+                    self._json_response(
+                        HTTPStatus.OK,
+                        node.summarize_renter_tokens(
+                            workflow_name=workflow_name or None,
+                            service_id=service_id or None,
+                            limit=limit,
+                        ),
+                    )
+                    return
                 if path == "/v1/payments/receipts/onchain-relays":
                     if not self._require_local_client_or_auth(
                         allow_endpoints={"/v1/payments/receipts/onchain-relays"},
@@ -5348,6 +5421,8 @@ class AgentCoinNode:
                                 "/v1/payments/receipts/introspect",
                                 "/v1/payments/renter-tokens/issue",
                                 "/v1/payments/renter-tokens/introspect",
+                                "/v1/payments/renter-tokens/status",
+                                "/v1/payments/renter-tokens/summary",
                                 "/v1/payments/receipts/onchain-proof",
                                 "/v1/payments/receipts/onchain-rpc-plan",
                                 "/v1/payments/receipts/onchain-raw-bundle",
