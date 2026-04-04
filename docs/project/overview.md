@@ -30,6 +30,7 @@ The current repository contains:
 - renter-token status and summary endpoints for front-end usage dashboards and service-scoped consumption views
 - payment ops summary now includes renter-token usage aggregates so dashboards can render payment and capability-consumption state from one payload
 - service-usage summary endpoints now aggregate renter-token consumption by service so future settlement or marketplace views can see per-service usage counts
+- service-usage summaries now also expose estimated settlement amounts by asset using each service's `price_per_call`
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state

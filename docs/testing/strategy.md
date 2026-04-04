@@ -20,6 +20,7 @@ The current test scope covers:
 - renter-token status and summary inspection for front-end usage dashboards
 - payment ops summary coverage with embedded renter-token usage aggregates
 - service-usage summary coverage for per-service renter-token consumption views
+- service-usage summary coverage for estimated settlement amounts derived from `price_per_call`
 - standardized quote and payment-proof payload consistency across challenge, receipt issue, and introspection
 - signed payment attestation consistency across receipt issue and introspection state changes
 - on-chain payment proof projection consistency before and after receipt consumption

@@ -43,6 +43,7 @@ This alignment pass adds the first explicit service registry and typed workflow 
 - renter-token status and summary inspection are now available for front-end dashboards that need to display remaining usage and service-scoped token activity
 - payment ops summary now folds renter-token usage into the existing payment dashboard surface, so the front end can inspect relay and renter-consumption state from one endpoint
 - per-service usage aggregation now exists for renter tokens, which gives the front end and future settlement logic a simple service-level consumption ledger
+- per-service usage aggregation now also computes estimated settlement amounts from `price_per_call`, so the front end can render accrued value before a real settlement layer is wired in
 
 ## What This Does Not Yet Solve
 

@@ -3035,6 +3035,22 @@ class NodeIntegrationTests(unittest.TestCase):
                 ops_summary["service_usage_summary"]["items"][0]["total_remaining_uses"],
                 1,
             )
+            self.assertEqual(
+                ops_summary["service_usage_summary"]["items"][0]["price_per_call"],
+                10.5,
+            )
+            self.assertEqual(
+                ops_summary["service_usage_summary"]["items"][0]["price_asset"],
+                "AGENT",
+            )
+            self.assertEqual(
+                ops_summary["service_usage_summary"]["items"][0]["estimated_settlement_amount"],
+                10.5,
+            )
+            self.assertEqual(
+                ops_summary["service_usage_summary"]["estimated_settlement_totals"]["AGENT"],
+                10.5,
+            )
 
             usage_status, usage_summary = self._identity_signed_get(
                 f"{node.base_url}/v1/payments/service-usage/summary?receipt_id={receipt['receipt_id']}&service_id=premium-review&limit=5",
@@ -3051,6 +3067,8 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(usage_summary["items"][0]["service_id"], "premium-review")
             self.assertEqual(usage_summary["items"][0]["token_count"], 1)
             self.assertEqual(usage_summary["items"][0]["active_token_count"], 1)
+            self.assertEqual(usage_summary["items"][0]["estimated_settlement_amount"], 10.5)
+            self.assertEqual(usage_summary["estimated_settlement_totals"]["AGENT"], 10.5)
         finally:
             node.stop()
 

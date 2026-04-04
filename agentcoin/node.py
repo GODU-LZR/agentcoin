@@ -661,10 +661,18 @@ class AgentCoinNode:
             limit=max(1, int(limit or 20)),
         )
         buckets: dict[str, dict[str, Any]] = {}
+        estimated_totals_by_asset: dict[str, float] = {}
         for item in list(token_summary.get("items") or []):
             current_service_id = str(item.get("service_id") or "").strip() or str(item.get("workflow_name") or "").strip()
             if not current_service_id:
                 continue
+            try:
+                service_config = self.config.resolve_service(current_service_id)
+                price_per_call = float(service_config.price_per_call or 0.0)
+                price_asset = str(service_config.price_asset or "AGENT").strip() or "AGENT"
+            except ValueError:
+                price_per_call = 0.0
+                price_asset = "AGENT"
             bucket = buckets.setdefault(
                 current_service_id,
                 {
@@ -678,6 +686,9 @@ class AgentCoinNode:
                     "latest_token_id": None,
                     "latest_issued_at": None,
                     "privacy_levels": [],
+                    "price_per_call": price_per_call,
+                    "price_asset": price_asset,
+                    "estimated_settlement_amount": 0.0,
                 },
             )
             workflow_value = str(item.get("workflow_name") or "").strip()
@@ -690,12 +701,22 @@ class AgentCoinNode:
             bucket["total_max_uses"] += int(item.get("max_uses") or 0)
             bucket["total_remaining_uses"] += int(item.get("remaining_uses") or 0)
             bucket["total_usage_count"] += int(item.get("usage_count") or 0)
+            bucket["estimated_settlement_amount"] = round(
+                float(bucket.get("total_usage_count") or 0) * float(bucket.get("price_per_call") or 0.0),
+                8,
+            )
             if str(item.get("status") or "").strip() == "issued" and int(item.get("remaining_uses") or 0) > 0:
                 bucket["active_token_count"] += 1
             issued_at = str(item.get("issued_at") or "")
             if issued_at and (bucket["latest_issued_at"] is None or issued_at > str(bucket["latest_issued_at"] or "")):
                 bucket["latest_issued_at"] = issued_at
                 bucket["latest_token_id"] = item.get("token_id")
+        for bucket in buckets.values():
+            asset = str(bucket.get("price_asset") or "AGENT").strip() or "AGENT"
+            estimated_totals_by_asset[asset] = round(
+                float(estimated_totals_by_asset.get(asset) or 0.0) + float(bucket.get("estimated_settlement_amount") or 0.0),
+                8,
+            )
         items = sorted(
             buckets.values(),
             key=lambda item: (str(item.get("latest_issued_at") or ""), str(item.get("service_id") or "")),
@@ -709,6 +730,7 @@ class AgentCoinNode:
             "token_count": int(token_summary.get("item_count") or 0),
             "total_remaining_uses": int(token_summary.get("total_remaining_uses") or 0),
             "total_usage_count": int(token_summary.get("total_usage_count") or 0),
+            "estimated_settlement_totals": estimated_totals_by_asset,
             "items": items[: max(1, int(limit or 20))],
         }
 
