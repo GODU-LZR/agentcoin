@@ -123,6 +123,9 @@ class WorkbenchState:
     last_challenge: dict[str, Any] | None = None
     last_receipt: dict[str, Any] | None = None
     last_renter_token: dict[str, Any] | None = None
+    last_payment_proof: dict[str, Any] | None = None
+    last_payment_plan: dict[str, Any] | None = None
+    last_payment_queue_item: dict[str, Any] | None = None
 
 
 class AgentcoinAsciiWorkbench:
@@ -259,6 +262,13 @@ class AgentcoinAsciiWorkbench:
             payment_lines.append(f"challenge_id: {self.state.last_challenge.get('challenge_id') or '-'}")
         if self.state.last_renter_token:
             payment_lines.append(f"renter_token: {self.state.last_renter_token.get('token_id') or '-'}")
+        if self.state.last_payment_proof:
+            payment_lines.append(f"payment_proof: {self.state.last_payment_proof.get('kind') or '-'}")
+        if self.state.last_payment_queue_item:
+            payment_lines.append(
+                f"relay_queue_item: {self.state.last_payment_queue_item.get('id') or '-'} "
+                f"status={self.state.last_payment_queue_item.get('status') or '-'}"
+            )
         if self.state.receipt_id:
             service_reconcile = dict(ops.get("service_usage_reconciliation") or {})
             renter_summary = dict(ops.get("renter_token_summary") or {})
@@ -281,6 +291,8 @@ class AgentcoinAsciiWorkbench:
             "issue-receipt <payer> <tx_hash> [challenge-id]",
             "issue-renter-token [workflow] [service-id] [max-uses]",
             "receipt-status | token-status | reconcile",
+            "build-proof [workflow] | build-plan [workflow]",
+            "queue-relay [workflow] | queue-status",
             "probe | services | discover | ops",
             "status | help | clear | exit",
         ]
@@ -308,7 +320,8 @@ class AgentcoinAsciiWorkbench:
         if verb == "help":
             self.log(
                 "commands: connect, token, receipt, workflow, issue-receipt, issue-renter-token, "
-                "receipt-status, token-status, reconcile, probe, services, discover, ops, status, clear, exit"
+                "receipt-status, token-status, reconcile, build-proof, build-plan, queue-relay, queue-status, "
+                "probe, services, discover, ops, status, clear, exit"
             )
             return True
         if verb == "clear":
@@ -496,6 +509,121 @@ class AgentcoinAsciiWorkbench:
                 )
             else:
                 self.log(f"reconcile failed: {response.get('error') or code}")
+            return True
+        if verb == "build-proof":
+            workflow_name = str(args[0]).strip() if args else self.state.last_workflow_name
+            receipt = self.state.last_receipt
+            if not receipt:
+                receipt_code, receipt_payload = self._fetch_receipt_status()
+                if receipt_code == 200:
+                    receipt = dict(receipt_payload.get("receipt") or {})
+                    self.state.last_receipt = receipt
+            if not receipt:
+                self.log("no cached receipt; issue a receipt first")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-proof",
+                token=self.state.token or None,
+                method="POST",
+                payload={
+                    "workflow_name": workflow_name,
+                    "payment_receipt": receipt,
+                },
+            )
+            if code == 200:
+                proof = dict(response.get("proof") or {})
+                self.state.last_payment_proof = proof
+                self.log(
+                    f"payment proof: kind={proof.get('kind') or '-'} "
+                    f"status={proof.get('status') or '-'} active={proof.get('active')}"
+                )
+            else:
+                self.log(f"build-proof failed: {response.get('error') or code}")
+            return True
+        if verb == "build-plan":
+            workflow_name = str(args[0]).strip() if args else self.state.last_workflow_name
+            receipt = self.state.last_receipt
+            if not receipt:
+                receipt_code, receipt_payload = self._fetch_receipt_status()
+                if receipt_code == 200:
+                    receipt = dict(receipt_payload.get("receipt") or {})
+                    self.state.last_receipt = receipt
+            if not receipt:
+                self.log("no cached receipt; issue a receipt first")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-rpc-plan",
+                token=self.state.token or None,
+                method="POST",
+                payload={
+                    "workflow_name": workflow_name,
+                    "payment_receipt": receipt,
+                },
+            )
+            if code == 200:
+                plan = dict(response.get("plan") or {})
+                self.state.last_payment_plan = plan
+                proof = dict(plan.get("proof") or {})
+                intent = dict(plan.get("intent") or {})
+                self.log(
+                    f"payment plan: function={intent.get('function') or '-'} "
+                    f"status={proof.get('status') or '-'}"
+                )
+            else:
+                self.log(f"build-plan failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-relay":
+            workflow_name = str(args[0]).strip() if args else self.state.last_workflow_name
+            receipt = self.state.last_receipt
+            if not receipt:
+                receipt_code, receipt_payload = self._fetch_receipt_status()
+                if receipt_code == 200:
+                    receipt = dict(receipt_payload.get("receipt") or {})
+                    self.state.last_receipt = receipt
+            if not receipt:
+                self.log("no cached receipt; issue a receipt first")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay-queue",
+                token=self.state.token or None,
+                method="POST",
+                payload={
+                    "workflow_name": workflow_name,
+                    "payment_receipt": receipt,
+                },
+            )
+            if code == 201:
+                item = dict(response.get("item") or {})
+                self.state.last_payment_queue_item = item
+                self.log(
+                    f"queued relay: item={item.get('id') or '-'} "
+                    f"status={item.get('status') or '-'}"
+                )
+            else:
+                self.log(f"queue-relay failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-status":
+            active_receipt_id = self.state.receipt_id
+            if not active_receipt_id:
+                self.log("no receipt set")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                f"/v1/payments/receipts/onchain-relay-queue/summary?receipt_id={active_receipt_id}",
+                token=self.state.token or None,
+            )
+            if code == 200:
+                counts = dict(response.get("counts") or {})
+                self.log(
+                    f"queue status: total={response.get('item_count') or 0} "
+                    f"pending={counts.get('pending', 0)} retrying={counts.get('retrying', 0)} "
+                    f"dead-letter={counts.get('dead-letter', 0)} completed={counts.get('completed', 0)}"
+                )
+            else:
+                self.log(f"queue-status failed: {response.get('error') or code}")
             return True
         if verb in {"probe", "status", "services", "discover", "ops"}:
             snapshot = self.fetch_snapshot()

@@ -120,6 +120,64 @@ class AsciiCliTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_ascii_workbench_supports_payment_proof_plan_and_queue_commands(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="ascii-proof-node",
+            token="token-ascii-proof",
+            db_path=str(Path(self.tempdir.name) / "ascii-proof.db"),
+            capabilities=["worker"],
+            signing_secret="ascii-proof-secret",
+            payment_required_workflows=["premium-review"],
+            services=[
+                ServiceCapabilityConfig(
+                    service_id="premium-review",
+                    description="Premium review",
+                    price_per_call=10.5,
+                    renter_token_max_uses=2,
+                    privacy_level="opaque",
+                )
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            workbench = AgentcoinAsciiWorkbench(
+                WorkbenchState(endpoint=node.base_url, token="token-ascii-proof", locale="en")
+            )
+
+            self.assertTrue(workbench.handle_command('workflow premium-review "review this secret workflow"'))
+            self.assertTrue(
+                workbench.handle_command("issue-receipt did:agentcoin:ssh-ed25519:testpayer 0xabc123")
+            )
+
+            self.assertTrue(workbench.handle_command("build-proof"))
+            self.assertIsNotNone(workbench.state.last_payment_proof)
+            self.assertIn("payment proof:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("build-plan"))
+            self.assertIsNotNone(workbench.state.last_payment_plan)
+            self.assertIn("payment plan:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("queue-relay"))
+            self.assertIsNotNone(workbench.state.last_payment_queue_item)
+            self.assertIn("queued relay:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("queue-status"))
+            self.assertIn("queue status:", workbench.logs[-1])
+
+            rendered = workbench.render()
+            self.assertIn("payment_proof:", rendered)
+            self.assertIn("relay_queue_item:", rendered)
+        finally:
+            node.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
