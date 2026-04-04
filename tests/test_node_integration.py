@@ -11035,8 +11035,11 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(gateway.calls[1]["messages"][1]["content"][0]["id"], "toolu_1")
             self.assertEqual(gateway.calls[1]["messages"][2]["role"], "user")
             self.assertEqual(gateway.calls[1]["messages"][2]["content"][0]["tool_use_id"], "toolu_1")
-            self.assertIn("repo_status", gateway.calls[1]["messages"][2]["content"][0]["content"][0]["text"])
-            self.assertIn("clean", gateway.calls[1]["messages"][2]["content"][0]["content"][0]["text"])
+            tool_result_text = gateway.calls[1]["messages"][2]["content"][0]["content"][0]["text"]
+            self.assertIn("repo_status", tool_result_text)
+            self.assertIn("clean", tool_result_text)
+            self.assertIn("\"task_id\": \"runtime-claude-http-helper-source-1-tool-1\"", tool_result_text)
+            self.assertIn("\"worker_id\": \"tool-worker-1\"", tool_result_text)
 
             _, tasks = self._get(f"{node.base_url}/v1/tasks")
             target_task = [item for item in tasks["items"] if item["id"] == "runtime-claude-http-helper-target-1"][0]
