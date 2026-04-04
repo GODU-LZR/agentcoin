@@ -129,6 +129,8 @@ class AgentCoinNode:
             "discovery": {
                 "card_url": card.get("endpoints", {}).get("card"),
                 "manifest_url": card.get("endpoints", {}).get("manifest"),
+                "capabilities_url": card.get("endpoints", {}).get("capabilities"),
+                "services_url": card.get("endpoints", {}).get("services"),
                 "status_url": card.get("endpoints", {}).get("status"),
                 "local_agent_discovery_url": card.get("endpoints", {}).get("local_agent_discovery"),
                 "local_agent_registrations_url": card.get("endpoints", {}).get("local_agent_registrations"),
@@ -196,6 +198,7 @@ class AgentCoinNode:
                 "manifest_format": "json",
             },
             "capabilities": list(card.get("capabilities") or []),
+            "services": self.config.services_view(),
             "runtimes": list(card.get("runtimes") or []),
             "runtime_capabilities": dict(card.get("runtime_capabilities") or {}),
             "routes": {
@@ -2392,6 +2395,62 @@ class AgentCoinNode:
             "is_error": is_error,
         }
 
+    @staticmethod
+    def _json_schema_type_matches(value: Any, expected_type: str) -> bool:
+        normalized = str(expected_type or "").strip().lower()
+        if normalized == "object":
+            return isinstance(value, dict)
+        if normalized == "array":
+            return isinstance(value, list)
+        if normalized == "string":
+            return isinstance(value, str)
+        if normalized == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if normalized == "number":
+            return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+        if normalized == "boolean":
+            return isinstance(value, bool)
+        return True
+
+    @classmethod
+    def _validate_json_schema(cls, value: Any, schema: dict[str, Any], *, path: str = "input") -> list[str]:
+        if not isinstance(schema, dict) or not schema:
+            return []
+        errors: list[str] = []
+        expected_type = str(schema.get("type") or "").strip().lower()
+        if expected_type and not cls._json_schema_type_matches(value, expected_type):
+            return [f"{path} must be {expected_type}"]
+        if expected_type == "object" and isinstance(value, dict):
+            properties = dict(schema.get("properties") or {})
+            required = [str(item) for item in list(schema.get("required") or []) if str(item).strip()]
+            for key in required:
+                if key not in value:
+                    errors.append(f"{path}.{key} is required")
+            if schema.get("additionalProperties") is False:
+                for key in value:
+                    if key not in properties:
+                        errors.append(f"{path}.{key} is not allowed")
+            for key, property_schema in properties.items():
+                if key in value:
+                    errors.extend(cls._validate_json_schema(value[key], dict(property_schema or {}), path=f"{path}.{key}"))
+            return errors
+        if expected_type == "array" and isinstance(value, list):
+            item_schema = dict(schema.get("items") or {})
+            for index, item in enumerate(value):
+                errors.extend(cls._validate_json_schema(item, item_schema, path=f"{path}[{index}]"))
+            return errors
+        return errors
+
+    def _workflow_service_metadata(self, workflow_name: str) -> dict[str, Any] | None:
+        normalized_workflow_name = str(workflow_name or "").strip()
+        if not normalized_workflow_name:
+            return None
+        try:
+            service = self.config.resolve_service(normalized_workflow_name)
+        except KeyError:
+            return None
+        return service.to_dict()
+
     def _task_settlement_preview(self, task: dict[str, Any]) -> dict[str, Any] | None:
         if not self.onchain.enabled:
             return None
@@ -4507,6 +4566,26 @@ class AgentCoinNode:
                 if path == "/v1/manifest":
                     self._json_response(HTTPStatus.OK, node.manifest())
                     return
+                if path == "/v1/capabilities":
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "generated_at": utc_now(),
+                            "node_id": node.config.node_id,
+                            "items": node.config.services_view(),
+                        },
+                    )
+                    return
+                if path == "/v1/services":
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "generated_at": utc_now(),
+                            "node_id": node.config.node_id,
+                            "items": node.config.services_view(),
+                        },
+                    )
+                    return
                 if path == "/v1/discovery/local-agents":
                     if not self._require_local_client_or_auth(
                         allow_endpoints={"/v1/discovery/local-agents"},
@@ -5639,6 +5718,25 @@ class AgentCoinNode:
                         workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip()
                         if not workflow_name:
                             raise ValueError("workflow_name is required")
+                        service = node._workflow_service_metadata(workflow_name)
+                        workflow_input = payload.get("input")
+                        if service and bool(service.get("strict_input")) and dict(service.get("input_schema") or {}):
+                            validation_errors = node._validate_json_schema(workflow_input, dict(service.get("input_schema") or {}))
+                            if validation_errors:
+                                self._json_response(
+                                    HTTPStatus.BAD_REQUEST,
+                                    {
+                                        "error": "workflow input does not satisfy service schema",
+                                        "workflow_name": workflow_name,
+                                        "service": {
+                                            "service_id": service.get("service_id"),
+                                            "privacy_level": service.get("privacy_level"),
+                                            "strict_input": bool(service.get("strict_input")),
+                                        },
+                                        "validation_errors": validation_errors,
+                                    },
+                                )
+                                return
                         payment_required = workflow_name in set(node.config.payment_required_workflows or [])
                         payment_receipt = dict(payload.get("payment_receipt") or {})
                         payment_verification = None
@@ -5681,8 +5779,24 @@ class AgentCoinNode:
 
                         task_payload = {
                             "workflow_name": workflow_name,
-                            "input": payload.get("input"),
+                            "input": workflow_input,
                         }
+                        if service:
+                            task_payload["_service"] = {
+                                "service_id": service.get("service_id"),
+                                "description": service.get("description"),
+                                "price_per_call": service.get("price_per_call"),
+                                "price_asset": service.get("price_asset"),
+                                "privacy_level": service.get("privacy_level"),
+                                "strict_input": bool(service.get("strict_input")),
+                                "opaque_execution": bool(service.get("opaque_execution")),
+                                "input_schema": dict(service.get("input_schema") or {}),
+                            }
+                            task_payload["_opaque_execution"] = {
+                                "enabled": bool(service.get("opaque_execution") or service.get("privacy_level") == "opaque"),
+                                "privacy_level": service.get("privacy_level"),
+                                "input_schema_enforced": bool(service.get("strict_input")),
+                            }
                         if payment_verification:
                             task_payload["_payment_receipt"] = payment_receipt
                             task_payload["_payment_verification"] = payment_verification

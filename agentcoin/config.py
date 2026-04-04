@@ -163,6 +163,24 @@ class ScopedBearerTokenConfig:
 
 
 @dataclass(slots=True)
+class ServiceCapabilityConfig:
+    service_id: str
+    description: str
+    price_per_call: float = 0.0
+    price_asset: str = "AGENT"
+    privacy_level: str = "transparent"
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    strict_input: bool = False
+    opaque_execution: bool = False
+    enabled: bool = True
+    tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class NodeConfig:
     node_id: str = "agentcoin-local"
     name: str = "AgentCoin Reference Node"
@@ -200,6 +218,7 @@ class NodeConfig:
     task_retry_backoff_seconds: int = 5
     local_dispatch_fallback: bool = True
     payment_required_workflows: list[str] = field(default_factory=list)
+    services: list[ServiceCapabilityConfig] = field(default_factory=list)
     payment_quote_amount_wei: int = 10000000000000000
     payment_quote_asset: str = "AGENT"
     payment_quote_ttl_seconds: int = 300
@@ -292,6 +311,8 @@ class NodeConfig:
                 "status": f"{self.base_url}/v1/status",
                 "card": f"{self.base_url}/v1/card",
                 "manifest": f"{self.base_url}/v1/manifest",
+                "capabilities": f"{self.base_url}/v1/capabilities",
+                "services": f"{self.base_url}/v1/services",
                 "local_agent_discovery": f"{self.base_url}/v1/discovery/local-agents",
                 "local_agent_registrations": f"{self.base_url}/v1/discovery/local-agents/managed",
                 "local_agent_register": f"{self.base_url}/v1/discovery/local-agents/register",
@@ -420,6 +441,16 @@ class NodeConfig:
     def scoped_bearer_tokens_view(self) -> list[dict[str, Any]]:
         return [bearer.to_dict() for bearer in self.scoped_bearer_tokens]
 
+    def services_view(self) -> list[dict[str, Any]]:
+        return [service.to_dict() for service in self.services if service.enabled]
+
+    def resolve_service(self, service_id: str) -> ServiceCapabilityConfig:
+        normalized_service_id = str(service_id or "").strip()
+        for service in self.services:
+            if service.enabled and service.service_id == normalized_service_id:
+                return service
+        raise KeyError(normalized_service_id)
+
 
 def load_config(path: str | None) -> NodeConfig:
     if not path:
@@ -438,6 +469,9 @@ def load_config(path: str | None) -> NodeConfig:
     ]
     data["scoped_bearer_tokens"] = [
         ScopedBearerTokenConfig(**bearer) for bearer in data.get("scoped_bearer_tokens", [])
+    ]
+    data["services"] = [
+        ServiceCapabilityConfig(**service) for service in data.get("services", [])
     ]
     data["network"] = OutboundNetworkConfig(**data.get("network", {}))
     data["onchain"] = OnchainBindings(**data.get("onchain", {}))

@@ -355,3 +355,4 @@ The MVP should not be considered stable until:
 11. Cover Claude tool fanout, where returned `tool_use` blocks are materialized into child tasks with stable `_tool_request` metadata for later tool execution and follow-up rebinding
 12. Cover Claude follow-up rebinding directly from completed tool child tasks, including automatic `tool_result` serialization from the stored task result
 13. Cover frontend-origin CORS policy, including `ALLOWED_FRONTEND_ORIGINS` config loading plus `OPTIONS` and `GET` verification for `/v1/status` and `/v1/peer-health`
+14. Cover service-registry exposure and strict workflow input validation for opaque high-value services, including manifest listing plus `400` rejection on schema mismatch before workflow ingestion
