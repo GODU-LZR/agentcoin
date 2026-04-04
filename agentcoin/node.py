@@ -98,6 +98,8 @@ class AgentCoinNode:
         self._payment_challenge_lock = threading.Lock()
         self._payment_receipts: dict[str, dict[str, Any]] = {}
         self._payment_receipt_lock = threading.Lock()
+        self._renter_tokens: dict[str, dict[str, Any]] = {}
+        self._renter_token_lock = threading.Lock()
 
     def local_identity_view(self) -> dict[str, Any]:
         return {
@@ -170,6 +172,8 @@ class AgentCoinNode:
                 "planned": True,
                 "required_workflows": list(self.config.payment_required_workflows),
                 "receipt_introspection_url": self.config.card.endpoints.get("payment_receipt_introspect"),
+                "renter_token_issue_url": self.config.card.endpoints.get("payment_renter_token_issue"),
+                "renter_token_introspection_url": self.config.card.endpoints.get("payment_renter_token_introspect"),
                 "receipt_onchain_proof_url": self.config.card.endpoints.get("payment_receipt_onchain_proof"),
                 "receipt_onchain_rpc_plan_url": self.config.card.endpoints.get("payment_receipt_onchain_rpc_plan"),
                 "receipt_onchain_raw_bundle_url": self.config.card.endpoints.get("payment_receipt_onchain_raw_bundle"),
@@ -188,6 +192,7 @@ class AgentCoinNode:
                     "asset": self.config.payment_quote_asset,
                     "ttl_seconds": int(self.config.payment_quote_ttl_seconds or 300),
                     "receipt_ttl_seconds": int(self.config.payment_receipt_ttl_seconds or 3600),
+                    "renter_token_ttl_seconds": int(self.config.renter_token_ttl_seconds or 1800),
                     "recipient": self.config.onchain.local_controller_address,
                     "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
                 },
@@ -369,6 +374,24 @@ class AgentCoinNode:
                 continue
         for receipt_id in expired:
             self._payment_receipts.pop(receipt_id, None)
+
+    def _prune_renter_tokens_locked(self) -> None:
+        now_value = datetime.now(timezone.utc)
+        expired: list[str] = []
+        for token_id, token in self._renter_tokens.items():
+            expires_at = str(token.get("expires_at") or "").strip()
+            if not expires_at:
+                expired.append(token_id)
+                continue
+            try:
+                expires_at_value = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            except ValueError:
+                expired.append(token_id)
+                continue
+            if expires_at_value <= now_value:
+                expired.append(token_id)
+        for token_id in expired:
+            self._renter_tokens.pop(token_id, None)
 
     @staticmethod
     def _payment_quote_digest(quote: dict[str, Any]) -> str:
@@ -559,6 +582,116 @@ class AgentCoinNode:
             hmac_scope="payment-attestation",
             identity_namespace="agentcoin-payment-attestation",
         )
+
+    def get_renter_token(self, token_id: str) -> dict[str, Any]:
+        normalized_token_id = str(token_id or "").strip()
+        if not normalized_token_id:
+            raise ValueError("token_id is required")
+        with self._renter_token_lock:
+            self._prune_renter_tokens_locked()
+            token = self._renter_tokens.get(normalized_token_id)
+        if not token:
+            raise ValueError("renter token not found or expired")
+        return dict(token)
+
+    def issue_renter_token(self, receipt: dict[str, Any], *, workflow_name: str) -> tuple[dict[str, Any], bool]:
+        introspection = self.verify_payment_receipt(receipt, workflow_name=workflow_name)
+        receipt_status = self.consume_payment_receipt(
+            str(receipt.get("receipt_id") or ""),
+            workflow_name=workflow_name,
+            task_id=f"renter-token:{uuid4()}",
+        )
+        token_id = str(uuid4())
+        challenge = dict(introspection.get("challenge") or {})
+        service = self._workflow_service_metadata(workflow_name)
+        renter_token = {
+            "kind": "agentcoin-renter-token",
+            "token_id": token_id,
+            "workflow_name": workflow_name,
+            "service_id": str((service or {}).get("service_id") or workflow_name),
+            "challenge_id": challenge.get("challenge_id"),
+            "receipt_id": receipt.get("receipt_id"),
+            "quote_digest": introspection.get("quote_digest"),
+            "payer": receipt.get("payer"),
+            "issued_at": utc_now(),
+            "expires_at": utc_after(int(self.config.renter_token_ttl_seconds or 1800)),
+            "max_uses": 1,
+            "remaining_uses": 1,
+            "status": "issued",
+        }
+        signed_token = self._sign_document(
+            renter_token,
+            hmac_scope="renter-token",
+            identity_namespace="agentcoin-renter-token",
+        )
+        with self._renter_token_lock:
+            self._prune_renter_tokens_locked()
+            self._renter_tokens[token_id] = signed_token
+        return {
+            "token": signed_token,
+            "token_status": self.get_renter_token(token_id),
+            "receipt_status": receipt_status,
+            "challenge": challenge,
+        }, True
+
+    def introspect_renter_token(self, renter_token: dict[str, Any], *, workflow_name: str | None = None) -> dict[str, Any]:
+        token_id = str(renter_token.get("token_id") or "").strip()
+        if not token_id:
+            raise ValueError("renter_token.token_id is required")
+        verification = self._verify_local_signed_document(
+            renter_token,
+            hmac_scope="renter-token",
+            identity_namespace="agentcoin-renter-token",
+        )
+        token_status = self.get_renter_token(token_id)
+        expected_workflow = str(workflow_name or "").strip()
+        token_workflow = str(token_status.get("workflow_name") or renter_token.get("workflow_name") or "").strip()
+        if expected_workflow and token_workflow != expected_workflow:
+            raise SignatureError("renter token workflow does not match request")
+        if str(renter_token.get("workflow_name") or "").strip() != token_workflow:
+            raise SignatureError("renter token workflow does not match issued token")
+        if str(renter_token.get("receipt_id") or "").strip() != str(token_status.get("receipt_id") or "").strip():
+            raise SignatureError("renter token receipt does not match issued token")
+        if str(renter_token.get("quote_digest") or "").strip() != str(token_status.get("quote_digest") or "").strip():
+            raise SignatureError("renter token quote digest does not match issued token")
+        active = str(token_status.get("status") or "").strip() == "issued" and int(token_status.get("remaining_uses") or 0) > 0
+        reason = "" if active else "renter token is not active"
+        return {
+            "verified": True,
+            "active": active,
+            "status": str(token_status.get("status") or ""),
+            "reason": reason,
+            "token": renter_token,
+            "token_status": token_status,
+            "signature": verification,
+        }
+
+    def verify_renter_token(self, renter_token: dict[str, Any], *, workflow_name: str) -> dict[str, Any]:
+        introspection = self.introspect_renter_token(renter_token, workflow_name=workflow_name)
+        if not bool(introspection.get("active")):
+            raise SignatureError(str(introspection.get("reason") or "renter token is not active"))
+        return introspection
+
+    def consume_renter_token(self, token_id: str, *, workflow_name: str, task_id: str) -> dict[str, Any]:
+        normalized_token_id = str(token_id or "").strip()
+        if not normalized_token_id:
+            raise SignatureError("renter token token_id is required")
+        with self._renter_token_lock:
+            self._prune_renter_tokens_locked()
+            token = self._renter_tokens.get(normalized_token_id)
+            if not token:
+                raise SignatureError("renter token not found or expired")
+            if str(token.get("workflow_name") or "").strip() != str(workflow_name or "").strip():
+                raise SignatureError("renter token workflow does not match request")
+            remaining_uses = int(token.get("remaining_uses") or 0)
+            if str(token.get("status") or "").strip() != "issued" or remaining_uses <= 0:
+                raise SignatureError("renter token has already been consumed")
+            token["remaining_uses"] = max(0, remaining_uses - 1)
+            token["status"] = "consumed" if int(token["remaining_uses"]) <= 0 else "issued"
+            token["consumed_at"] = utc_now()
+            token["consumed_task_id"] = task_id
+            self._renter_tokens[normalized_token_id] = token
+        return dict(token)
 
     def build_payment_onchain_proof(
         self,
@@ -5146,6 +5279,8 @@ class AgentCoinNode:
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
                                 "/v1/payments/receipts/introspect",
+                                "/v1/payments/renter-tokens/issue",
+                                "/v1/payments/renter-tokens/introspect",
                                 "/v1/payments/receipts/onchain-proof",
                                 "/v1/payments/receipts/onchain-rpc-plan",
                                 "/v1/payments/receipts/onchain-raw-bundle",
@@ -5262,6 +5397,46 @@ class AgentCoinNode:
                             HTTPStatus.OK,
                             {
                                 "receipt": payment_receipt,
+                                "introspection": introspection,
+                            },
+                        )
+                        return
+                    if self.path == "/v1/payments/renter-tokens/issue":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/renter-tokens/issue"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        payment_receipt = dict(payload.get("payment_receipt") or {})
+                        if not payment_receipt:
+                            raise ValueError("payment_receipt is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip()
+                        if not workflow_name:
+                            raise ValueError("workflow_name is required")
+                        issued, created = node.issue_renter_token(payment_receipt, workflow_name=workflow_name)
+                        self._json_response(
+                            HTTPStatus.CREATED if created else HTTPStatus.OK,
+                            issued,
+                        )
+                        return
+                    if self.path == "/v1/payments/renter-tokens/introspect":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/renter-tokens/introspect"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        renter_token = dict(payload.get("renter_token") or {})
+                        if not renter_token:
+                            raise ValueError("renter_token is required")
+                        workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip() or None
+                        introspection = node.introspect_renter_token(
+                            renter_token,
+                            workflow_name=workflow_name,
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "renter_token": renter_token,
                                 "introspection": introspection,
                             },
                         )
@@ -5739,10 +5914,28 @@ class AgentCoinNode:
                                 return
                         payment_required = workflow_name in set(node.config.payment_required_workflows or [])
                         payment_receipt = dict(payload.get("payment_receipt") or {})
+                        renter_token = dict(payload.get("renter_token") or {})
                         payment_verification = None
+                        renter_verification = None
                         task_id = str(payload.get("task_id") or uuid4())
                         if payment_required:
-                            if not payment_receipt:
+                            if renter_token:
+                                renter_verification = node.verify_renter_token(renter_token, workflow_name=workflow_name)
+                                consumed_token = node.consume_renter_token(
+                                    str(renter_token.get("token_id") or ""),
+                                    workflow_name=workflow_name,
+                                    task_id=task_id,
+                                )
+                                renter_verification["token_status"] = consumed_token
+                            elif payment_receipt:
+                                payment_verification = node.verify_payment_receipt(payment_receipt, workflow_name=workflow_name)
+                                consumed_receipt = node.consume_payment_receipt(
+                                    str(payment_receipt.get("receipt_id") or ""),
+                                    workflow_name=workflow_name,
+                                    task_id=task_id,
+                                )
+                                payment_verification["receipt_status"] = consumed_receipt
+                            else:
                                 challenge = node.issue_payment_challenge(
                                     workflow_name=workflow_name,
                                     payer_hint=str(payload.get("payer") or "").strip() or None,
@@ -5769,13 +5962,6 @@ class AgentCoinNode:
                                     },
                                 )
                                 return
-                            payment_verification = node.verify_payment_receipt(payment_receipt, workflow_name=workflow_name)
-                            consumed_receipt = node.consume_payment_receipt(
-                                str(payment_receipt.get("receipt_id") or ""),
-                                workflow_name=workflow_name,
-                                task_id=task_id,
-                            )
-                            payment_verification["receipt_status"] = consumed_receipt
 
                         task_payload = {
                             "workflow_name": workflow_name,
@@ -5811,6 +5997,9 @@ class AgentCoinNode:
                         if payment_verification:
                             task_payload["_payment_receipt"] = payment_receipt
                             task_payload["_payment_verification"] = payment_verification
+                        if renter_verification:
+                            task_payload["_renter_token"] = renter_token
+                            task_payload["_renter_verification"] = renter_verification
                         task = node._normalize_task(
                             TaskEnvelope.from_dict(
                                 {
@@ -5833,6 +6022,8 @@ class AgentCoinNode:
                                 "task": task.to_dict(),
                                 "payment_required": payment_required,
                                 "payment_verified": bool(payment_verification),
+                                "renter_token_verified": bool(renter_verification),
+                                "renter_verification": renter_verification,
                             },
                         )
                         return

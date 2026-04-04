@@ -436,6 +436,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 - worker execution now enforces the same opaque service boundary again at runtime, rejecting free-form `messages` payloads and schema-mismatched inputs before a runtime adapter is invoked
 - opaque worker execution now sanitizes free-form runtime inputs before adapter dispatch and redacts runtime/request metadata from the stored task result so high-value services no longer echo `_runtime` credentials or raw request bodies back through task results
 - opaque services can now carry private executor metadata in config, allowing the worker to derive runtime prompt/system values from typed `input` without exposing those templates through `/v1/services` or manifest output
+- payment-gated workflows can now mint a short-lived service-scoped renter token from a verified payment receipt, and `/v1/workflow/execute` accepts that token as an alternative to replaying the full receipt payload
 
 ## Current Verification
 

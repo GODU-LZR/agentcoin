@@ -2537,6 +2537,139 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_workflow_execute_accepts_service_scoped_renter_token(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_renter_token", "frontend-local-renter-token")
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="payment-renter-token-node",
+            token="token-payment-renter-token",
+            db_path=str(Path(self.tempdir.name) / "payment-renter-token.db"),
+            capabilities=["worker"],
+            signing_secret="payment-renter-token-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-renter-token",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:renterpayer",
+                    "tx_hash": "0xdef456",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            token_issue_status, token_issued = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/issue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(token_issue_status, HTTPStatus.CREATED)
+            renter_token = token_issued["token"]
+            self.assertEqual(renter_token["workflow_name"], "premium-review")
+            self.assertEqual(renter_token["service_id"], "premium-review")
+            self.assertEqual(token_issued["token_status"]["status"], "issued")
+            self.assertEqual(token_issued["token_status"]["remaining_uses"], 1)
+            token_verification = verify_document(
+                renter_token,
+                secret="payment-renter-token-secret",
+                expected_scope="renter-token",
+                expected_key_id="payment-renter-token-node",
+            )
+            self.assertTrue(token_verification["verified"])
+
+            receipt_status_code, receipt_status_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/status?receipt_id={receipt['receipt_id']}",
+                "token-payment-renter-token",
+            )
+            self.assertEqual(receipt_status_code, HTTPStatus.OK)
+            self.assertEqual(receipt_status_payload["receipt"]["status"], "consumed")
+            self.assertTrue(str(receipt_status_payload["receipt"]["consumed_task_id"]).startswith("renter-token:"))
+
+            token_introspect_before_status, token_introspect_before = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "renter_token": renter_token,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(token_introspect_before_status, HTTPStatus.OK)
+            self.assertTrue(token_introspect_before["introspection"]["active"])
+            self.assertEqual(token_introspect_before["introspection"]["status"], "issued")
+
+            execute_status, executed = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                    "renter_token": renter_token,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(execute_status, HTTPStatus.ACCEPTED)
+            self.assertTrue(executed["payment_required"])
+            self.assertFalse(executed["payment_verified"])
+            self.assertTrue(executed["renter_token_verified"])
+            self.assertEqual(executed["task"]["payload"]["_renter_token"]["token_id"], renter_token["token_id"])
+            self.assertEqual(
+                executed["task"]["payload"]["_renter_verification"]["token_status"]["status"],
+                "consumed",
+            )
+            self.assertEqual(
+                executed["task"]["payload"]["_renter_verification"]["token_status"]["consumed_task_id"],
+                executed["task"]["id"],
+            )
+
+            token_introspect_after_status, token_introspect_after = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "renter_token": renter_token,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(token_introspect_after_status, HTTPStatus.OK)
+            self.assertFalse(token_introspect_after["introspection"]["active"])
+            self.assertEqual(token_introspect_after["introspection"]["status"], "consumed")
+            self.assertIn("not active", token_introspect_after["introspection"]["reason"])
+        finally:
+            node.stop()
+
     def test_payment_onchain_raw_bundle_and_relay(self) -> None:
         rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentproof1"})
         rpc.start()

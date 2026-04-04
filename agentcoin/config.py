@@ -245,6 +245,7 @@ class NodeConfig:
     payment_quote_asset: str = "AGENT"
     payment_quote_ttl_seconds: int = 300
     payment_receipt_ttl_seconds: int = 3600
+    renter_token_ttl_seconds: int = 1800
     payment_relay_auto_requeue_enabled: bool = False
     payment_relay_auto_requeue_delay_seconds: int = 30
     payment_relay_auto_requeue_max_requeues: int = 1
@@ -352,6 +353,8 @@ class NodeConfig:
                 "workflow_execute": f"{self.base_url}/v1/workflow/execute",
                 "payment_receipt_issue": f"{self.base_url}/v1/payments/receipts/issue",
                 "payment_receipt_introspect": f"{self.base_url}/v1/payments/receipts/introspect",
+                "payment_renter_token_issue": f"{self.base_url}/v1/payments/renter-tokens/issue",
+                "payment_renter_token_introspect": f"{self.base_url}/v1/payments/renter-tokens/introspect",
                 "payment_receipt_onchain_proof": f"{self.base_url}/v1/payments/receipts/onchain-proof",
                 "payment_receipt_onchain_rpc_plan": f"{self.base_url}/v1/payments/receipts/onchain-rpc-plan",
                 "payment_receipt_onchain_raw_bundle": f"{self.base_url}/v1/payments/receipts/onchain-raw-bundle",
