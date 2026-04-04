@@ -3009,6 +3009,22 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(summary["total_usage_count"], 1)
             self.assertEqual(summary["latest_token"]["token_id"], renter_token["token_id"])
             self.assertEqual(summary["items"][0]["token_id"], renter_token["token_id"])
+
+            ops_status, ops_summary = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/ops/summary?receipt_id={receipt['receipt_id']}&relay_limit=5",
+                private_key_path=key_path,
+                principal="frontend-local-renter-summary",
+                public_key=public_key,
+            )
+            self.assertEqual(ops_status, HTTPStatus.OK)
+            self.assertEqual(ops_summary["renter_token_summary"]["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(ops_summary["renter_token_summary"]["item_count"], 1)
+            self.assertEqual(ops_summary["renter_token_summary"]["total_remaining_uses"], 1)
+            self.assertEqual(ops_summary["renter_token_summary"]["total_usage_count"], 1)
+            self.assertEqual(
+                ops_summary["renter_token_summary"]["latest_token"]["token_id"],
+                renter_token["token_id"],
+            )
         finally:
             node.stop()
 

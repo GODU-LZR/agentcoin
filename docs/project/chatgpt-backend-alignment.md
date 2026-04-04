@@ -41,6 +41,7 @@ This alignment pass adds the first explicit service registry and typed workflow 
 - service config now supports private executor metadata (`executor_runtime`, `executor_options`, prompt/system templates) that stays out of `/v1/services` and is only used internally to derive typed opaque runtime requests
 - payment-gated workflows can now exchange a verified `payment_receipt` for a short-lived, service-scoped `renter token`, and that token now carries an explicit capability scope with allowed operations such as `workflow-execute` plus a bounded usage quota
 - renter-token status and summary inspection are now available for front-end dashboards that need to display remaining usage and service-scoped token activity
+- payment ops summary now folds renter-token usage into the existing payment dashboard surface, so the front end can inspect relay and renter-consumption state from one endpoint
 
 ## What This Does Not Yet Solve
 

@@ -601,15 +601,19 @@ class AgentCoinNode:
     def summarize_renter_tokens(
         self,
         *,
+        receipt_id: str | None = None,
         workflow_name: str | None = None,
         service_id: str | None = None,
         limit: int = 10,
     ) -> dict[str, Any]:
+        normalized_receipt_id = str(receipt_id or "").strip()
         normalized_workflow = str(workflow_name or "").strip()
         normalized_service = str(service_id or "").strip()
         with self._renter_token_lock:
             self._prune_renter_tokens_locked()
             items = [dict(item) for item in self._renter_tokens.values()]
+        if normalized_receipt_id:
+            items = [item for item in items if str(item.get("receipt_id") or "").strip() == normalized_receipt_id]
         if normalized_workflow:
             items = [item for item in items if str(item.get("workflow_name") or "").strip() == normalized_workflow]
         if normalized_service:
@@ -629,6 +633,7 @@ class AgentCoinNode:
                 active_count += 1
         latest_token = dict(items[0]) if items else None
         return {
+            "receipt_id": normalized_receipt_id or None,
             "workflow_name": normalized_workflow or None,
             "service_id": normalized_service or None,
             "item_count": len(items),
@@ -1455,11 +1460,13 @@ class AgentCoinNode:
         normalized_receipt_id = str(receipt_id or "").strip() or None
         recent_relays = self.store.list_payment_relays(receipt_id=normalized_receipt_id, limit=max(1, int(relay_limit or 5)))
         queue_summary = self.store.summarize_payment_relay_queue(receipt_id=normalized_receipt_id)
+        renter_token_summary = self.summarize_renter_tokens(receipt_id=normalized_receipt_id, limit=max(1, int(relay_limit or 5)))
         quote_template = {
             "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
             "asset": self.config.payment_quote_asset,
             "ttl_seconds": int(self.config.payment_quote_ttl_seconds or 300),
             "receipt_ttl_seconds": int(self.config.payment_receipt_ttl_seconds or 3600),
+            "renter_token_ttl_seconds": int(self.config.renter_token_ttl_seconds or 1800),
             "recipient": self.config.onchain.local_controller_address,
             "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
         }
@@ -1476,6 +1483,7 @@ class AgentCoinNode:
             "latest_relay": self.store.get_latest_payment_relay(normalized_receipt_id),
             "latest_failed_relay": self.store.get_latest_failed_payment_relay(normalized_receipt_id),
             "queue_summary": queue_summary,
+            "renter_token_summary": renter_token_summary,
             "auto_requeue_disabled_items": list(queue_summary.get("auto_requeue_disabled_items") or []),
             "latest_auto_requeue_override": queue_summary.get("latest_auto_requeue_override"),
             "recent_relays": recent_relays,
