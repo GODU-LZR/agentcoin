@@ -66,6 +66,41 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(len(config.peers), 1)
             self.assertEqual(config.peers[0].peer_id, "peer-b")
 
+    def test_load_config_accepts_allowed_frontend_origins_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "node.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "node_id": "cors-node",
+                        "auth_token": "token-cors",
+                        "ALLOWED_FRONTEND_ORIGINS": [
+                            "https://app.agentcoin.network",
+                            "http://127.0.0.1:3000",
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            config = load_config(str(config_path))
+
+            self.assertEqual(
+                config.allowed_frontend_origins,
+                ["https://app.agentcoin.network", "http://127.0.0.1:3000"],
+            )
+            self.assertEqual(
+                config.effective_cors_allowed_origins,
+                ["https://app.agentcoin.network", "http://127.0.0.1:3000"],
+            )
+            self.assertEqual(
+                config.cors_allowed_origins,
+                ["https://app.agentcoin.network", "http://127.0.0.1:3000"],
+            )
+
     def test_persist_peer_identity_config_updates_target_peer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "node.json"

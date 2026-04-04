@@ -129,6 +129,7 @@ class AgentCoinNode:
             "discovery": {
                 "card_url": card.get("endpoints", {}).get("card"),
                 "manifest_url": card.get("endpoints", {}).get("manifest"),
+                "status_url": card.get("endpoints", {}).get("status"),
                 "local_agent_discovery_url": card.get("endpoints", {}).get("local_agent_discovery"),
                 "local_agent_registrations_url": card.get("endpoints", {}).get("local_agent_registrations"),
                 "local_agent_register_url": card.get("endpoints", {}).get("local_agent_register"),
@@ -143,7 +144,7 @@ class AgentCoinNode:
                 "local_agent_acp_session_apply_task_result_url": card.get("endpoints", {}).get("local_agent_acp_session_apply_task_result"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
                 "auth_verify_url": card.get("endpoints", {}).get("auth_verify"),
-                "cors_allowed_origins": list(self.config.cors_allowed_origins),
+                "cors_allowed_origins": list(self.config.effective_cors_allowed_origins),
                 "mdns": {
                     "enabled": False,
                     "planned": True,
@@ -208,7 +209,7 @@ class AgentCoinNode:
         }
 
     def _resolve_cors_origin(self, origin: str | None) -> str | None:
-        allowed_origins = [str(item or "").strip() for item in self.config.cors_allowed_origins if str(item or "").strip()]
+        allowed_origins = list(self.config.effective_cors_allowed_origins)
         if not allowed_origins:
             return None
         if "*" in allowed_origins:
@@ -4472,6 +4473,27 @@ class AgentCoinNode:
                             "status": "ok",
                             "node_id": node.config.node_id,
                             "local_identity": node.local_identity_view(),
+                            "stats": node.store.stats(),
+                        },
+                    )
+                    return
+                if path == "/v1/status":
+                    self._json_response(
+                        HTTPStatus.OK,
+                        {
+                            "status": "ok",
+                            "node_id": node.config.node_id,
+                            "name": node.config.name,
+                            "base_url": node.config.base_url,
+                            "local_daemon": True,
+                            "local_identity": node.local_identity_view(),
+                            "frontend_origins": list(node.config.effective_cors_allowed_origins),
+                            "routes": {
+                                "health": f"{node.config.base_url}/healthz",
+                                "status": f"{node.config.base_url}/v1/status",
+                                "manifest": f"{node.config.base_url}/v1/manifest",
+                                "peer_health": f"{node.config.base_url}/v1/peer-health",
+                            },
                             "stats": node.store.stats(),
                         },
                     )

@@ -187,6 +187,7 @@ class NodeConfig:
     identity_auth_challenge_ttl_seconds: int = 300
     identity_auth_session_ttl_seconds: int = 900
     cors_allowed_origins: list[str] = field(default_factory=lambda: ["*"])
+    allowed_frontend_origins: list[str] = field(default_factory=list)
     config_path: str | None = field(default=None, repr=False, compare=False)
     database_path: str = "./var/agentcoin.db"
     git_root: str | None = None
@@ -262,6 +263,16 @@ class NodeConfig:
         )
 
     @property
+    def effective_cors_allowed_origins(self) -> list[str]:
+        candidates = self.allowed_frontend_origins or self.cors_allowed_origins
+        normalized: list[str] = []
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized or ["*"]
+
+    @property
     def card(self) -> AgentCard:
         from agentcoin.runtimes import RuntimeRegistry
 
@@ -278,6 +289,7 @@ class NodeConfig:
             runtime_capabilities=runtime_capabilities,
             endpoints={
                 "health": f"{self.base_url}/healthz",
+                "status": f"{self.base_url}/v1/status",
                 "card": f"{self.base_url}/v1/card",
                 "manifest": f"{self.base_url}/v1/manifest",
                 "local_agent_discovery": f"{self.base_url}/v1/discovery/local-agents",
@@ -415,6 +427,11 @@ def load_config(path: str | None) -> NodeConfig:
 
     resolved_path = str(Path(path).resolve())
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if "ALLOWED_FRONTEND_ORIGINS" in data and "allowed_frontend_origins" not in data:
+        data["allowed_frontend_origins"] = list(data.get("ALLOWED_FRONTEND_ORIGINS") or [])
+    if "allowed_frontend_origins" in data and "cors_allowed_origins" not in data:
+        data["cors_allowed_origins"] = list(data.get("allowed_frontend_origins") or [])
+    data.pop("ALLOWED_FRONTEND_ORIGINS", None)
     data["peers"] = [PeerConfig(**peer) for peer in data.get("peers", [])]
     data["operator_identities"] = [
         OperatorIdentityConfig(**operator) for operator in data.get("operator_identities", [])

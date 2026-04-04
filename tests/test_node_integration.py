@@ -43,6 +43,8 @@ class NodeHarness:
                  operator_allow_loopback_bearer_fallback: bool = False,
                  operator_auth_timestamp_skew_seconds: int = 300,
                  operator_auth_nonce_ttl_seconds: int = 900,
+                 cors_allowed_origins: list[str] | None = None,
+                 allowed_frontend_origins: list[str] | None = None,
                  config_path: str | None = None,
                  onchain: OnchainBindings | None = None,
                  network: OutboundNetworkConfig | None = None, runtimes: list[str] | None = None,
@@ -73,6 +75,8 @@ class NodeHarness:
             operator_allow_loopback_bearer_fallback=operator_allow_loopback_bearer_fallback,
             operator_auth_timestamp_skew_seconds=operator_auth_timestamp_skew_seconds,
             operator_auth_nonce_ttl_seconds=operator_auth_nonce_ttl_seconds,
+            cors_allowed_origins=cors_allowed_origins or ["*"],
+            allowed_frontend_origins=allowed_frontend_origins or [],
             config_path=config_path,
             host="127.0.0.1",
             port=self.port,
@@ -859,6 +863,56 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(headers.get("Access-Control-Allow-Origin"), "*")
             payload = json.loads(body)
             self.assertEqual(payload["node_id"], "cors-node")
+        finally:
+            node.stop()
+
+    def test_status_and_peer_health_support_frontend_origin_preflight(self) -> None:
+        allowed_origin = "https://app.agentcoin.network"
+        node = NodeHarness(
+            node_id="frontend-origin-node",
+            token="token-frontend-origin",
+            db_path=str(Path(self.tempdir.name) / "frontend-origin.db"),
+            capabilities=["worker"],
+            allowed_frontend_origins=[allowed_origin],
+        )
+        node.start()
+        try:
+            status, headers, _ = self._request_raw(
+                f"{node.base_url}/v1/status",
+                method="OPTIONS",
+                headers={"Origin": allowed_origin},
+            )
+            self.assertEqual(status, HTTPStatus.NO_CONTENT)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), allowed_origin)
+            self.assertIn("GET", headers.get("Access-Control-Allow-Methods", ""))
+
+            status, headers, body = self._request_raw(
+                f"{node.base_url}/v1/status",
+                method="GET",
+                headers={"Origin": allowed_origin},
+            )
+            self.assertEqual(status, HTTPStatus.OK)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), allowed_origin)
+            payload = json.loads(body)
+            self.assertTrue(payload["local_daemon"])
+            self.assertEqual(payload["routes"]["peer_health"], f"{node.base_url}/v1/peer-health")
+            self.assertEqual(payload["frontend_origins"], [allowed_origin])
+
+            status, headers, _ = self._request_raw(
+                f"{node.base_url}/v1/peer-health",
+                method="OPTIONS",
+                headers={"Origin": allowed_origin},
+            )
+            self.assertEqual(status, HTTPStatus.NO_CONTENT)
+            self.assertEqual(headers.get("Access-Control-Allow-Origin"), allowed_origin)
+
+            status, headers, _ = self._request_raw(
+                f"{node.base_url}/v1/status",
+                method="OPTIONS",
+                headers={"Origin": "https://untrusted.example"},
+            )
+            self.assertEqual(status, HTTPStatus.NO_CONTENT)
+            self.assertIsNone(headers.get("Access-Control-Allow-Origin"))
         finally:
             node.stop()
 
