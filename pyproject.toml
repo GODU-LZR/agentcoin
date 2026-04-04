@@ -24,6 +24,7 @@ classifiers = [
 [project.scripts]
 agentcoin-node = "agentcoin.cli:main"
 agentcoin-worker = "agentcoin.worker:main"
+agentcoin-ascii = "agentcoin.ascii_cli:main"
 
 [tool.setuptools]
 include-package-data = true

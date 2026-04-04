@@ -250,6 +250,32 @@ If `strict_input=true`, build forms directly from the declared `input_schema`.
 5. Service usage and reconciliation panels
 6. Drill-down relay controls
 
+## ASCII Workbench Companion
+
+For local debugging outside the browser, the backend now exposes an ASCII terminal companion:
+
+- `agentcoin-ascii --endpoint http://127.0.0.1:8080 --token <token>`
+
+It mirrors the same backend surfaces the frontend should use:
+
+- status
+- manifest
+- services
+- local discovery
+- payment ops summary
+- service usage reconciliation
+
+Useful commands inside the terminal:
+
+- `connect`
+- `token`
+- `receipt`
+- `probe`
+- `services`
+- `discover`
+- `ops`
+- `status`
+
 ## Do Not Assume
 
 - do not assume secp256k1 or EIP-712 is active yet

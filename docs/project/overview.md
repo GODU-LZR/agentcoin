@@ -34,6 +34,7 @@ The current repository contains:
 - service-usage reconciliation now compares renter-token consumption against receipt state and payment-proof relay progress
 - service-usage reconciliation now also emits `recommended_actions`, so the frontend can drive CTA buttons from backend state instead of inventing its own transition rules
 - frontend integration guidance is documented in [frontend-copilot-backend-integration.md](C:/Users/Twist/Desktop/agentcoin/docs/project/frontend-copilot-backend-integration.md)
+- an ASCII terminal workbench is now available through `agentcoin-ascii`, mirroring the web workspace's attach / discovery / payment / reconciliation flow for local operator testing
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state
