@@ -193,6 +193,7 @@ class AgentCoinNode:
                     "ttl_seconds": int(self.config.payment_quote_ttl_seconds or 300),
                     "receipt_ttl_seconds": int(self.config.payment_receipt_ttl_seconds or 3600),
                     "renter_token_ttl_seconds": int(self.config.renter_token_ttl_seconds or 1800),
+                    "renter_token_allowed_operations": ["workflow-execute"],
                     "recipient": self.config.onchain.local_controller_address,
                     "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
                 },
@@ -594,7 +595,13 @@ class AgentCoinNode:
             raise ValueError("renter token not found or expired")
         return dict(token)
 
-    def issue_renter_token(self, receipt: dict[str, Any], *, workflow_name: str) -> tuple[dict[str, Any], bool]:
+    def issue_renter_token(
+        self,
+        receipt: dict[str, Any],
+        *,
+        workflow_name: str,
+        service_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         introspection = self.verify_payment_receipt(receipt, workflow_name=workflow_name)
         receipt_status = self.consume_payment_receipt(
             str(receipt.get("receipt_id") or ""),
@@ -604,11 +611,21 @@ class AgentCoinNode:
         token_id = str(uuid4())
         challenge = dict(introspection.get("challenge") or {})
         service = self._workflow_service_metadata(workflow_name)
+        resolved_service_id = str((service or {}).get("service_id") or workflow_name).strip()
+        requested_service_id = str(service_id or "").strip()
+        if requested_service_id and requested_service_id != resolved_service_id:
+            raise ValueError("service_id does not match workflow service")
+        scope = {
+            "workflow_name": workflow_name,
+            "service_id": resolved_service_id,
+            "allowed_operations": ["workflow-execute"],
+            "privacy_level": str((service or {}).get("privacy_level") or "transparent"),
+        }
         renter_token = {
             "kind": "agentcoin-renter-token",
             "token_id": token_id,
             "workflow_name": workflow_name,
-            "service_id": str((service or {}).get("service_id") or workflow_name),
+            "service_id": resolved_service_id,
             "challenge_id": challenge.get("challenge_id"),
             "receipt_id": receipt.get("receipt_id"),
             "quote_digest": introspection.get("quote_digest"),
@@ -618,6 +635,7 @@ class AgentCoinNode:
             "max_uses": 1,
             "remaining_uses": 1,
             "status": "issued",
+            "scope": scope,
         }
         signed_token = self._sign_document(
             renter_token,
@@ -634,7 +652,14 @@ class AgentCoinNode:
             "challenge": challenge,
         }, True
 
-    def introspect_renter_token(self, renter_token: dict[str, Any], *, workflow_name: str | None = None) -> dict[str, Any]:
+    def introspect_renter_token(
+        self,
+        renter_token: dict[str, Any],
+        *,
+        workflow_name: str | None = None,
+        service_id: str | None = None,
+        operation: str | None = None,
+    ) -> dict[str, Any]:
         token_id = str(renter_token.get("token_id") or "").strip()
         if not token_id:
             raise ValueError("renter_token.token_id is required")
@@ -648,12 +673,29 @@ class AgentCoinNode:
         token_workflow = str(token_status.get("workflow_name") or renter_token.get("workflow_name") or "").strip()
         if expected_workflow and token_workflow != expected_workflow:
             raise SignatureError("renter token workflow does not match request")
+        expected_service_id = str(service_id or "").strip()
+        token_service_id = str(token_status.get("service_id") or renter_token.get("service_id") or "").strip()
+        if expected_service_id and token_service_id != expected_service_id:
+            raise SignatureError("renter token service does not match request")
         if str(renter_token.get("workflow_name") or "").strip() != token_workflow:
             raise SignatureError("renter token workflow does not match issued token")
+        if str(renter_token.get("service_id") or "").strip() != token_service_id:
+            raise SignatureError("renter token service does not match issued token")
         if str(renter_token.get("receipt_id") or "").strip() != str(token_status.get("receipt_id") or "").strip():
             raise SignatureError("renter token receipt does not match issued token")
         if str(renter_token.get("quote_digest") or "").strip() != str(token_status.get("quote_digest") or "").strip():
             raise SignatureError("renter token quote digest does not match issued token")
+        scope = dict(token_status.get("scope") or renter_token.get("scope") or {})
+        if dict(renter_token.get("scope") or {}) != scope:
+            raise SignatureError("renter token scope does not match issued token")
+        allowed_operations = [
+            str(candidate or "").strip()
+            for candidate in list(scope.get("allowed_operations") or [])
+            if str(candidate or "").strip()
+        ]
+        requested_operation = str(operation or "").strip()
+        if requested_operation and requested_operation not in allowed_operations:
+            raise SignatureError("renter token is not authorized for this operation")
         active = str(token_status.get("status") or "").strip() == "issued" and int(token_status.get("remaining_uses") or 0) > 0
         reason = "" if active else "renter token is not active"
         return {
@@ -663,11 +705,24 @@ class AgentCoinNode:
             "reason": reason,
             "token": renter_token,
             "token_status": token_status,
+            "scope": scope,
             "signature": verification,
         }
 
-    def verify_renter_token(self, renter_token: dict[str, Any], *, workflow_name: str) -> dict[str, Any]:
-        introspection = self.introspect_renter_token(renter_token, workflow_name=workflow_name)
+    def verify_renter_token(
+        self,
+        renter_token: dict[str, Any],
+        *,
+        workflow_name: str,
+        service_id: str | None = None,
+        operation: str | None = None,
+    ) -> dict[str, Any]:
+        introspection = self.introspect_renter_token(
+            renter_token,
+            workflow_name=workflow_name,
+            service_id=service_id,
+            operation=operation,
+        )
         if not bool(introspection.get("active")):
             raise SignatureError(str(introspection.get("reason") or "renter token is not active"))
         return introspection
@@ -5413,7 +5468,11 @@ class AgentCoinNode:
                         workflow_name = str(payload.get("workflow_name") or payload.get("workflow") or "").strip()
                         if not workflow_name:
                             raise ValueError("workflow_name is required")
-                        issued, created = node.issue_renter_token(payment_receipt, workflow_name=workflow_name)
+                        issued, created = node.issue_renter_token(
+                            payment_receipt,
+                            workflow_name=workflow_name,
+                            service_id=str(payload.get("service_id") or "").strip() or None,
+                        )
                         self._json_response(
                             HTTPStatus.CREATED if created else HTTPStatus.OK,
                             issued,
@@ -5432,6 +5491,8 @@ class AgentCoinNode:
                         introspection = node.introspect_renter_token(
                             renter_token,
                             workflow_name=workflow_name,
+                            service_id=str(payload.get("service_id") or "").strip() or None,
+                            operation=str(payload.get("operation") or "").strip() or None,
                         )
                         self._json_response(
                             HTTPStatus.OK,
@@ -5920,7 +5981,12 @@ class AgentCoinNode:
                         task_id = str(payload.get("task_id") or uuid4())
                         if payment_required:
                             if renter_token:
-                                renter_verification = node.verify_renter_token(renter_token, workflow_name=workflow_name)
+                                renter_verification = node.verify_renter_token(
+                                    renter_token,
+                                    workflow_name=workflow_name,
+                                    service_id=str((service or {}).get("service_id") or workflow_name).strip(),
+                                    operation="workflow-execute",
+                                )
                                 consumed_token = node.consume_renter_token(
                                     str(renter_token.get("token_id") or ""),
                                     workflow_name=workflow_name,

@@ -2596,6 +2596,9 @@ class NodeIntegrationTests(unittest.TestCase):
             renter_token = token_issued["token"]
             self.assertEqual(renter_token["workflow_name"], "premium-review")
             self.assertEqual(renter_token["service_id"], "premium-review")
+            self.assertEqual(renter_token["scope"]["workflow_name"], "premium-review")
+            self.assertEqual(renter_token["scope"]["service_id"], "premium-review")
+            self.assertEqual(renter_token["scope"]["allowed_operations"], ["workflow-execute"])
             self.assertEqual(token_issued["token_status"]["status"], "issued")
             self.assertEqual(token_issued["token_status"]["remaining_uses"], 1)
             token_verification = verify_document(
@@ -2627,6 +2630,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(token_introspect_before_status, HTTPStatus.OK)
             self.assertTrue(token_introspect_before["introspection"]["active"])
             self.assertEqual(token_introspect_before["introspection"]["status"], "issued")
+            self.assertEqual(token_introspect_before["introspection"]["scope"]["allowed_operations"], ["workflow-execute"])
 
             execute_status, executed = self._identity_signed_post(
                 f"{node.base_url}/v1/workflow/execute",
@@ -2667,6 +2671,96 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(token_introspect_after["introspection"]["active"])
             self.assertEqual(token_introspect_after["introspection"]["status"], "consumed")
             self.assertIn("not active", token_introspect_after["introspection"]["reason"])
+        finally:
+            node.stop()
+
+    def test_renter_token_scope_rejects_wrong_service_or_operation(self) -> None:
+        key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_renter_scope", "frontend-local-renter-scope")
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="payment-renter-scope-node",
+            token="token-payment-renter-scope",
+            db_path=str(Path(self.tempdir.name) / "payment-renter-scope.db"),
+            capabilities=["worker"],
+            signing_secret="payment-renter-scope-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {
+                    "workflow_name": "premium-review",
+                    "input": {"prompt": "review this secret workflow"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-scope",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-renter-scope",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:renterpayer",
+                    "tx_hash": "0xscope001",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            token_issue_status, token_issued = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/issue",
+                {
+                    "workflow_name": "premium-review",
+                    "service_id": "premium-review",
+                    "payment_receipt": receipt,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-scope",
+                public_key=public_key,
+            )
+            self.assertEqual(token_issue_status, HTTPStatus.CREATED)
+            renter_token = token_issued["token"]
+
+            wrong_service_status, wrong_service_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "service_id": "other-service",
+                    "renter_token": renter_token,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-scope",
+                public_key=public_key,
+            )
+            self.assertEqual(wrong_service_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("service", wrong_service_payload["error"])
+
+            wrong_operation_status, wrong_operation_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "service_id": "premium-review",
+                    "operation": "admin-write",
+                    "renter_token": renter_token,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-scope",
+                public_key=public_key,
+            )
+            self.assertEqual(wrong_operation_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("authorized", wrong_operation_payload["error"])
         finally:
             node.stop()
 
