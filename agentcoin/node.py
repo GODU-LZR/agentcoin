@@ -2359,6 +2359,38 @@ class AgentCoinNode:
             )
         return enriched
 
+    @staticmethod
+    def _task_prompt_value(task: dict[str, Any]) -> Any:
+        payload = dict(task.get("payload") or {})
+        task_input = payload.get("input")
+        if isinstance(task_input, dict):
+            for key in ("prompt", "content", "text", "query", "instruction"):
+                value = task_input.get(key)
+                if value is not None:
+                    return value
+        if task_input is not None:
+            return task_input
+        return payload
+
+    @staticmethod
+    def _claude_tool_result_from_task(tool_task: dict[str, Any]) -> dict[str, Any]:
+        tool_request = dict(tool_task.get("payload", {}).get("_tool_request") or {})
+        tool_use_id = str(tool_request.get("tool_use_id") or "").strip()
+        if not tool_use_id:
+            raise ValueError("tool task does not provide _tool_request.tool_use_id")
+        if str(tool_task.get("status") or "").strip().lower() != "completed":
+            raise ValueError("tool task must be completed before follow-up binding")
+        task_result = tool_task.get("result")
+        if task_result is None:
+            raise ValueError("tool task does not have a result")
+        is_error = str(task_result.get("adapter", {}).get("status") or "").strip().lower() == "rejected"
+        serialized_result = json.dumps(task_result, ensure_ascii=False, sort_keys=True)
+        return {
+            "tool_use_id": tool_use_id,
+            "content": [{"type": "text", "text": serialized_result}],
+            "is_error": is_error,
+        }
+
     def _task_settlement_preview(self, task: dict[str, Any]) -> dict[str, Any] | None:
         if not self.onchain.enabled:
             return None
@@ -5035,6 +5067,7 @@ class AgentCoinNode:
                                 "/v1/integrations/claude-code/bind",
                                 "/v1/integrations/claude-http/bind",
                                 "/v1/integrations/claude-http/follow-up-bind",
+                                "/v1/integrations/claude-http/follow-up-from-tool-task",
                                 "/v1/integrations/claude-http/tool-fanout",
                             ],
                         )
@@ -5947,6 +5980,122 @@ class AgentCoinNode:
                             {
                                 "ok": updated,
                                 "task_id": task_id,
+                                "source_task_id": source_task_id,
+                                "runtime": merged_payload.get("_runtime"),
+                                "assistant_tool_use_ids": [
+                                    str(item.get("id") or item.get("tool_use_id") or "").strip()
+                                    for item in assistant_tool_uses
+                                    if str(item.get("id") or item.get("tool_use_id") or "").strip()
+                                ],
+                                "tool_result_ids": [
+                                    str(item.get("tool_use_id") or "").strip()
+                                    for item in tool_results
+                                    if str(item.get("tool_use_id") or "").strip()
+                                ],
+                                "provider": "claude-http",
+                            },
+                        )
+                        return
+                    if self.path == "/v1/integrations/claude-http/follow-up-from-tool-task":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/integrations/claude-http/follow-up-from-tool-task"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        task_id = str(payload.get("task_id") or "").strip()
+                        tool_task_id = str(payload.get("tool_task_id") or "").strip()
+                        if not task_id:
+                            raise ValueError("task_id is required")
+                        if not tool_task_id:
+                            raise ValueError("tool_task_id is required")
+                        target_task = node.store.get_task(task_id)
+                        if not target_task:
+                            raise ValueError("target task not found")
+                        tool_task = node.store.get_task(tool_task_id)
+                        if not tool_task:
+                            raise ValueError("tool task not found")
+                        follow_up_meta = dict(tool_task.get("payload", {}).get("_claude_follow_up") or {})
+                        tool_request = dict(tool_task.get("payload", {}).get("_tool_request") or {})
+                        source_task_id = str(
+                            payload.get("source_task_id")
+                            or follow_up_meta.get("source_task_id")
+                            or tool_request.get("source_task_id")
+                            or tool_task.get("parent_task_id")
+                            or ""
+                        ).strip()
+                        if not source_task_id:
+                            raise ValueError("source_task_id could not be resolved from tool task")
+                        source_task = node.store.get_task(source_task_id)
+                        if not source_task:
+                            raise ValueError("source task not found")
+                        source_runtime = dict(source_task.get("payload", {}).get("_runtime") or {})
+                        if str(source_runtime.get("runtime") or "").strip().lower() != "claude-http":
+                            raise ValueError("source task is not bound to claude-http")
+                        source_tool_uses = list(
+                            source_task.get("result", {}).get("runtime_execution", {}).get("tool_uses")
+                            or source_task.get("result", {}).get("execution_receipt", {}).get("artifacts", {}).get("tool_uses")
+                            or []
+                        )
+                        tool_use_id = str(tool_request.get("tool_use_id") or follow_up_meta.get("tool_use_id") or "").strip()
+                        assistant_tool_uses = list(payload.get("assistant_tool_uses") or [])
+                        if not assistant_tool_uses:
+                            if tool_use_id:
+                                assistant_tool_uses = [
+                                    item for item in source_tool_uses if str(item.get("id") or item.get("tool_use_id") or "").strip() == tool_use_id
+                                ]
+                            if not assistant_tool_uses:
+                                assistant_tool_uses = list(source_tool_uses)
+                        if not assistant_tool_uses:
+                            raise ValueError("source task does not provide assistant tool uses")
+                        tool_results = list(payload.get("tool_results") or [node._claude_tool_result_from_task(tool_task)])
+                        target_prompt = payload.get("prompt") if "prompt" in payload else node._task_prompt_value(target_task)
+                        runtime_options = {
+                            "endpoint": str(payload.get("endpoint") or source_runtime.get("endpoint") or "").strip(),
+                            "model": str(payload.get("model") or source_runtime.get("model") or "").strip(),
+                            "auth_token": str(payload.get("auth_token") or source_runtime.get("auth_token") or "").strip() or None,
+                            "system": payload.get("system", source_runtime.get("system")),
+                            "prompt": target_prompt,
+                            "messages": payload.get("messages", source_runtime.get("messages")),
+                            "temperature": payload.get("temperature", source_runtime.get("temperature")),
+                            "top_p": payload.get("top_p", source_runtime.get("top_p")),
+                            "max_tokens": payload.get("max_tokens", source_runtime.get("max_tokens")),
+                            "timeout_seconds": int(payload.get("timeout_seconds") or source_runtime.get("timeout_seconds") or 60),
+                            "anthropic_version": str(
+                                payload.get("anthropic_version") or source_runtime.get("anthropic_version") or ""
+                            ).strip()
+                            or None,
+                            "provider": "claude-http",
+                            "assistant_tool_uses": assistant_tool_uses,
+                            "tool_results": tool_results,
+                        }
+                        if "tools" in payload:
+                            runtime_options["tools"] = list(payload.get("tools") or [])
+                        elif "tools" in source_runtime:
+                            runtime_options["tools"] = list(source_runtime.get("tools") or [])
+                        if "tool_choice" in payload:
+                            runtime_options["tool_choice"] = payload.get("tool_choice")
+                        elif "tool_choice" in source_runtime:
+                            runtime_options["tool_choice"] = source_runtime.get("tool_choice")
+                        if isinstance(payload.get("headers"), dict):
+                            runtime_options["headers"] = dict(payload.get("headers") or {})
+                        elif isinstance(source_runtime.get("headers"), dict):
+                            runtime_options["headers"] = dict(source_runtime.get("headers") or {})
+                        if not runtime_options["endpoint"]:
+                            raise ValueError("endpoint is required")
+                        if not runtime_options["model"]:
+                            raise ValueError("model is required")
+                        merged_payload = dict(target_task["payload"])
+                        merged_payload["_runtime"] = node.runtimes.normalize_binding(
+                            "claude-http",
+                            {key: value for key, value in runtime_options.items() if value is not None},
+                        )
+                        updated = node.store.update_task_payload(task_id, merged_payload)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": updated,
+                                "task_id": task_id,
+                                "tool_task_id": tool_task_id,
                                 "source_task_id": source_task_id,
                                 "runtime": merged_payload.get("_runtime"),
                                 "assistant_tool_use_ids": [

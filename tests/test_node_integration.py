@@ -10909,6 +10909,145 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             gateway.stop()
 
+    def test_claude_http_follow_up_from_tool_task_binds_completed_tool_result(self) -> None:
+        gateway = ClaudeHttpHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-claude-http-tool-result-helper-node",
+            token="token-claude-http-tool-result-helper",
+            db_path=str(Path(self.tempdir.name) / "runtime-claude-http-tool-result-helper.db"),
+            capabilities=["worker"],
+            runtimes=["claude-http"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-http-tool-result-helper",
+                {
+                    "id": "runtime-claude-http-helper-source-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "lookup repository status"}},
+                },
+            )
+            self._post(
+                f"{node.base_url}/v1/integrations/claude-http/bind",
+                "token-claude-http-tool-result-helper",
+                {
+                    "task_id": "runtime-claude-http-helper-source-1",
+                    "endpoint": gateway.url,
+                    "model": "claude-3-7-sonnet-latest",
+                    "auth_token": "anthropic-secret",
+                    "prompt": "lookup repository status",
+                    "tools": [
+                        {
+                            "name": "repo_status",
+                            "description": "Inspect repository status",
+                            "input_schema": {"type": "object"},
+                        }
+                    ],
+                    "tool_choice": {"type": "tool", "name": "repo_status"},
+                    "timeout_seconds": 10,
+                },
+            )
+            claude_worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-claude-http-tool-result-helper",
+                worker_id="worker-claude-http-tool-result-helper-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["claude-http"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(claude_worker.run_once())
+
+            fanout_status, fanout = self._post(
+                f"{node.base_url}/v1/integrations/claude-http/tool-fanout",
+                "token-claude-http-tool-result-helper",
+                {
+                    "source_task_id": "runtime-claude-http-helper-source-1",
+                    "task_defaults": {
+                        "kind": "tool-call",
+                        "role": "worker",
+                        "required_capabilities": ["worker"],
+                    },
+                },
+            )
+            self.assertEqual(fanout_status, 201)
+            tool_task_id = fanout["items"][0]["id"]
+
+            claim_status, claim = self._post(
+                f"{node.base_url}/v1/tasks/claim",
+                "token-claude-http-tool-result-helper",
+                {
+                    "worker_id": "tool-worker-1",
+                    "worker_capabilities": ["worker"],
+                    "lease_seconds": 30,
+                },
+            )
+            self.assertEqual(claim_status, 200)
+            self.assertEqual(claim["task"]["id"], tool_task_id)
+
+            ack_status, ack = self._post(
+                f"{node.base_url}/v1/tasks/ack",
+                "token-claude-http-tool-result-helper",
+                {
+                    "task_id": tool_task_id,
+                    "worker_id": "tool-worker-1",
+                    "lease_token": claim["task"]["lease_token"],
+                    "success": True,
+                    "result": {"repo_status": "clean", "files": 0},
+                },
+            )
+            self.assertEqual(ack_status, 200)
+            self.assertTrue(ack["ok"])
+
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-http-tool-result-helper",
+                {
+                    "id": "runtime-claude-http-helper-target-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "continue after child tool task"}},
+                },
+            )
+
+            bind_status, bound = self._post(
+                f"{node.base_url}/v1/integrations/claude-http/follow-up-from-tool-task",
+                "token-claude-http-tool-result-helper",
+                {
+                    "task_id": "runtime-claude-http-helper-target-1",
+                    "tool_task_id": tool_task_id,
+                },
+            )
+            self.assertEqual(bind_status, 200)
+            self.assertEqual(bound["assistant_tool_use_ids"], ["toolu_1"])
+            self.assertEqual(bound["tool_result_ids"], ["toolu_1"])
+
+            self.assertTrue(claude_worker.run_once())
+
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertEqual(gateway.calls[1]["messages"][1]["role"], "assistant")
+            self.assertEqual(gateway.calls[1]["messages"][1]["content"][0]["id"], "toolu_1")
+            self.assertEqual(gateway.calls[1]["messages"][2]["role"], "user")
+            self.assertEqual(gateway.calls[1]["messages"][2]["content"][0]["tool_use_id"], "toolu_1")
+            self.assertIn("repo_status", gateway.calls[1]["messages"][2]["content"][0]["content"][0]["text"])
+            self.assertIn("clean", gateway.calls[1]["messages"][2]["content"][0]["content"][0]["text"])
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            target_task = [item for item in tasks["items"] if item["id"] == "runtime-claude-http-helper-target-1"][0]
+            self.assertEqual(
+                target_task["result"]["runtime_execution"]["follow_up_turn"]["tool_result_ids"],
+                ["toolu_1"],
+            )
+        finally:
+            node.stop()
+            gateway.stop()
+
     def test_runtime_adapter_langgraph_http(self) -> None:
         langgraph = LangGraphHarness()
         langgraph.start()
