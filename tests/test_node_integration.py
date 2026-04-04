@@ -1142,6 +1142,90 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_worker_redacts_opaque_service_runtime_request_and_result_echo(self) -> None:
+        http_agent = HttpAgentHarness()
+        http_agent.start()
+        node = NodeHarness(
+            node_id="opaque-service-redaction-node",
+            token="token-opaque-service-redaction",
+            db_path=str(Path(self.tempdir.name) / "opaque-service-redaction.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-opaque-service-redaction",
+                {
+                    "id": "opaque-service-task-2",
+                    "kind": "workflow-execute",
+                    "role": "worker",
+                    "payload": {
+                        "workflow_name": "legal-contract-analyzer-v1",
+                        "input": {"contract_text": "NDA"},
+                        "content": "free-form content should not be forwarded",
+                        "_service": {
+                            "service_id": "legal-contract-analyzer-v1",
+                            "privacy_level": "opaque",
+                            "strict_input": True,
+                            "opaque_execution": True,
+                            "input_schema": {
+                                "type": "object",
+                                "properties": {"contract_text": {"type": "string"}},
+                                "required": ["contract_text"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "_opaque_execution": {
+                            "enabled": True,
+                            "privacy_level": "opaque",
+                            "input_schema_enforced": True,
+                        },
+                        "_runtime": {
+                            "runtime": "http-json",
+                            "endpoint": http_agent.url,
+                            "auth_token": "internal-secret",
+                            "headers": {"x-internal": "1"},
+                            "prompt": "internal prompt should not be forwarded",
+                            "timeout_seconds": 5,
+                        },
+                    },
+                    "required_capabilities": ["worker"],
+                },
+            )
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-opaque-service-redaction",
+                worker_id="worker-opaque-redaction-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["http-json"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            self.assertEqual(http_agent.calls[0]["task"]["payload"]["input"], {"contract_text": "NDA"})
+            self.assertNotIn("content", http_agent.calls[0]["task"]["payload"])
+            self.assertNotIn("prompt", http_agent.calls[0]["runtime"])
+            self.assertEqual(http_agent.calls[0]["runtime"]["auth_token"], "internal-secret")
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "opaque-service-task-2"][0]
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["result"]["adapter"]["protocol"], "http-json")
+            self.assertNotIn("content", task["result"]["echo"])
+            self.assertEqual(task["result"]["echo"]["_service"]["service_id"], "legal-contract-analyzer-v1")
+            self.assertTrue(task["result"]["echo"]["_opaque_execution"]["result_redacted"])
+            self.assertNotIn("auth_token", task["result"]["echo"]["_runtime"])
+            self.assertNotIn("headers", task["result"]["echo"]["_runtime"])
+            self.assertTrue(task["result"]["runtime_execution"]["opaque_redacted"])
+        finally:
+            node.stop()
+            http_agent.stop()
+
     def test_identity_auth_challenge_and_signed_verify(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_auth", "frontend-local-1")
         node = NodeHarness(

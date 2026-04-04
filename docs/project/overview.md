@@ -434,6 +434,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 - frontend attach now has a dedicated `GET /v1/status` surface, and config loading accepts `ALLOWED_FRONTEND_ORIGINS` as a first-class alias for browser-facing CORS policy
 - node config can now expose priced service metadata through `/v1/capabilities` and `/v1/services`, and `POST /v1/workflow/execute` can enforce strict JSON-style input schemas for opaque high-value workflows before task ingestion
 - worker execution now enforces the same opaque service boundary again at runtime, rejecting free-form `messages` payloads and schema-mismatched inputs before a runtime adapter is invoked
+- opaque worker execution now sanitizes free-form runtime inputs before adapter dispatch and redacts runtime/request metadata from the stored task result so high-value services no longer echo `_runtime` credentials or raw request bodies back through task results
 
 ## Current Verification
 

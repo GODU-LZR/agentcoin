@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import time
@@ -16,6 +17,21 @@ LOG = logging.getLogger("agentcoin.worker")
 
 
 class WorkerLoop:
+    _OPAQUE_TOP_LEVEL_INPUT_FIELDS = ("messages", "content", "prompt", "query", "instruction")
+    _OPAQUE_RUNTIME_INPUT_FIELDS = ("messages", "prompt", "assistant_tool_uses", "tool_results")
+    _OPAQUE_RUNTIME_REDACTED_FIELDS = {
+        "auth_token",
+        "headers",
+        "messages",
+        "prompt",
+        "assistant_tool_uses",
+        "tool_results",
+        "env",
+        "args",
+        "command",
+        "executable_path",
+    }
+
     def __init__(
         self,
         node_url: str,
@@ -139,7 +155,7 @@ class WorkerLoop:
             "workflow_id": task.get("workflow_id"),
             "branch": task.get("branch"),
             "revision": task.get("revision"),
-            "echo": task.get("payload", {}),
+            "echo": self._redact_opaque_payload(task.get("payload", {})),
             "adapter": {
                 "mode": "opaque-execution-guardrail",
                 "protocol": "opaque-execution",
@@ -195,11 +211,133 @@ class WorkerLoop:
                     )
         return None
 
+    @staticmethod
+    def _opaque_enabled(task: dict[str, Any]) -> bool:
+        payload = dict(task.get("payload") or {})
+        opaque = dict(payload.get("_opaque_execution") or {})
+        service = dict(payload.get("_service") or {})
+        return bool(opaque.get("enabled")) or str(service.get("privacy_level") or "").strip().lower() == "opaque"
+
+    @classmethod
+    def _sanitize_runtime_for_opaque_execution(cls, runtime: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        sanitized_runtime = copy.deepcopy(dict(runtime or {}))
+        removed_fields: list[str] = []
+        for field_name in cls._OPAQUE_RUNTIME_INPUT_FIELDS:
+            if field_name in sanitized_runtime:
+                sanitized_runtime.pop(field_name, None)
+                removed_fields.append(f"_runtime.{field_name}")
+        return sanitized_runtime, removed_fields
+
+    @classmethod
+    def _build_execution_task(cls, task: dict[str, Any]) -> dict[str, Any]:
+        if not cls._opaque_enabled(task):
+            return task
+        execution_task = copy.deepcopy(task)
+        payload = dict(execution_task.get("payload") or {})
+        removed_fields: list[str] = []
+        for field_name in cls._OPAQUE_TOP_LEVEL_INPUT_FIELDS:
+            if field_name in payload:
+                payload.pop(field_name, None)
+                removed_fields.append(field_name)
+        runtime = dict(payload.get("_runtime") or {})
+        if runtime:
+            sanitized_runtime, runtime_removed_fields = cls._sanitize_runtime_for_opaque_execution(runtime)
+            payload["_runtime"] = sanitized_runtime
+            removed_fields.extend(runtime_removed_fields)
+        opaque = dict(payload.get("_opaque_execution") or {})
+        opaque["enabled"] = True
+        if removed_fields:
+            opaque["runtime_input_sanitized"] = True
+            opaque["removed_input_fields"] = removed_fields
+        payload["_opaque_execution"] = opaque
+        execution_task["payload"] = payload
+        return execution_task
+
+    @classmethod
+    def _redact_runtime_for_opaque_result(cls, runtime: dict[str, Any]) -> dict[str, Any]:
+        redacted_runtime: dict[str, Any] = {}
+        removed_fields: list[str] = []
+        for key, value in dict(runtime or {}).items():
+            if key in cls._OPAQUE_RUNTIME_REDACTED_FIELDS:
+                removed_fields.append(key)
+                continue
+            redacted_runtime[key] = value
+        if removed_fields:
+            redacted_runtime["redacted_fields"] = sorted(removed_fields)
+            redacted_runtime["opaque_redacted"] = True
+        return redacted_runtime
+
+    @classmethod
+    def _redact_opaque_payload(cls, payload: Any) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        redacted_payload = copy.deepcopy(payload)
+        removed_fields: list[str] = []
+        for field_name in cls._OPAQUE_TOP_LEVEL_INPUT_FIELDS:
+            if field_name in redacted_payload:
+                redacted_payload.pop(field_name, None)
+                removed_fields.append(field_name)
+        if "_runtime" in redacted_payload:
+            redacted_payload["_runtime"] = cls._redact_runtime_for_opaque_result(dict(redacted_payload.get("_runtime") or {}))
+        service = dict(redacted_payload.get("_service") or {})
+        if service:
+            redacted_payload["_service"] = {
+                "service_id": service.get("service_id"),
+                "privacy_level": service.get("privacy_level"),
+                "strict_input": bool(service.get("strict_input")),
+                "opaque_execution": bool(service.get("opaque_execution")),
+            }
+        opaque = dict(redacted_payload.get("_opaque_execution") or {})
+        if opaque:
+            opaque["enabled"] = True
+            opaque["result_redacted"] = True
+            if removed_fields:
+                opaque["redacted_payload_fields"] = removed_fields
+            redacted_payload["_opaque_execution"] = opaque
+        if removed_fields:
+            redacted_payload["redacted_fields"] = removed_fields
+        return redacted_payload
+
+    @classmethod
+    def _redact_runtime_execution_for_opaque_result(cls, runtime_execution: dict[str, Any]) -> dict[str, Any]:
+        redacted_execution = copy.deepcopy(dict(runtime_execution or {}))
+        if isinstance(redacted_execution.get("request"), dict):
+            request_payload = dict(redacted_execution.get("request") or {})
+            redacted_execution["request"] = {
+                "redacted": True,
+                "keys": sorted(request_payload.keys()),
+                "message_count": len(list(request_payload.get("messages") or [])) if isinstance(request_payload.get("messages"), list) else 0,
+                "tool_count": len(list(request_payload.get("tools") or [])) if isinstance(request_payload.get("tools"), list) else 0,
+                "opaque_execution": True,
+            }
+        redacted_execution["opaque_redacted"] = True
+        return redacted_execution
+
+    @classmethod
+    def _redact_result_for_opaque_execution(cls, task: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        if not cls._opaque_enabled(task):
+            return result
+        redacted_result = copy.deepcopy(dict(result or {}))
+        redacted_result["echo"] = cls._redact_opaque_payload(task.get("payload", {}))
+        if isinstance(redacted_result.get("runtime_execution"), dict):
+            redacted_result["runtime_execution"] = cls._redact_runtime_execution_for_opaque_result(
+                dict(redacted_result.get("runtime_execution") or {})
+            )
+        redacted_result["opaque_execution"] = {
+            "enabled": True,
+            "privacy_level": dict(task.get("payload") or {}).get("_opaque_execution", {}).get("privacy_level")
+            or dict(task.get("payload") or {}).get("_service", {}).get("privacy_level")
+            or "opaque",
+            "result_redacted": True,
+        }
+        return redacted_result
+
     def execute_task(self, task: dict[str, Any]) -> dict[str, Any]:
         guardrail_result = self._enforce_service_guardrails(task)
         if guardrail_result is not None:
             return guardrail_result
-        result = self.adapters.execute(task, worker_id=self.worker_id)
+        execution_task = self._build_execution_task(task)
+        result = self.adapters.execute(execution_task, worker_id=self.worker_id)
         result.setdefault("worker_id", self.worker_id)
         result.setdefault("handled_kind", task["kind"])
         result.setdefault("handled_at", utc_now())
@@ -207,7 +345,7 @@ class WorkerLoop:
         result.setdefault("branch", task.get("branch"))
         result.setdefault("revision", task.get("revision"))
         result.setdefault("echo", task.get("payload", {}))
-        return result
+        return self._redact_result_for_opaque_execution(task, result)
 
 
 def main() -> None:
