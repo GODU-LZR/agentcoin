@@ -350,3 +350,4 @@ The MVP should not be considered stable until:
 6. Add operator override and quarantine release coverage
 7. Add signed governance receipt coverage for denial and workflow-override paths
 8. Add automated coverage for the multi-node compose topology once Docker-based CI jobs are introduced
+9. Extend Claude Messages adapter coverage across multi-turn tool chains, including preserved assistant `tool_use` turns plus matching follow-up `tool_result` forwarding

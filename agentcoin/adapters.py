@@ -751,7 +751,33 @@ class ExecutionAdapterRegistry:
         return normalized
 
     @staticmethod
+    def _normalize_claude_assistant_tool_uses(tool_uses: Any) -> list[dict[str, Any]]:
+        if not isinstance(tool_uses, list):
+            return []
+        normalized: list[dict[str, Any]] = []
+        for item in tool_uses:
+            if not isinstance(item, dict):
+                continue
+            tool_use_id = str(item.get("id") or item.get("tool_use_id") or "").strip()
+            tool_name = str(item.get("name") or "").strip()
+            if not tool_use_id or not tool_name:
+                continue
+            normalized.append(
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": tool_name,
+                    "input": item.get("input"),
+                }
+            )
+        return normalized
+
+    @staticmethod
     def _normalize_claude_messages(task: dict[str, Any], runtime: dict[str, Any]) -> list[dict[str, Any]]:
+        assistant_tool_use_blocks = ExecutionAdapterRegistry._normalize_claude_assistant_tool_uses(
+            runtime.get("assistant_tool_uses")
+        )
+        tool_result_blocks = ExecutionAdapterRegistry._normalize_claude_tool_results(runtime.get("tool_results"))
         raw_messages = runtime.get("messages") or task.get("payload", {}).get("messages")
         if isinstance(raw_messages, list) and raw_messages:
             normalized: list[dict[str, Any]] = []
@@ -763,7 +789,8 @@ class ExecutionAdapterRegistry:
                 if isinstance(content, (list, dict, str)):
                     normalized.append({"role": role, "content": ExecutionAdapterRegistry._normalize_claude_content_blocks(content) or content})
             if normalized:
-                tool_result_blocks = ExecutionAdapterRegistry._normalize_claude_tool_results(runtime.get("tool_results"))
+                if assistant_tool_use_blocks:
+                    normalized.append({"role": "assistant", "content": assistant_tool_use_blocks})
                 if tool_result_blocks:
                     normalized.append({"role": "user", "content": tool_result_blocks})
                 return normalized
@@ -774,7 +801,8 @@ class ExecutionAdapterRegistry:
             prompt = task.get("payload", {})
         prompt_content = prompt if isinstance(prompt, str) else json.dumps(prompt, ensure_ascii=False)
         messages = [{"role": "user", "content": ExecutionAdapterRegistry._normalize_claude_content_blocks(prompt_content)}]
-        tool_result_blocks = ExecutionAdapterRegistry._normalize_claude_tool_results(runtime.get("tool_results"))
+        if assistant_tool_use_blocks:
+            messages.append({"role": "assistant", "content": assistant_tool_use_blocks})
         if tool_result_blocks:
             messages.append({"role": "user", "content": tool_result_blocks})
         return messages
@@ -1115,6 +1143,15 @@ class ExecutionAdapterRegistry:
             "stop_reason": response.get("stop_reason"),
             "usage": response.get("usage"),
         }
+        assistant_tool_uses = self._normalize_claude_assistant_tool_uses(runtime.get("assistant_tool_uses"))
+        tool_results = self._normalize_claude_tool_results(runtime.get("tool_results"))
+        if assistant_tool_uses or tool_results:
+            result["runtime_execution"]["follow_up_turn"] = {
+                "assistant_tool_uses": assistant_tool_uses,
+                "tool_results": tool_results,
+                "assistant_tool_use_ids": [str(item.get("id") or "") for item in assistant_tool_uses if str(item.get("id") or "").strip()],
+                "tool_result_ids": [str(item.get("tool_use_id") or "") for item in tool_results if str(item.get("tool_use_id") or "").strip()],
+            }
         if tool_uses:
             result["runtime_execution"]["tool_uses"] = tool_uses
         result["execution_receipt"] = build_deterministic_execution_receipt(
@@ -1129,6 +1166,8 @@ class ExecutionAdapterRegistry:
                 "response_id": response.get("id"),
                 "stop_reason": response.get("stop_reason"),
                 "tool_uses": tool_uses,
+                "assistant_tool_uses": assistant_tool_uses,
+                "tool_results": tool_results,
             },
         )
         return result

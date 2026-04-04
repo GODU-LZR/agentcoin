@@ -5845,6 +5845,8 @@ class AgentCoinNode:
                             runtime_options["tools"] = list(payload.get("tools") or [])
                         if "tool_choice" in payload:
                             runtime_options["tool_choice"] = payload.get("tool_choice")
+                        if "assistant_tool_uses" in payload:
+                            runtime_options["assistant_tool_uses"] = list(payload.get("assistant_tool_uses") or [])
                         if "tool_results" in payload:
                             runtime_options["tool_results"] = list(payload.get("tool_results") or [])
                         if isinstance(payload.get("headers"), dict):
