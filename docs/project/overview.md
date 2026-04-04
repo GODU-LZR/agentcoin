@@ -429,6 +429,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 - Tier 1 local operational endpoints now also expose explicit `local-admin` scope policy while preserving loopback shared-bearer migration compatibility
 - `claude-http` can now forward a full Claude Messages follow-up turn by preserving prior assistant `tool_use` blocks and the matching user `tool_result` blocks before the next remote call
 - the node now also exposes a `claude-http` follow-up bind helper that can copy prior `tool_use` blocks from a source task and attach matching `tool_result` blocks onto a target task for the next remote Claude turn
+- the node now also exposes a `claude-http` tool fanout helper that can turn returned `tool_use` blocks into child AgentCoin tasks, making the `tool_use -> tool task -> tool_result -> follow-up turn` loop explicit
 
 ## Current Verification
 

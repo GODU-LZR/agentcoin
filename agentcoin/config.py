@@ -329,6 +329,7 @@ class NodeConfig:
                 "claude_code_bind": f"{self.base_url}/v1/integrations/claude-code/bind",
                 "claude_http_bind": f"{self.base_url}/v1/integrations/claude-http/bind",
                 "claude_http_follow_up_bind": f"{self.base_url}/v1/integrations/claude-http/follow-up-bind",
+                "claude_http_tool_fanout": f"{self.base_url}/v1/integrations/claude-http/tool-fanout",
                 "schema_context": f"{self.base_url}/v1/schema/context",
                 "schema_capabilities": f"{self.base_url}/v1/schema/capabilities",
                 "schema_examples": f"{self.base_url}/v1/schema/examples",

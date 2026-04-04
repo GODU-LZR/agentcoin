@@ -5035,6 +5035,7 @@ class AgentCoinNode:
                                 "/v1/integrations/claude-code/bind",
                                 "/v1/integrations/claude-http/bind",
                                 "/v1/integrations/claude-http/follow-up-bind",
+                                "/v1/integrations/claude-http/tool-fanout",
                             ],
                         )
                         receipt = node._sign_document(
@@ -5957,6 +5958,100 @@ class AgentCoinNode:
                                     str(item.get("tool_use_id") or "").strip()
                                     for item in tool_results
                                     if str(item.get("tool_use_id") or "").strip()
+                                ],
+                                "provider": "claude-http",
+                            },
+                        )
+                        return
+                    if self.path == "/v1/integrations/claude-http/tool-fanout":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/integrations/claude-http/tool-fanout"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        source_task_id = str(payload.get("source_task_id") or "").strip()
+                        if not source_task_id:
+                            raise ValueError("source_task_id is required")
+                        source_task = node.store.get_task(source_task_id)
+                        if not source_task:
+                            raise ValueError("source task not found")
+                        source_runtime = dict(source_task.get("payload", {}).get("_runtime") or {})
+                        if str(source_runtime.get("runtime") or "").strip().lower() != "claude-http":
+                            raise ValueError("source task is not bound to claude-http")
+                        tool_uses = list(
+                            source_task.get("result", {}).get("runtime_execution", {}).get("tool_uses")
+                            or source_task.get("result", {}).get("execution_receipt", {}).get("artifacts", {}).get("tool_uses")
+                            or []
+                        )
+                        if not tool_uses:
+                            raise ValueError("source task does not provide tool uses")
+                        task_defaults = dict(payload.get("task_defaults") or {})
+                        required_capabilities_default = list(
+                            task_defaults.get("required_capabilities")
+                            or payload.get("required_capabilities")
+                            or ["worker"]
+                        )
+                        role_default = str(task_defaults.get("role") or payload.get("role") or "worker")
+                        kind_default = str(task_defaults.get("kind") or payload.get("kind") or "tool-call")
+                        priority_default = int(task_defaults.get("priority") or payload.get("priority") or source_task.get("priority") or 5)
+                        deliver_to_default = task_defaults.get("deliver_to", payload.get("deliver_to"))
+                        per_tool_overrides = dict(payload.get("per_tool_overrides") or {})
+                        created_subtasks: list[TaskEnvelope] = []
+                        for index, tool_use in enumerate(tool_uses, start=1):
+                            tool_use_id = str(tool_use.get("id") or "").strip()
+                            tool_name = str(tool_use.get("name") or "").strip() or f"tool-{index}"
+                            override = dict(
+                                per_tool_overrides.get(tool_use_id)
+                                or per_tool_overrides.get(tool_name)
+                                or {}
+                            )
+                            merged_payload = dict(task_defaults.get("payload") or {})
+                            merged_payload.update(dict(override.get("payload") or {}))
+                            merged_payload["_tool_request"] = {
+                                "protocol": "claude-http",
+                                "source_task_id": source_task_id,
+                                "tool_use_id": tool_use_id,
+                                "tool_name": tool_name,
+                                "tool_input": tool_use.get("input"),
+                            }
+                            merged_payload["_claude_follow_up"] = {
+                                "source_task_id": source_task_id,
+                                "tool_use_id": tool_use_id,
+                                "tool_name": tool_name,
+                            }
+                            raw_subtask = {
+                                "id": str(override.get("id") or f"{source_task_id}-tool-{index}"),
+                                "kind": str(override.get("kind") or kind_default),
+                                "payload": merged_payload,
+                                "sender": "local",
+                                "priority": int(override.get("priority") or priority_default),
+                                "deliver_to": override.get("deliver_to", deliver_to_default),
+                                "required_capabilities": list(
+                                    override.get("required_capabilities")
+                                    or required_capabilities_default
+                                ),
+                                "workflow_id": str(source_task.get("workflow_id") or source_task.get("id") or source_task_id),
+                                "role": str(override.get("role") or role_default),
+                                "branch": str(override.get("branch") or source_task.get("branch") or "main"),
+                                "revision": int(override.get("revision") or int(source_task.get("revision") or 1) + 1),
+                                "commit_message": str(
+                                    override.get("commit_message")
+                                    or f"tool call {tool_name} from {source_task_id}"
+                                ),
+                                "depends_on": list(override.get("depends_on") or []),
+                            }
+                            created_subtasks.append(node._normalize_task(TaskEnvelope.from_dict(raw_subtask), node.config))
+                        created = node.store.create_subtasks(source_task_id, created_subtasks)
+                        self._json_response(
+                            HTTPStatus.CREATED,
+                            {
+                                "ok": True,
+                                "source_task_id": source_task_id,
+                                "items": created,
+                                "tool_use_ids": [
+                                    str(item.get("id") or "").strip()
+                                    for item in tool_uses
+                                    if str(item.get("id") or "").strip()
                                 ],
                                 "provider": "claude-http",
                             },

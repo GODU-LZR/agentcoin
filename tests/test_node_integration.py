@@ -10827,6 +10827,88 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             gateway.stop()
 
+    def test_claude_http_tool_fanout_creates_subtasks_from_tool_uses(self) -> None:
+        gateway = ClaudeHttpHarness()
+        gateway.start()
+        node = NodeHarness(
+            node_id="runtime-claude-http-tool-fanout-node",
+            token="token-claude-http-tool-fanout",
+            db_path=str(Path(self.tempdir.name) / "runtime-claude-http-tool-fanout.db"),
+            capabilities=["worker"],
+            runtimes=["claude-http"],
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-claude-http-tool-fanout",
+                {
+                    "id": "runtime-claude-http-fanout-source-1",
+                    "kind": "generic",
+                    "role": "worker",
+                    "payload": {"input": {"prompt": "lookup repository status"}},
+                },
+            )
+            self._post(
+                f"{node.base_url}/v1/integrations/claude-http/bind",
+                "token-claude-http-tool-fanout",
+                {
+                    "task_id": "runtime-claude-http-fanout-source-1",
+                    "endpoint": gateway.url,
+                    "model": "claude-3-7-sonnet-latest",
+                    "auth_token": "anthropic-secret",
+                    "prompt": "lookup repository status",
+                    "tools": [
+                        {
+                            "name": "repo_status",
+                            "description": "Inspect repository status",
+                            "input_schema": {"type": "object"},
+                        }
+                    ],
+                    "tool_choice": {"type": "tool", "name": "repo_status"},
+                    "timeout_seconds": 10,
+                },
+            )
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-claude-http-tool-fanout",
+                worker_id="worker-claude-http-tool-fanout-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["claude-http"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            fanout_status, fanout = self._post(
+                f"{node.base_url}/v1/integrations/claude-http/tool-fanout",
+                "token-claude-http-tool-fanout",
+                {
+                    "source_task_id": "runtime-claude-http-fanout-source-1",
+                    "task_defaults": {
+                        "kind": "tool-call",
+                        "role": "worker",
+                        "required_capabilities": ["worker"],
+                        "payload": {"input": {"source": "claude-http"}},
+                    },
+                },
+            )
+            self.assertEqual(fanout_status, 201)
+            self.assertEqual(fanout["tool_use_ids"], ["toolu_1"])
+            self.assertEqual(len(fanout["items"]), 1)
+            created = fanout["items"][0]
+            self.assertEqual(created["parent_task_id"], "runtime-claude-http-fanout-source-1")
+            self.assertEqual(created["payload"]["_tool_request"]["tool_use_id"], "toolu_1")
+            self.assertEqual(created["payload"]["_tool_request"]["tool_name"], "repo_status")
+            self.assertEqual(created["payload"]["_claude_follow_up"]["source_task_id"], "runtime-claude-http-fanout-source-1")
+            self.assertEqual(created["payload"]["input"]["source"], "claude-http")
+            self.assertEqual(created["required_capabilities"], ["worker"])
+        finally:
+            node.stop()
+            gateway.stop()
+
     def test_runtime_adapter_langgraph_http(self) -> None:
         langgraph = LangGraphHarness()
         langgraph.start()

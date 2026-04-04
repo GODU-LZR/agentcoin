@@ -352,3 +352,4 @@ The MVP should not be considered stable until:
 8. Add automated coverage for the multi-node compose topology once Docker-based CI jobs are introduced
 9. Extend Claude Messages adapter coverage across multi-turn tool chains, including preserved assistant `tool_use` turns plus matching follow-up `tool_result` forwarding
 10. Cover helper-driven Claude follow-up rebinding, where a target task inherits `tool_use` blocks from a source task and replays the next turn with attached `tool_result` blocks
+11. Cover Claude tool fanout, where returned `tool_use` blocks are materialized into child tasks with stable `_tool_request` metadata for later tool execution and follow-up rebinding
