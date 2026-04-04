@@ -359,6 +359,7 @@ class NodeConfig:
                 "payment_renter_token_introspect": f"{self.base_url}/v1/payments/renter-tokens/introspect",
                 "payment_renter_token_status": f"{self.base_url}/v1/payments/renter-tokens/status",
                 "payment_renter_token_summary": f"{self.base_url}/v1/payments/renter-tokens/summary",
+                "payment_service_usage_summary": f"{self.base_url}/v1/payments/service-usage/summary",
                 "payment_receipt_onchain_proof": f"{self.base_url}/v1/payments/receipts/onchain-proof",
                 "payment_receipt_onchain_rpc_plan": f"{self.base_url}/v1/payments/receipts/onchain-rpc-plan",
                 "payment_receipt_onchain_raw_bundle": f"{self.base_url}/v1/payments/receipts/onchain-raw-bundle",

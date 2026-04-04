@@ -29,6 +29,7 @@ The current repository contains:
 - service-scoped renter tokens that can be issued from a verified payment receipt, introspected against explicit allowed operations, and optionally consumed across a bounded multi-use quota
 - renter-token status and summary endpoints for front-end usage dashboards and service-scoped consumption views
 - payment ops summary now includes renter-token usage aggregates so dashboards can render payment and capability-consumption state from one payload
+- service-usage summary endpoints now aggregate renter-token consumption by service so future settlement or marketplace views can see per-service usage counts
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state

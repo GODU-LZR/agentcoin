@@ -19,6 +19,7 @@ The current test scope covers:
 - loopback signed-client and session access to renter-token issue and introspection, including capability-scope validation and bounded multi-use quota enforcement
 - renter-token status and summary inspection for front-end usage dashboards
 - payment ops summary coverage with embedded renter-token usage aggregates
+- service-usage summary coverage for per-service renter-token consumption views
 - standardized quote and payment-proof payload consistency across challenge, receipt issue, and introspection
 - signed payment attestation consistency across receipt issue and introspection state changes
 - on-chain payment proof projection consistency before and after receipt consumption

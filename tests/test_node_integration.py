@@ -3025,6 +3025,32 @@ class NodeIntegrationTests(unittest.TestCase):
                 ops_summary["renter_token_summary"]["latest_token"]["token_id"],
                 renter_token["token_id"],
             )
+            self.assertEqual(ops_summary["service_usage_summary"]["service_count"], 1)
+            self.assertEqual(ops_summary["service_usage_summary"]["total_usage_count"], 1)
+            self.assertEqual(
+                ops_summary["service_usage_summary"]["items"][0]["service_id"],
+                "premium-review",
+            )
+            self.assertEqual(
+                ops_summary["service_usage_summary"]["items"][0]["total_remaining_uses"],
+                1,
+            )
+
+            usage_status, usage_summary = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/service-usage/summary?receipt_id={receipt['receipt_id']}&service_id=premium-review&limit=5",
+                private_key_path=key_path,
+                principal="frontend-local-renter-summary",
+                public_key=public_key,
+            )
+            self.assertEqual(usage_status, HTTPStatus.OK)
+            self.assertEqual(usage_summary["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(usage_summary["service_count"], 1)
+            self.assertEqual(usage_summary["token_count"], 1)
+            self.assertEqual(usage_summary["total_usage_count"], 1)
+            self.assertEqual(usage_summary["total_remaining_uses"], 1)
+            self.assertEqual(usage_summary["items"][0]["service_id"], "premium-review")
+            self.assertEqual(usage_summary["items"][0]["token_count"], 1)
+            self.assertEqual(usage_summary["items"][0]["active_token_count"], 1)
         finally:
             node.stop()
 
