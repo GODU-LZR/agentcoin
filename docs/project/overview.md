@@ -32,6 +32,8 @@ The current repository contains:
 - service-usage summary endpoints now aggregate renter-token consumption by service so future settlement or marketplace views can see per-service usage counts
 - service-usage summaries now also expose estimated settlement amounts by asset using each service's `price_per_call`
 - service-usage reconciliation now compares renter-token consumption against receipt state and payment-proof relay progress
+- service-usage reconciliation now also emits `recommended_actions`, so the frontend can drive CTA buttons from backend state instead of inventing its own transition rules
+- frontend integration guidance is documented in [frontend-copilot-backend-integration.md](C:/Users/Twist/Desktop/agentcoin/docs/project/frontend-copilot-backend-integration.md)
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state

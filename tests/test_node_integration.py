@@ -3081,6 +3081,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(reconciliation["reconciliation_status"], "usage-recorded-awaiting-proof")
             self.assertEqual(reconciliation["receipt_status"], "consumed")
             self.assertEqual(reconciliation["usage_summary"]["total_usage_count"], 1)
+            self.assertEqual(
+                reconciliation["recommended_actions"],
+                ["build-payment-proof", "queue-payment-relay"],
+            )
 
             relay = {
                 "kind": "evm-payment-relay",
@@ -3109,6 +3113,10 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(reconciliation_after["reconciliation_status"], "proof-relayed")
             self.assertEqual(reconciliation_after["relay_status"], "completed")
             self.assertEqual(reconciliation_after["latest_relay"]["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(
+                reconciliation_after["recommended_actions"],
+                ["inspect-latest-relay", "build-onchain-rpc-plan"],
+            )
         finally:
             node.stop()
 

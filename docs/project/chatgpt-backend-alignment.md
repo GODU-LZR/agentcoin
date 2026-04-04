@@ -45,6 +45,7 @@ This alignment pass adds the first explicit service registry and typed workflow 
 - per-service usage aggregation now exists for renter tokens, which gives the front end and future settlement logic a simple service-level consumption ledger
 - per-service usage aggregation now also computes estimated settlement amounts from `price_per_call`, so the front end can render accrued value before a real settlement layer is wired in
 - service-usage reconciliation now exists, which lets the front end see whether renter-token usage is merely recorded, awaiting proof submission, in-flight, relayed, or dead-lettered
+- service-usage reconciliation now also emits backend-owned `recommended_actions`, reducing front-end guesswork around payment and settlement CTAs
 
 ## What This Does Not Yet Solve
 

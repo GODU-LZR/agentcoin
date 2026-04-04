@@ -775,11 +775,27 @@ class AgentCoinNode:
             reconciliation_status = "usage-recorded"
         else:
             reconciliation_status = "idle"
+        recommended_actions: list[str] = []
+        if reconciliation_status == "receipt-issued":
+            recommended_actions = ["issue-renter-token", "introspect-receipt"]
+        elif reconciliation_status == "usage-recorded-awaiting-proof":
+            recommended_actions = ["build-payment-proof", "queue-payment-relay"]
+        elif reconciliation_status == "proof-in-flight":
+            recommended_actions = ["inspect-relay-queue", "inspect-latest-relay"]
+        elif reconciliation_status == "proof-dead-letter":
+            recommended_actions = ["inspect-latest-failed-relay", "replay-helper", "requeue-payment-relay"]
+        elif reconciliation_status == "proof-relayed":
+            recommended_actions = ["inspect-latest-relay", "build-onchain-rpc-plan"]
+        elif reconciliation_status == "usage-recorded":
+            recommended_actions = ["inspect-renter-token-summary"]
+        else:
+            recommended_actions = []
         return {
             "receipt_id": normalized_receipt_id,
             "workflow_name": usage_summary.get("workflow_name"),
             "service_id": usage_summary.get("service_id"),
             "reconciliation_status": reconciliation_status,
+            "recommended_actions": recommended_actions,
             "receipt_status": receipt_status or None,
             "relay_status": relay_status or None,
             "latest_relay": latest_relay,
