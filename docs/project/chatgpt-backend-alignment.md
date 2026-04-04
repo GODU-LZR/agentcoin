@@ -36,6 +36,7 @@ This alignment pass adds the first explicit service registry and typed workflow 
 - `manifest.services` now includes the same registry
 - `POST /v1/workflow/execute` now validates `input` against a declared service schema when `strict_input=true`
 - accepted workflow tasks now carry `_service` and `_opaque_execution` metadata for worker-side guardrails
+- worker execution now rejects opaque services that arrive with free-form `messages` payloads, and it re-validates `strict_input` schemas before adapter execution
 
 ## What This Does Not Yet Solve
 

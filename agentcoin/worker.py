@@ -10,6 +10,7 @@ from urllib import error
 from agentcoin.adapters import AdapterPolicy, ExecutionAdapterRegistry
 from agentcoin.models import utc_now
 from agentcoin.net import OutboundNetworkConfig, OutboundTransport
+from agentcoin.receipts import build_deterministic_execution_receipt, build_policy_receipt
 
 LOG = logging.getLogger("agentcoin.worker")
 
@@ -81,7 +82,123 @@ class WorkerLoop:
         LOG.info("acked task %s ok=%s", task["id"], ack.get("ok"))
         return True
 
+    @staticmethod
+    def _json_schema_type_matches(value: Any, expected_type: str) -> bool:
+        normalized = str(expected_type or "").strip().lower()
+        if normalized == "object":
+            return isinstance(value, dict)
+        if normalized == "array":
+            return isinstance(value, list)
+        if normalized == "string":
+            return isinstance(value, str)
+        if normalized == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if normalized == "number":
+            return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+        if normalized == "boolean":
+            return isinstance(value, bool)
+        return True
+
+    @classmethod
+    def _validate_json_schema(cls, value: Any, schema: dict[str, Any], *, path: str = "input") -> list[str]:
+        if not isinstance(schema, dict) or not schema:
+            return []
+        errors: list[str] = []
+        expected_type = str(schema.get("type") or "").strip().lower()
+        if expected_type and not cls._json_schema_type_matches(value, expected_type):
+            return [f"{path} must be {expected_type}"]
+        if expected_type == "object" and isinstance(value, dict):
+            properties = dict(schema.get("properties") or {})
+            required = [str(item) for item in list(schema.get("required") or []) if str(item).strip()]
+            for key in required:
+                if key not in value:
+                    errors.append(f"{path}.{key} is required")
+            if schema.get("additionalProperties") is False:
+                for key in value:
+                    if key not in properties:
+                        errors.append(f"{path}.{key} is not allowed")
+            for key, property_schema in properties.items():
+                if key in value:
+                    errors.extend(cls._validate_json_schema(value[key], dict(property_schema or {}), path=f"{path}.{key}"))
+            return errors
+        if expected_type == "array" and isinstance(value, list):
+            item_schema = dict(schema.get("items") or {})
+            for index, item in enumerate(value):
+                errors.extend(cls._validate_json_schema(item, item_schema, path=f"{path}[{index}]"))
+            return errors
+        return errors
+
+    def _guardrail_rejection(self, task: dict[str, Any], *, reason: str, errors: list[str] | None = None) -> dict[str, Any]:
+        artifacts: dict[str, Any] = {}
+        if errors:
+            artifacts["validation_errors"] = list(errors)
+        return {
+            "worker_id": self.worker_id,
+            "handled_kind": task["kind"],
+            "handled_at": utc_now(),
+            "workflow_id": task.get("workflow_id"),
+            "branch": task.get("branch"),
+            "revision": task.get("revision"),
+            "echo": task.get("payload", {}),
+            "adapter": {
+                "mode": "opaque-execution-guardrail",
+                "protocol": "opaque-execution",
+                "status": "rejected",
+                "reason": reason,
+            },
+            "policy_receipt": build_policy_receipt(
+                protocol="opaque-execution",
+                decision="rejected",
+                reason=reason,
+                mode="opaque-execution-guardrail",
+                **artifacts,
+            ),
+            "execution_receipt": build_deterministic_execution_receipt(
+                task,
+                worker_id=self.worker_id,
+                protocol="opaque-execution",
+                status="rejected",
+                outcome="opaque-guardrail-rejected",
+                artifacts=artifacts,
+            ),
+        }
+
+    def _enforce_service_guardrails(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        payload = dict(task.get("payload") or {})
+        service = dict(payload.get("_service") or {})
+        opaque = dict(payload.get("_opaque_execution") or {})
+        if not service and not opaque:
+            return None
+
+        runtime = dict(payload.get("_runtime") or {})
+        if bool(opaque.get("enabled")):
+            if isinstance(payload.get("messages"), list) and payload.get("messages"):
+                return self._guardrail_rejection(
+                    task,
+                    reason="opaque service does not allow free-form payload.messages input",
+                )
+            if isinstance(runtime.get("messages"), list) and runtime.get("messages"):
+                return self._guardrail_rejection(
+                    task,
+                    reason="opaque service does not allow runtime.messages input",
+                )
+
+        if bool(service.get("strict_input")):
+            schema = dict(service.get("input_schema") or {})
+            if schema:
+                validation_errors = self._validate_json_schema(payload.get("input"), schema)
+                if validation_errors:
+                    return self._guardrail_rejection(
+                        task,
+                        reason="opaque service input does not satisfy declared schema",
+                        errors=validation_errors,
+                    )
+        return None
+
     def execute_task(self, task: dict[str, Any]) -> dict[str, Any]:
+        guardrail_result = self._enforce_service_guardrails(task)
+        if guardrail_result is not None:
+            return guardrail_result
         result = self.adapters.execute(task, worker_id=self.worker_id)
         result.setdefault("worker_id", self.worker_id)
         result.setdefault("handled_kind", task["kind"])

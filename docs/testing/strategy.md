@@ -356,3 +356,4 @@ The MVP should not be considered stable until:
 12. Cover Claude follow-up rebinding directly from completed tool child tasks, including automatic `tool_result` serialization from the stored task result
 13. Cover frontend-origin CORS policy, including `ALLOWED_FRONTEND_ORIGINS` config loading plus `OPTIONS` and `GET` verification for `/v1/status` and `/v1/peer-health`
 14. Cover service-registry exposure and strict workflow input validation for opaque high-value services, including manifest listing plus `400` rejection on schema mismatch before workflow ingestion
+15. Cover worker-side opaque execution guardrails, including runtime-time rejection of free-form `messages` input and re-validation of strict service schemas before adapter execution

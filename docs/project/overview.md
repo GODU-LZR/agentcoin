@@ -433,6 +433,7 @@ The connectivity architecture doc now also includes a concrete Phase 14 deployme
 - the node now also exposes a `claude-http` follow-up-from-tool-task helper that derives a Claude `tool_result` block directly from a completed child tool task and binds the next follow-up turn without requiring the frontend to manually serialize task results
 - frontend attach now has a dedicated `GET /v1/status` surface, and config loading accepts `ALLOWED_FRONTEND_ORIGINS` as a first-class alias for browser-facing CORS policy
 - node config can now expose priced service metadata through `/v1/capabilities` and `/v1/services`, and `POST /v1/workflow/execute` can enforce strict JSON-style input schemas for opaque high-value workflows before task ingestion
+- worker execution now enforces the same opaque service boundary again at runtime, rejecting free-form `messages` payloads and schema-mismatched inputs before a runtime adapter is invoked
 
 ## Current Verification
 
