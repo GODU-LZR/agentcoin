@@ -177,6 +177,7 @@ class AgentCoinNode:
                 "renter_token_status_url": self.config.card.endpoints.get("payment_renter_token_status"),
                 "renter_token_summary_url": self.config.card.endpoints.get("payment_renter_token_summary"),
                 "service_usage_summary_url": self.config.card.endpoints.get("payment_service_usage_summary"),
+                "service_usage_reconciliation_url": self.config.card.endpoints.get("payment_service_usage_reconciliation"),
                 "receipt_onchain_proof_url": self.config.card.endpoints.get("payment_receipt_onchain_proof"),
                 "receipt_onchain_rpc_plan_url": self.config.card.endpoints.get("payment_receipt_onchain_rpc_plan"),
                 "receipt_onchain_raw_bundle_url": self.config.card.endpoints.get("payment_receipt_onchain_raw_bundle"),
@@ -732,6 +733,60 @@ class AgentCoinNode:
             "total_usage_count": int(token_summary.get("total_usage_count") or 0),
             "estimated_settlement_totals": estimated_totals_by_asset,
             "items": items[: max(1, int(limit or 20))],
+        }
+
+    def reconcile_service_usage(
+        self,
+        *,
+        receipt_id: str | None = None,
+        workflow_name: str | None = None,
+        service_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        normalized_receipt_id = str(receipt_id or "").strip() or None
+        usage_summary = self.summarize_service_usage(
+            receipt_id=normalized_receipt_id,
+            workflow_name=workflow_name,
+            service_id=service_id,
+            limit=limit,
+        )
+        receipt = self.get_payment_receipt(normalized_receipt_id) if normalized_receipt_id else None
+        latest_relay = self.store.get_latest_payment_relay(normalized_receipt_id) if normalized_receipt_id else None
+        latest_failed_relay = self.store.get_latest_failed_payment_relay(normalized_receipt_id) if normalized_receipt_id else None
+        queue_summary = self.store.summarize_payment_relay_queue(receipt_id=normalized_receipt_id) if normalized_receipt_id else {
+            "item_count": 0,
+            "counts": {},
+        }
+        queue_counts = dict(queue_summary.get("counts") or {})
+        relay_status = str(dict(latest_relay or {}).get("final_status") or "").strip()
+        receipt_status = str(dict(receipt or {}).get("status") or "").strip()
+        total_usage_count = int(usage_summary.get("total_usage_count") or 0)
+        if normalized_receipt_id and int(queue_counts.get("dead-letter") or 0) > 0:
+            reconciliation_status = "proof-dead-letter"
+        elif normalized_receipt_id and any(int(queue_counts.get(name) or 0) > 0 for name in ("queued", "running", "retrying", "paused")):
+            reconciliation_status = "proof-in-flight"
+        elif normalized_receipt_id and relay_status == "completed":
+            reconciliation_status = "proof-relayed"
+        elif normalized_receipt_id and receipt_status == "consumed" and total_usage_count > 0:
+            reconciliation_status = "usage-recorded-awaiting-proof"
+        elif normalized_receipt_id and receipt_status == "issued":
+            reconciliation_status = "receipt-issued"
+        elif total_usage_count > 0:
+            reconciliation_status = "usage-recorded"
+        else:
+            reconciliation_status = "idle"
+        return {
+            "receipt_id": normalized_receipt_id,
+            "workflow_name": usage_summary.get("workflow_name"),
+            "service_id": usage_summary.get("service_id"),
+            "reconciliation_status": reconciliation_status,
+            "receipt_status": receipt_status or None,
+            "relay_status": relay_status or None,
+            "latest_relay": latest_relay,
+            "latest_failed_relay": latest_failed_relay,
+            "queue_summary": queue_summary,
+            "usage_summary": usage_summary,
+            "estimated_settlement_totals": dict(usage_summary.get("estimated_settlement_totals") or {}),
         }
 
     def issue_renter_token(
@@ -1551,6 +1606,7 @@ class AgentCoinNode:
         queue_summary = self.store.summarize_payment_relay_queue(receipt_id=normalized_receipt_id)
         renter_token_summary = self.summarize_renter_tokens(receipt_id=normalized_receipt_id, limit=max(1, int(relay_limit or 5)))
         service_usage_summary = self.summarize_service_usage(receipt_id=normalized_receipt_id, limit=max(1, int(relay_limit or 5)))
+        service_usage_reconciliation = self.reconcile_service_usage(receipt_id=normalized_receipt_id, limit=max(1, int(relay_limit or 5)))
         quote_template = {
             "amount_wei": str(int(self.config.payment_quote_amount_wei or 0)),
             "asset": self.config.payment_quote_asset,
@@ -1575,6 +1631,7 @@ class AgentCoinNode:
             "queue_summary": queue_summary,
             "renter_token_summary": renter_token_summary,
             "service_usage_summary": service_usage_summary,
+            "service_usage_reconciliation": service_usage_reconciliation,
             "auto_requeue_disabled_items": list(queue_summary.get("auto_requeue_disabled_items") or []),
             "latest_auto_requeue_override": queue_summary.get("latest_auto_requeue_override"),
             "recent_relays": recent_relays,
@@ -5044,6 +5101,25 @@ class AgentCoinNode:
                         ),
                     )
                     return
+                if path == "/v1/payments/service-usage/reconciliation":
+                    if not self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/service-usage/reconciliation"},
+                    ):
+                        return
+                    receipt_id = (query.get("receipt_id") or [""])[0]
+                    workflow_name = (query.get("workflow_name") or query.get("workflow") or [""])[0]
+                    service_id = (query.get("service_id") or [""])[0]
+                    limit = int((query.get("limit") or ["20"])[0] or "20")
+                    self._json_response(
+                        HTTPStatus.OK,
+                        node.reconcile_service_usage(
+                            receipt_id=receipt_id or None,
+                            workflow_name=workflow_name or None,
+                            service_id=service_id or None,
+                            limit=limit,
+                        ),
+                    )
+                    return
                 if path == "/v1/payments/receipts/onchain-relays":
                     if not self._require_local_client_or_auth(
                         allow_endpoints={"/v1/payments/receipts/onchain-relays"},
@@ -5542,6 +5618,7 @@ class AgentCoinNode:
                                 "/v1/payments/renter-tokens/status",
                                 "/v1/payments/renter-tokens/summary",
                                 "/v1/payments/service-usage/summary",
+                                "/v1/payments/service-usage/reconciliation",
                                 "/v1/payments/receipts/onchain-proof",
                                 "/v1/payments/receipts/onchain-rpc-plan",
                                 "/v1/payments/receipts/onchain-raw-bundle",

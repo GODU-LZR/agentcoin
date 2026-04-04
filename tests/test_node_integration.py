@@ -3069,6 +3069,46 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(usage_summary["items"][0]["active_token_count"], 1)
             self.assertEqual(usage_summary["items"][0]["estimated_settlement_amount"], 10.5)
             self.assertEqual(usage_summary["estimated_settlement_totals"]["AGENT"], 10.5)
+
+            reconcile_status, reconciliation = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/service-usage/reconciliation?receipt_id={receipt['receipt_id']}&service_id=premium-review&limit=5",
+                private_key_path=key_path,
+                principal="frontend-local-renter-summary",
+                public_key=public_key,
+            )
+            self.assertEqual(reconcile_status, HTTPStatus.OK)
+            self.assertEqual(reconciliation["receipt_id"], receipt["receipt_id"])
+            self.assertEqual(reconciliation["reconciliation_status"], "usage-recorded-awaiting-proof")
+            self.assertEqual(reconciliation["receipt_status"], "consumed")
+            self.assertEqual(reconciliation["usage_summary"]["total_usage_count"], 1)
+
+            relay = {
+                "kind": "evm-payment-relay",
+                "receipt_id": receipt["receipt_id"],
+                "workflow_name": "premium-review",
+                "proof": {"receipt_id": receipt["receipt_id"]},
+                "step_count": 1,
+                "submitted_steps": [{"index": 0, "action": "submitPaymentProof", "tx_hash": "0xsettled"}],
+                "failures": [],
+                "completed_steps": 1,
+                "stopped_on_error": False,
+                "final_status": "completed",
+                "transport": {"profile": "test"},
+                "generated_at": utc_now(),
+            }
+            saved_relay = node.node.store.save_payment_relay(relay)
+            self.assertIsNotNone(saved_relay["id"])
+
+            reconcile_after_status, reconciliation_after = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/service-usage/reconciliation?receipt_id={receipt['receipt_id']}&service_id=premium-review&limit=5",
+                private_key_path=key_path,
+                principal="frontend-local-renter-summary",
+                public_key=public_key,
+            )
+            self.assertEqual(reconcile_after_status, HTTPStatus.OK)
+            self.assertEqual(reconciliation_after["reconciliation_status"], "proof-relayed")
+            self.assertEqual(reconciliation_after["relay_status"], "completed")
+            self.assertEqual(reconciliation_after["latest_relay"]["receipt_id"], receipt["receipt_id"])
         finally:
             node.stop()
 
