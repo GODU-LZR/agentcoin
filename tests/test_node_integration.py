@@ -933,6 +933,10 @@ class NodeIntegrationTests(unittest.TestCase):
                     privacy_level="opaque",
                     strict_input=True,
                     opaque_execution=True,
+                    executor_runtime="http-json",
+                    executor_options={"endpoint": "http://127.0.0.1:9999/invoke"},
+                    executor_prompt_template="Analyze contract: {{contract_text}}",
+                    executor_system_template="Focus areas: {{focus_areas}}",
                     input_schema={
                         "type": "object",
                         "properties": {
@@ -954,9 +958,15 @@ class NodeIntegrationTests(unittest.TestCase):
             _, capabilities = self._get(f"{node.base_url}/v1/capabilities")
             self.assertEqual(capabilities["items"][0]["privacy_level"], "opaque")
             self.assertTrue(capabilities["items"][0]["strict_input"])
+            self.assertNotIn("executor_runtime", capabilities["items"][0])
+            self.assertNotIn("executor_options", capabilities["items"][0])
+            self.assertNotIn("executor_prompt_template", capabilities["items"][0])
 
             _, services = self._get(f"{node.base_url}/v1/services")
             self.assertEqual(services["items"][0]["price_per_call"], 10.5)
+            self.assertNotIn("executor_runtime", services["items"][0])
+            self.assertNotIn("executor_options", services["items"][0])
+            self.assertNotIn("executor_prompt_template", services["items"][0])
         finally:
             node.stop()
 
@@ -1222,6 +1232,85 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertNotIn("auth_token", task["result"]["echo"]["_runtime"])
             self.assertNotIn("headers", task["result"]["echo"]["_runtime"])
             self.assertTrue(task["result"]["runtime_execution"]["opaque_redacted"])
+        finally:
+            node.stop()
+            http_agent.stop()
+
+    def test_worker_applies_private_opaque_executor_template(self) -> None:
+        http_agent = HttpAgentHarness()
+        http_agent.start()
+        node = NodeHarness(
+            node_id="opaque-service-template-node",
+            token="token-opaque-service-template",
+            db_path=str(Path(self.tempdir.name) / "opaque-service-template.db"),
+            capabilities=["worker"],
+            services=[
+                ServiceCapabilityConfig(
+                    service_id="legal-contract-analyzer-v1",
+                    description="Professional NDA & Contract Analyzer",
+                    price_per_call=10.5,
+                    price_asset="AGENT",
+                    privacy_level="opaque",
+                    strict_input=True,
+                    opaque_execution=True,
+                    executor_runtime="http-json",
+                    executor_options={"endpoint": http_agent.url, "timeout_seconds": 5},
+                    executor_prompt_template="Analyze contract: {{contract_text}}",
+                    executor_system_template="Focus areas: {{focus_areas}}",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "contract_text": {"type": "string"},
+                            "focus_areas": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["contract_text"],
+                        "additionalProperties": False,
+                    },
+                )
+            ],
+        )
+        node.start()
+        try:
+            status, payload = self._post(
+                f"{node.base_url}/v1/workflow/execute",
+                "token-opaque-service-template",
+                {
+                    "workflow_name": "legal-contract-analyzer-v1",
+                    "input": {
+                        "contract_text": "NDA terms",
+                        "focus_areas": ["termination"],
+                    },
+                },
+            )
+            self.assertEqual(status, 202)
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-opaque-service-template",
+                worker_id="worker-opaque-template-1",
+                capabilities=["worker"],
+                lease_seconds=30,
+                adapter_policy=AdapterPolicy(
+                    allowed_runtime_kinds=["http-json"],
+                    allowed_http_hosts=["127.0.0.1"],
+                ),
+            )
+            self.assertTrue(worker.run_once())
+
+            self.assertEqual(http_agent.calls[0]["runtime"]["runtime"], "http-json")
+            self.assertEqual(http_agent.calls[0]["runtime"]["prompt"], "Analyze contract: NDA terms")
+            self.assertEqual(http_agent.calls[0]["runtime"]["system"], 'Focus areas: ["termination"]')
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == payload["task"]["id"]][0]
+            self.assertEqual(task["status"], "completed")
+            self.assertTrue(task["result"]["echo"]["_opaque_execution"]["executor"]["configured"])
+            self.assertTrue(task["result"]["echo"]["_opaque_execution"]["executor"]["has_prompt_template"])
+            self.assertEqual(task["result"]["echo"]["_opaque_execution"]["executor"]["runtime"], "http-json")
+            self.assertEqual(
+                task["result"]["echo"]["_opaque_execution"]["executor"]["option_keys"],
+                ["endpoint", "timeout_seconds"],
+            )
         finally:
             node.stop()
             http_agent.stop()

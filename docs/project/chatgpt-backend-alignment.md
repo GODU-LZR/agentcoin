@@ -38,6 +38,7 @@ This alignment pass adds the first explicit service registry and typed workflow 
 - accepted workflow tasks now carry `_service` and `_opaque_execution` metadata for worker-side guardrails
 - worker execution now rejects opaque services that arrive with free-form `messages` payloads, and it re-validates `strict_input` schemas before adapter execution
 - worker execution now also sanitizes opaque runtime inputs before adapter dispatch and redacts echoed runtime/request metadata from the stored task result
+- service config now supports private executor metadata (`executor_runtime`, `executor_options`, prompt/system templates) that stays out of `/v1/services` and is only used internally to derive typed opaque runtime requests
 
 ## What This Does Not Yet Solve
 

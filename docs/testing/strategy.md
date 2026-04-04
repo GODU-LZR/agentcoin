@@ -358,3 +358,4 @@ The MVP should not be considered stable until:
 14. Cover service-registry exposure and strict workflow input validation for opaque high-value services, including manifest listing plus `400` rejection on schema mismatch before workflow ingestion
 15. Cover worker-side opaque execution guardrails, including runtime-time rejection of free-form `messages` input and re-validation of strict service schemas before adapter execution
 16. Cover opaque runtime sanitization and result redaction, including removal of free-form runtime prompt/messages before adapter dispatch plus redaction of `_runtime` secrets and raw request payloads in stored task results
+17. Cover private opaque executor templates, including internal prompt/system derivation from typed service input plus verification that executor metadata does not leak through `/v1/services` or manifest payloads

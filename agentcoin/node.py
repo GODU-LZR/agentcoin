@@ -2449,7 +2449,7 @@ class AgentCoinNode:
             service = self.config.resolve_service(normalized_workflow_name)
         except KeyError:
             return None
-        return service.to_dict()
+        return service.to_internal_dict()
 
     def _task_settlement_preview(self, task: dict[str, Any]) -> dict[str, Any] | None:
         if not self.onchain.enabled:
@@ -5797,6 +5797,17 @@ class AgentCoinNode:
                                 "privacy_level": service.get("privacy_level"),
                                 "input_schema_enforced": bool(service.get("strict_input")),
                             }
+                            executor_metadata = {
+                                "runtime": str(service.get("executor_runtime") or "").strip() or None,
+                                "options": dict(service.get("executor_options") or {}),
+                                "prompt_template": str(service.get("executor_prompt_template") or "").strip() or None,
+                                "system_template": str(service.get("executor_system_template") or "").strip() or None,
+                            }
+                            if any(
+                                executor_metadata.get(key)
+                                for key in ("runtime", "options", "prompt_template", "system_template")
+                            ):
+                                task_payload["_opaque_execution"]["executor"] = executor_metadata
                         if payment_verification:
                             task_payload["_payment_receipt"] = payment_receipt
                             task_payload["_payment_verification"] = payment_verification

@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import logging
+import re
 import time
 from typing import Any
 from urllib import error
@@ -31,6 +32,7 @@ class WorkerLoop:
         "command",
         "executable_path",
     }
+    _OPAQUE_TEMPLATE_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
     def __init__(
         self,
@@ -179,6 +181,50 @@ class WorkerLoop:
             ),
         }
 
+    @classmethod
+    def _resolve_template_value(cls, source: Any, key_path: str) -> Any:
+        current = source
+        for segment in [part for part in str(key_path or "").split(".") if part]:
+            if isinstance(current, dict) and segment in current:
+                current = current[segment]
+                continue
+            if isinstance(current, list) and segment.isdigit():
+                index = int(segment)
+                if 0 <= index < len(current):
+                    current = current[index]
+                    continue
+            raise KeyError(key_path)
+        return current
+
+    @classmethod
+    def _stringify_template_value(cls, value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return json.dumps(value, ensure_ascii=False)
+
+    @classmethod
+    def _render_opaque_template(cls, template: str, value_source: Any) -> str:
+        missing: list[str] = []
+
+        def replace(match: re.Match[str]) -> str:
+            key_path = str(match.group(1) or "").strip()
+            try:
+                value = cls._resolve_template_value(value_source, key_path)
+            except KeyError:
+                missing.append(key_path)
+                return ""
+            return cls._stringify_template_value(value)
+
+        rendered = cls._OPAQUE_TEMPLATE_PATTERN.sub(replace, str(template or ""))
+        if missing:
+            missing_keys = ", ".join(sorted(dict.fromkeys(missing)))
+            raise ValueError(f"opaque executor template references missing input fields: {missing_keys}")
+        return rendered
+
     def _enforce_service_guardrails(self, task: dict[str, Any]) -> dict[str, Any] | None:
         payload = dict(task.get("payload") or {})
         service = dict(payload.get("_service") or {})
@@ -208,6 +254,20 @@ class WorkerLoop:
                         task,
                         reason="opaque service input does not satisfy declared schema",
                         errors=validation_errors,
+                    )
+        executor = dict(opaque.get("executor") or {})
+        if executor:
+            template_input = payload.get("input")
+            for field_name in ("prompt_template", "system_template"):
+                template_value = str(executor.get(field_name) or "").strip()
+                if not template_value:
+                    continue
+                try:
+                    self._render_opaque_template(template_value, template_input)
+                except ValueError as exc:
+                    return self._guardrail_rejection(
+                        task,
+                        reason=str(exc),
                     )
         return None
 
@@ -245,6 +305,23 @@ class WorkerLoop:
             payload["_runtime"] = sanitized_runtime
             removed_fields.extend(runtime_removed_fields)
         opaque = dict(payload.get("_opaque_execution") or {})
+        executor = dict(opaque.get("executor") or {})
+        if executor:
+            runtime = dict(payload.get("_runtime") or {})
+            executor_runtime = str(executor.get("runtime") or "").strip()
+            if executor_runtime:
+                runtime["runtime"] = executor_runtime
+            executor_options = dict(executor.get("options") or {})
+            if executor_options:
+                runtime.update(copy.deepcopy(executor_options))
+            template_input = payload.get("input")
+            prompt_template = str(executor.get("prompt_template") or "").strip()
+            if prompt_template:
+                runtime["prompt"] = cls._render_opaque_template(prompt_template, template_input)
+            system_template = str(executor.get("system_template") or "").strip()
+            if system_template:
+                runtime["system"] = cls._render_opaque_template(system_template, template_input)
+            payload["_runtime"] = runtime
         opaque["enabled"] = True
         if removed_fields:
             opaque["runtime_input_sanitized"] = True
@@ -289,6 +366,15 @@ class WorkerLoop:
             }
         opaque = dict(redacted_payload.get("_opaque_execution") or {})
         if opaque:
+            executor = dict(opaque.get("executor") or {})
+            if executor:
+                opaque["executor"] = {
+                    "configured": True,
+                    "runtime": str(executor.get("runtime") or "").strip() or dict(redacted_payload.get("_runtime") or {}).get("runtime"),
+                    "has_prompt_template": bool(str(executor.get("prompt_template") or "").strip()),
+                    "has_system_template": bool(str(executor.get("system_template") or "").strip()),
+                    "option_keys": sorted(dict(executor.get("options") or {}).keys()),
+                }
             opaque["enabled"] = True
             opaque["result_redacted"] = True
             if removed_fields:

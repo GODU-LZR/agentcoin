@@ -173,11 +173,33 @@ class ServiceCapabilityConfig:
     output_schema: dict[str, Any] = field(default_factory=dict)
     strict_input: bool = False
     opaque_execution: bool = False
+    executor_runtime: str | None = None
+    executor_options: dict[str, Any] = field(default_factory=dict)
+    executor_prompt_template: str | None = None
+    executor_system_template: str | None = None
     enabled: bool = True
     tags: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "service_id": self.service_id,
+            "description": self.description,
+            "price_per_call": self.price_per_call,
+            "price_asset": self.price_asset,
+            "privacy_level": self.privacy_level,
+            "input_schema": dict(self.input_schema),
+            "output_schema": dict(self.output_schema),
+            "strict_input": self.strict_input,
+            "opaque_execution": self.opaque_execution,
+            "enabled": self.enabled,
+            "tags": list(self.tags),
+        }
+
+    def to_internal_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.to_public_dict()
 
 
 @dataclass(slots=True)
@@ -442,7 +464,7 @@ class NodeConfig:
         return [bearer.to_dict() for bearer in self.scoped_bearer_tokens]
 
     def services_view(self) -> list[dict[str, Any]]:
-        return [service.to_dict() for service in self.services if service.enabled]
+        return [service.to_public_dict() for service in self.services if service.enabled]
 
     def resolve_service(self, service_id: str) -> ServiceCapabilityConfig:
         normalized_service_id = str(service_id or "").strip()
