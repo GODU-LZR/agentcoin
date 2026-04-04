@@ -118,6 +118,11 @@ class WorkbenchState:
     token: str = ""
     receipt_id: str = DEFAULT_RECEIPT_ID
     locale: str = DEFAULT_LOCALE
+    last_workflow_name: str = ""
+    last_service_id: str = ""
+    last_challenge: dict[str, Any] | None = None
+    last_receipt: dict[str, Any] | None = None
+    last_renter_token: dict[str, Any] | None = None
 
 
 class AgentcoinAsciiWorkbench:
@@ -134,6 +139,27 @@ class AgentcoinAsciiWorkbench:
     def log(self, line: str) -> None:
         self.logs.append(str(line))
         self.logs = self.logs[-12:]
+
+    def _fetch_receipt_status(self, receipt_id: str | None = None) -> tuple[int, dict[str, Any]]:
+        active_receipt_id = str(receipt_id or self.state.receipt_id or "").strip()
+        if not active_receipt_id:
+            return 0, {"error": "receipt_id is required"}
+        return http_json(
+            self.state.endpoint,
+            f"/v1/payments/receipts/status?receipt_id={active_receipt_id}",
+            token=self.state.token or None,
+        )
+
+    def _service_id_for_workflow(self, workflow_name: str) -> str:
+        if self.state.last_service_id:
+            return self.state.last_service_id
+        services_code, services = http_json(self.state.endpoint, "/v1/services", token=self.state.token or None)
+        if services_code == 200:
+            for item in list((services or {}).get("items") or []):
+                service_id = str(item.get("service_id") or "").strip()
+                if service_id == workflow_name:
+                    return service_id
+        return workflow_name
 
     def fetch_snapshot(self) -> dict[str, Any]:
         status_code, status = http_json(self.state.endpoint, "/v1/status", token=self.state.token or None)
@@ -229,6 +255,10 @@ class AgentcoinAsciiWorkbench:
             f"renter_token_summary: {payment.get('renter_token_summary_url') or '-'}",
             f"service_usage_reconciliation: {payment.get('service_usage_reconciliation_url') or '-'}",
         ]
+        if self.state.last_challenge:
+            payment_lines.append(f"challenge_id: {self.state.last_challenge.get('challenge_id') or '-'}")
+        if self.state.last_renter_token:
+            payment_lines.append(f"renter_token: {self.state.last_renter_token.get('token_id') or '-'}")
         if self.state.receipt_id:
             service_reconcile = dict(ops.get("service_usage_reconciliation") or {})
             renter_summary = dict(ops.get("renter_token_summary") or {})
@@ -247,6 +277,10 @@ class AgentcoinAsciiWorkbench:
             "connect [endpoint] [token]",
             "token [value]",
             "receipt [receipt-id]",
+            "workflow <workflow> <prompt...>",
+            "issue-receipt <payer> <tx_hash> [challenge-id]",
+            "issue-renter-token [workflow] [service-id] [max-uses]",
+            "receipt-status | token-status | reconcile",
             "probe | services | discover | ops",
             "status | help | clear | exit",
         ]
@@ -272,7 +306,10 @@ class AgentcoinAsciiWorkbench:
         if verb in {"exit", "quit"}:
             return False
         if verb == "help":
-            self.log("commands: connect, token, receipt, probe, services, discover, ops, status, clear, exit")
+            self.log(
+                "commands: connect, token, receipt, workflow, issue-receipt, issue-renter-token, "
+                "receipt-status, token-status, reconcile, probe, services, discover, ops, status, clear, exit"
+            )
             return True
         if verb == "clear":
             self.logs.clear()
@@ -300,6 +337,165 @@ class AgentcoinAsciiWorkbench:
         if verb == "locale":
             self.set_locale(args[0] if args else DEFAULT_LOCALE)
             self.log(f"locale: {self.state.locale}")
+            return True
+        if verb == "workflow":
+            if len(args) < 2:
+                self.log("usage: workflow <workflow-name> <prompt...>")
+                return True
+            workflow_name = str(args[0]).strip()
+            prompt = " ".join(args[1:]).strip()
+            payload: dict[str, Any] = {
+                "workflow_name": workflow_name,
+                "input": {"prompt": prompt},
+            }
+            self.state.last_workflow_name = workflow_name
+            self.state.last_service_id = self._service_id_for_workflow(workflow_name)
+            if self.state.last_renter_token:
+                payload["renter_token"] = self.state.last_renter_token
+            elif self.state.last_receipt:
+                payload["payment_receipt"] = self.state.last_receipt
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/workflow/execute",
+                token=self.state.token or None,
+                method="POST",
+                payload=payload,
+            )
+            if code == 402:
+                payment = dict(response.get("payment") or {})
+                self.state.last_challenge = dict(payment.get("challenge") or {})
+                self.log(
+                    f"payment required: workflow={workflow_name} "
+                    f"challenge={self.state.last_challenge.get('challenge_id') or '-'} "
+                    f"amount={dict(payment.get('quote') or {}).get('amount_wei') or '-'}"
+                )
+            elif code == 202:
+                task = dict(response.get("task") or {})
+                self.log(f"workflow accepted: task={task.get('id') or '-'} kind={task.get('kind') or '-'}")
+            else:
+                self.log(f"workflow failed: {response.get('error') or code}")
+            return True
+        if verb == "issue-receipt":
+            if len(args) < 2:
+                self.log("usage: issue-receipt <payer> <tx_hash> [challenge-id]")
+                return True
+            payer = str(args[0]).strip()
+            tx_hash = str(args[1]).strip()
+            challenge_id = str(args[2]).strip() if len(args) > 2 else str((self.state.last_challenge or {}).get("challenge_id") or "").strip()
+            if not challenge_id:
+                self.log("no cached challenge_id; run workflow first or pass challenge-id")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/issue",
+                token=self.state.token or None,
+                method="POST",
+                payload={
+                    "challenge_id": challenge_id,
+                    "payer": payer,
+                    "tx_hash": tx_hash,
+                },
+            )
+            if code in {200, 201}:
+                receipt = dict(response.get("receipt") or {})
+                self.state.last_receipt = receipt
+                self.state.receipt_id = str(receipt.get("receipt_id") or "").strip()
+                self.log(f"receipt issued: receipt_id={self.state.receipt_id or '-'} challenge={challenge_id}")
+            else:
+                self.log(f"issue-receipt failed: {response.get('error') or code}")
+            return True
+        if verb == "issue-renter-token":
+            workflow_name = str(args[0]).strip() if args else self.state.last_workflow_name
+            if not workflow_name:
+                self.log("usage: issue-renter-token [workflow] [service-id] [max-uses]")
+                return True
+            service_id = str(args[1]).strip() if len(args) > 1 else self.state.last_service_id or workflow_name
+            max_uses = int(args[2]) if len(args) > 2 and str(args[2]).strip() else None
+            receipt = self.state.last_receipt
+            if not receipt:
+                receipt_code, receipt_payload = self._fetch_receipt_status()
+                if receipt_code == 200:
+                    receipt = dict(receipt_payload.get("receipt") or {})
+                    self.state.last_receipt = receipt
+            if not receipt:
+                self.log("no cached receipt; issue a receipt first")
+                return True
+            payload = {
+                "workflow_name": workflow_name,
+                "service_id": service_id,
+                "payment_receipt": receipt,
+            }
+            if max_uses is not None:
+                payload["max_uses"] = max_uses
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/renter-tokens/issue",
+                token=self.state.token or None,
+                method="POST",
+                payload=payload,
+            )
+            if code in {200, 201}:
+                token = dict(response.get("token") or {})
+                token_status = dict(response.get("token_status") or {})
+                self.state.last_renter_token = token
+                self.state.last_service_id = str(token.get("service_id") or service_id or "").strip()
+                self.log(
+                    f"renter token issued: token_id={token.get('token_id') or '-'} "
+                    f"remaining={token_status.get('remaining_uses')}"
+                )
+            else:
+                self.log(f"issue-renter-token failed: {response.get('error') or code}")
+            return True
+        if verb == "receipt-status":
+            code, response = self._fetch_receipt_status()
+            if code == 200:
+                receipt = dict(response.get("receipt") or {})
+                self.state.last_receipt = receipt
+                self.log(
+                    f"receipt status: id={receipt.get('receipt_id') or '-'} "
+                    f"status={receipt.get('status') or '-'}"
+                )
+            else:
+                self.log(f"receipt-status failed: {response.get('error') or code}")
+            return True
+        if verb == "token-status":
+            token_id = str((self.state.last_renter_token or {}).get("token_id") or "").strip()
+            if not token_id:
+                self.log("no cached renter token")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                f"/v1/payments/renter-tokens/status?token_id={token_id}",
+                token=self.state.token or None,
+            )
+            if code == 200:
+                token = dict(response.get("token") or {})
+                self.state.last_renter_token = token
+                self.log(
+                    f"token status: id={token.get('token_id') or '-'} "
+                    f"remaining={token.get('remaining_uses')} status={token.get('status') or '-'}"
+                )
+            else:
+                self.log(f"token-status failed: {response.get('error') or code}")
+            return True
+        if verb == "reconcile":
+            active_receipt_id = str(args[0]).strip() if args else self.state.receipt_id
+            if not active_receipt_id:
+                self.log("no receipt set")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                f"/v1/payments/service-usage/reconciliation?receipt_id={active_receipt_id}&service_id={self.state.last_service_id or ''}&limit=5",
+                token=self.state.token or None,
+            )
+            if code == 200:
+                self.log(
+                    "reconcile="
+                    f"{response.get('reconciliation_status') or '-'} "
+                    f"actions={','.join(response.get('recommended_actions') or []) or '-'}"
+                )
+            else:
+                self.log(f"reconcile failed: {response.get('error') or code}")
             return True
         if verb in {"probe", "status", "services", "discover", "ops"}:
             snapshot = self.fetch_snapshot()

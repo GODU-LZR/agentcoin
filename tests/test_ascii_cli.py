@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agentcoin.ascii_cli import render_once
+from agentcoin.ascii_cli import AgentcoinAsciiWorkbench, WorkbenchState, render_once
 from agentcoin.config import ServiceCapabilityConfig
 from agentcoin.onchain import OnchainBindings
 from tests.test_node_integration import NodeHarness
@@ -54,6 +54,69 @@ class AsciiCliTests(unittest.TestCase):
             self.assertIn("premium-review", rendered)
             self.assertIn("10.5 AGENT", rendered)
             self.assertIn("renter_token_summary", rendered.lower().replace("-", "_"))
+        finally:
+            node.stop()
+
+    def test_ascii_workbench_supports_workflow_receipt_token_and_reconcile_commands(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="ascii-ops-node",
+            token="token-ascii-ops",
+            db_path=str(Path(self.tempdir.name) / "ascii-ops.db"),
+            capabilities=["worker"],
+            signing_secret="ascii-ops-secret",
+            payment_required_workflows=["premium-review"],
+            services=[
+                ServiceCapabilityConfig(
+                    service_id="premium-review",
+                    description="Premium review",
+                    price_per_call=10.5,
+                    renter_token_max_uses=2,
+                    privacy_level="opaque",
+                )
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            workbench = AgentcoinAsciiWorkbench(
+                WorkbenchState(endpoint=node.base_url, token="token-ascii-ops", locale="en")
+            )
+
+            self.assertTrue(workbench.handle_command('workflow premium-review "review this secret workflow"'))
+            self.assertIsNotNone(workbench.state.last_challenge)
+            self.assertIn("payment required:", workbench.logs[-1])
+
+            self.assertTrue(
+                workbench.handle_command("issue-receipt did:agentcoin:ssh-ed25519:testpayer 0xabc123")
+            )
+            self.assertTrue(workbench.state.receipt_id)
+            self.assertIsNotNone(workbench.state.last_receipt)
+            self.assertIn("receipt issued:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("issue-renter-token premium-review premium-review 2"))
+            self.assertIsNotNone(workbench.state.last_renter_token)
+            self.assertIn("renter token issued:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("token-status"))
+            self.assertIn("token status:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command('workflow premium-review "review this secret workflow again"'))
+            self.assertIn("workflow accepted:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("reconcile"))
+            self.assertIn("reconcile=", workbench.logs[-1])
+
+            rendered = workbench.render()
+            self.assertIn("challenge_id:", rendered)
+            self.assertIn("renter_token:", rendered)
+            self.assertIn("reconciliation_status:", rendered)
         finally:
             node.stop()
 
