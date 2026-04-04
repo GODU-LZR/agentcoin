@@ -168,6 +168,7 @@ class ServiceCapabilityConfig:
     description: str
     price_per_call: float = 0.0
     price_asset: str = "AGENT"
+    renter_token_max_uses: int = 1
     privacy_level: str = "transparent"
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
@@ -186,6 +187,7 @@ class ServiceCapabilityConfig:
             "description": self.description,
             "price_per_call": self.price_per_call,
             "price_asset": self.price_asset,
+            "renter_token_max_uses": self.renter_token_max_uses,
             "privacy_level": self.privacy_level,
             "input_schema": dict(self.input_schema),
             "output_schema": dict(self.output_schema),

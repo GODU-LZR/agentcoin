@@ -194,6 +194,7 @@ class AgentCoinNode:
                     "receipt_ttl_seconds": int(self.config.payment_receipt_ttl_seconds or 3600),
                     "renter_token_ttl_seconds": int(self.config.renter_token_ttl_seconds or 1800),
                     "renter_token_allowed_operations": ["workflow-execute"],
+                    "renter_token_default_max_uses": 1,
                     "recipient": self.config.onchain.local_controller_address,
                     "bounty_escrow_address": self.config.onchain.bounty_escrow_address,
                 },
@@ -601,6 +602,7 @@ class AgentCoinNode:
         *,
         workflow_name: str,
         service_id: str | None = None,
+        max_uses: int | None = None,
     ) -> tuple[dict[str, Any], bool]:
         introspection = self.verify_payment_receipt(receipt, workflow_name=workflow_name)
         receipt_status = self.consume_payment_receipt(
@@ -615,11 +617,19 @@ class AgentCoinNode:
         requested_service_id = str(service_id or "").strip()
         if requested_service_id and requested_service_id != resolved_service_id:
             raise ValueError("service_id does not match workflow service")
+        service_max_uses = max(1, int((service or {}).get("renter_token_max_uses") or 1))
+        requested_max_uses = int(max_uses or 0)
+        if requested_max_uses < 0:
+            raise ValueError("max_uses must be positive")
+        if requested_max_uses and requested_max_uses > service_max_uses:
+            raise ValueError("max_uses exceeds service renter-token allowance")
+        token_max_uses = requested_max_uses or service_max_uses
         scope = {
             "workflow_name": workflow_name,
             "service_id": resolved_service_id,
             "allowed_operations": ["workflow-execute"],
             "privacy_level": str((service or {}).get("privacy_level") or "transparent"),
+            "max_uses": token_max_uses,
         }
         renter_token = {
             "kind": "agentcoin-renter-token",
@@ -632,8 +642,9 @@ class AgentCoinNode:
             "payer": receipt.get("payer"),
             "issued_at": utc_now(),
             "expires_at": utc_after(int(self.config.renter_token_ttl_seconds or 1800)),
-            "max_uses": 1,
-            "remaining_uses": 1,
+            "max_uses": token_max_uses,
+            "remaining_uses": token_max_uses,
+            "usage_count": 0,
             "status": "issued",
             "scope": scope,
         }
@@ -742,6 +753,7 @@ class AgentCoinNode:
             if str(token.get("status") or "").strip() != "issued" or remaining_uses <= 0:
                 raise SignatureError("renter token has already been consumed")
             token["remaining_uses"] = max(0, remaining_uses - 1)
+            token["usage_count"] = int(token.get("usage_count") or 0) + 1
             token["status"] = "consumed" if int(token["remaining_uses"]) <= 0 else "issued"
             token["consumed_at"] = utc_now()
             token["consumed_task_id"] = task_id
@@ -5472,6 +5484,7 @@ class AgentCoinNode:
                             payment_receipt,
                             workflow_name=workflow_name,
                             service_id=str(payload.get("service_id") or "").strip() or None,
+                            max_uses=int(payload.get("max_uses") or 0) or None,
                         )
                         self._json_response(
                             HTTPStatus.CREATED if created else HTTPStatus.OK,

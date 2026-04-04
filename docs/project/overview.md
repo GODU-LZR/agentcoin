@@ -26,7 +26,7 @@ The current repository contains:
 - an HTTP 402 payment-challenge skeleton for metered workflow execution and signed local payment receipts
 - single-use local payment receipts with explicit receipt status tracking and replay rejection
 - passwordless local payment receipt introspection for loopback browser or agent flows
-- service-scoped renter tokens that can be issued from a verified payment receipt and then introspected against explicit allowed operations
+- service-scoped renter tokens that can be issued from a verified payment receipt, introspected against explicit allowed operations, and optionally consumed across a bounded multi-use quota
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
 - signed on-chain payment proof projection from local receipt and attestation state
