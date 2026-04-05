@@ -178,6 +178,68 @@ class AsciiCliTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_ascii_workbench_supports_latest_failed_and_replay_helper_commands(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="ascii-relay-node",
+            token="token-ascii-relay",
+            db_path=str(Path(self.tempdir.name) / "ascii-relay.db"),
+            capabilities=["worker"],
+            signing_secret="ascii-relay-secret",
+            payment_required_workflows=["premium-review"],
+            services=[
+                ServiceCapabilityConfig(
+                    service_id="premium-review",
+                    description="Premium review",
+                    price_per_call=10.5,
+                    renter_token_max_uses=2,
+                    privacy_level="opaque",
+                )
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            workbench = AgentcoinAsciiWorkbench(
+                WorkbenchState(endpoint=node.base_url, token="token-ascii-relay", locale="en")
+            )
+
+            self.assertTrue(workbench.handle_command('workflow premium-review "review this secret workflow"'))
+            self.assertTrue(
+                workbench.handle_command("issue-receipt did:agentcoin:ssh-ed25519:testpayer 0xabc123")
+            )
+            relay_record = node.node.store.save_payment_relay(
+                {
+                    "receipt_id": workbench.state.receipt_id,
+                    "workflow_name": "premium-review",
+                    "completed_steps": 0,
+                    "step_count": 1,
+                    "stopped_on_error": True,
+                    "final_status": "dead-letter",
+                    "failures": [{"category": "rpc", "error": "mock relay failure"}],
+                }
+            )
+            self.assertEqual(relay_record["final_status"], "dead-letter")
+
+            self.assertTrue(workbench.handle_command("latest-failed"))
+            self.assertIsNotNone(workbench.state.last_payment_failed_relay)
+            self.assertIn("latest failed relay:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("replay-helper"))
+            self.assertIsNotNone(workbench.state.last_payment_replay_helper)
+            self.assertIn("replay helper:", workbench.logs[-1])
+
+            rendered = workbench.render()
+            self.assertIn("latest_failed:", rendered)
+        finally:
+            node.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

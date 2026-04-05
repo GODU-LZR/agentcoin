@@ -126,6 +126,9 @@ class WorkbenchState:
     last_payment_proof: dict[str, Any] | None = None
     last_payment_plan: dict[str, Any] | None = None
     last_payment_queue_item: dict[str, Any] | None = None
+    last_payment_relay: dict[str, Any] | None = None
+    last_payment_failed_relay: dict[str, Any] | None = None
+    last_payment_replay_helper: dict[str, Any] | None = None
 
 
 class AgentcoinAsciiWorkbench:
@@ -269,6 +272,16 @@ class AgentcoinAsciiWorkbench:
                 f"relay_queue_item: {self.state.last_payment_queue_item.get('id') or '-'} "
                 f"status={self.state.last_payment_queue_item.get('status') or '-'}"
             )
+        if self.state.last_payment_relay:
+            payment_lines.append(
+                f"latest_relay: {self.state.last_payment_relay.get('id') or '-'} "
+                f"status={self.state.last_payment_relay.get('final_status') or '-'}"
+            )
+        if self.state.last_payment_failed_relay:
+            payment_lines.append(
+                f"latest_failed: {self.state.last_payment_failed_relay.get('id') or '-'} "
+                f"status={self.state.last_payment_failed_relay.get('final_status') or '-'}"
+            )
         if self.state.receipt_id:
             service_reconcile = dict(ops.get("service_usage_reconciliation") or {})
             renter_summary = dict(ops.get("renter_token_summary") or {})
@@ -293,6 +306,7 @@ class AgentcoinAsciiWorkbench:
             "receipt-status | token-status | reconcile",
             "build-proof [workflow] | build-plan [workflow]",
             "queue-relay [workflow] | queue-status",
+            "latest-relay | latest-failed | replay-helper",
             "probe | services | discover | ops",
             "status | help | clear | exit",
         ]
@@ -321,7 +335,7 @@ class AgentcoinAsciiWorkbench:
             self.log(
                 "commands: connect, token, receipt, workflow, issue-receipt, issue-renter-token, "
                 "receipt-status, token-status, reconcile, build-proof, build-plan, queue-relay, queue-status, "
-                "probe, services, discover, ops, status, clear, exit"
+                "latest-relay, latest-failed, replay-helper, probe, services, discover, ops, status, clear, exit"
             )
             return True
         if verb == "clear":
@@ -624,6 +638,66 @@ class AgentcoinAsciiWorkbench:
                 )
             else:
                 self.log(f"queue-status failed: {response.get('error') or code}")
+            return True
+        if verb == "latest-relay":
+            active_receipt_id = str(args[0]).strip() if args else self.state.receipt_id
+            if not active_receipt_id:
+                self.log("no receipt set")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                f"/v1/payments/receipts/onchain-relays/latest?receipt_id={active_receipt_id}",
+                token=self.state.token or None,
+            )
+            if code == 200:
+                self.state.last_payment_relay = dict(response)
+                self.log(
+                    f"latest relay: id={response.get('id') or '-'} "
+                    f"status={response.get('final_status') or '-'}"
+                )
+            else:
+                self.log(f"latest-relay failed: {response.get('error') or code}")
+            return True
+        if verb == "latest-failed":
+            active_receipt_id = str(args[0]).strip() if args else self.state.receipt_id
+            if not active_receipt_id:
+                self.log("no receipt set")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                f"/v1/payments/receipts/onchain-relays/latest-failed?receipt_id={active_receipt_id}",
+                token=self.state.token or None,
+            )
+            if code == 200:
+                self.state.last_payment_failed_relay = dict(response)
+                self.log(
+                    f"latest failed relay: id={response.get('id') or '-'} "
+                    f"status={response.get('final_status') or '-'}"
+                )
+            else:
+                self.log(f"latest-failed failed: {response.get('error') or code}")
+            return True
+        if verb == "replay-helper":
+            active_receipt_id = str(args[0]).strip() if args else self.state.receipt_id
+            if not active_receipt_id:
+                self.log("no receipt set")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay/replay-helper",
+                token=self.state.token or None,
+                method="POST",
+                payload={"receipt_id": active_receipt_id},
+            )
+            if code == 200:
+                helper = dict(response.get("helper") or {})
+                self.state.last_payment_replay_helper = helper
+                self.log(
+                    f"replay helper: source={helper.get('source_type') or '-'} "
+                    f"workflow={helper.get('workflow_name') or '-'}"
+                )
+            else:
+                self.log(f"replay-helper failed: {response.get('error') or code}")
             return True
         if verb in {"probe", "status", "services", "discover", "ops"}:
             snapshot = self.fetch_snapshot()
