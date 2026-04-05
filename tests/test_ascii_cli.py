@@ -240,6 +240,132 @@ class AsciiCliTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_ascii_workbench_supports_queue_pause_and_resume_commands(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="ascii-queue-pause-node",
+            token="token-ascii-queue-pause",
+            db_path=str(Path(self.tempdir.name) / "ascii-queue-pause.db"),
+            capabilities=["worker"],
+            signing_secret="ascii-queue-pause-secret",
+            payment_required_workflows=["premium-review"],
+            services=[
+                ServiceCapabilityConfig(
+                    service_id="premium-review",
+                    description="Premium review",
+                    price_per_call=10.5,
+                    renter_token_max_uses=2,
+                    privacy_level="opaque",
+                )
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            workbench = AgentcoinAsciiWorkbench(
+                WorkbenchState(endpoint=node.base_url, token="token-ascii-queue-pause", locale="en")
+            )
+            self.assertTrue(workbench.handle_command('workflow premium-review "review this secret workflow"'))
+            self.assertTrue(
+                workbench.handle_command("issue-receipt did:agentcoin:ssh-ed25519:testpayer 0xabc123")
+            )
+            self.assertTrue(workbench.handle_command("queue-relay"))
+            self.assertTrue(workbench.handle_command("queue-pause"))
+            self.assertEqual((workbench.state.last_payment_queue_item or {}).get("status"), "paused")
+            self.assertIn("queue paused:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("queue-resume"))
+            self.assertEqual((workbench.state.last_payment_queue_item or {}).get("status"), "queued")
+            self.assertIn("queue resumed:", workbench.logs[-1])
+        finally:
+            node.stop()
+
+    def test_ascii_workbench_supports_queue_requeue_cancel_and_delete_commands(self) -> None:
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="https://bsc-testnet.example/rpc",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            local_controller_address="0x2222222222222222222222222222222222222222",
+        )
+        node = NodeHarness(
+            node_id="ascii-queue-dead-node",
+            token="token-ascii-queue-dead",
+            db_path=str(Path(self.tempdir.name) / "ascii-queue-dead.db"),
+            capabilities=["worker"],
+            signing_secret="ascii-queue-dead-secret",
+            payment_required_workflows=["premium-review"],
+            services=[
+                ServiceCapabilityConfig(
+                    service_id="premium-review",
+                    description="Premium review",
+                    price_per_call=10.5,
+                    renter_token_max_uses=2,
+                    privacy_level="opaque",
+                )
+            ],
+            onchain=onchain,
+        )
+        node.start()
+        try:
+            workbench = AgentcoinAsciiWorkbench(
+                WorkbenchState(endpoint=node.base_url, token="token-ascii-queue-dead", locale="en")
+            )
+            self.assertTrue(workbench.handle_command('workflow premium-review "review this secret workflow"'))
+            self.assertTrue(
+                workbench.handle_command("issue-receipt did:agentcoin:ssh-ed25519:testpayer 0xabc123")
+            )
+
+            queue_item = node.node.store.enqueue_payment_relay(
+                receipt_id=workbench.state.receipt_id,
+                workflow_name="premium-review",
+                payload={
+                    "workflow_name": "premium-review",
+                    "payment_receipt": workbench.state.last_receipt,
+                },
+                max_attempts=1,
+                delay_seconds=0,
+            )
+            claimed_item = node.node.store.claim_next_payment_relay_queue_item(max_in_flight=1)
+            self.assertIsNotNone(claimed_item)
+            self.assertEqual(str(claimed_item["id"]), str(queue_item["id"]))
+            dead_item = node.node.store.fail_payment_relay_queue_item(
+                str(queue_item["id"]),
+                error="mock dead-letter",
+            )
+            self.assertEqual(dead_item["status"], "dead-letter")
+            workbench.state.last_payment_queue_item = dead_item
+
+            self.assertTrue(workbench.handle_command("queue-requeue"))
+            self.assertEqual((workbench.state.last_payment_queue_item or {}).get("status"), "queued")
+            self.assertIn("queue requeued:", workbench.logs[-1])
+
+            claimed_again = node.node.store.claim_next_payment_relay_queue_item(max_in_flight=1)
+            self.assertIsNotNone(claimed_again)
+            self.assertEqual(str(claimed_again["id"]), str(queue_item["id"]))
+            dead_again = node.node.store.fail_payment_relay_queue_item(
+                str(queue_item["id"]),
+                error="mock dead-letter again",
+            )
+            self.assertEqual(dead_again["status"], "dead-letter")
+            workbench.state.last_payment_queue_item = dead_again
+
+            self.assertTrue(workbench.handle_command("queue-cancel"))
+            self.assertEqual((workbench.state.last_payment_queue_item or {}).get("status"), "dead-letter")
+            self.assertIn("queue cancelled:", workbench.logs[-1])
+
+            self.assertTrue(workbench.handle_command("queue-delete"))
+            self.assertIsNone(workbench.state.last_payment_queue_item)
+            self.assertIn("queue deleted:", workbench.logs[-1])
+        finally:
+            node.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

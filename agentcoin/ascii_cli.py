@@ -156,6 +156,11 @@ class AgentcoinAsciiWorkbench:
             token=self.state.token or None,
         )
 
+    def _active_queue_id(self, queue_id: str | None = None) -> str:
+        if queue_id:
+            return str(queue_id).strip()
+        return str((self.state.last_payment_queue_item or {}).get("id") or "").strip()
+
     def _service_id_for_workflow(self, workflow_name: str) -> str:
         if self.state.last_service_id:
             return self.state.last_service_id
@@ -307,6 +312,8 @@ class AgentcoinAsciiWorkbench:
             "build-proof [workflow] | build-plan [workflow]",
             "queue-relay [workflow] | queue-status",
             "latest-relay | latest-failed | replay-helper",
+            "queue-pause | queue-resume | queue-requeue",
+            "queue-cancel | queue-delete",
             "probe | services | discover | ops",
             "status | help | clear | exit",
         ]
@@ -335,7 +342,8 @@ class AgentcoinAsciiWorkbench:
             self.log(
                 "commands: connect, token, receipt, workflow, issue-receipt, issue-renter-token, "
                 "receipt-status, token-status, reconcile, build-proof, build-plan, queue-relay, queue-status, "
-                "latest-relay, latest-failed, replay-helper, probe, services, discover, ops, status, clear, exit"
+                "latest-relay, latest-failed, replay-helper, queue-pause, queue-resume, queue-requeue, "
+                "queue-cancel, queue-delete, probe, services, discover, ops, status, clear, exit"
             )
             return True
         if verb == "clear":
@@ -638,6 +646,101 @@ class AgentcoinAsciiWorkbench:
                 )
             else:
                 self.log(f"queue-status failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-pause":
+            queue_id = self._active_queue_id(args[0] if args else None)
+            if not queue_id:
+                self.log("no queue item selected")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay-queue/pause",
+                token=self.state.token or None,
+                method="POST",
+                payload={"queue_id": queue_id},
+            )
+            if code == 200:
+                item = dict(response.get("item") or {})
+                self.state.last_payment_queue_item = item
+                self.log(f"queue paused: item={item.get('id') or '-'} status={item.get('status') or '-'}")
+            else:
+                self.log(f"queue-pause failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-resume":
+            queue_id = self._active_queue_id(args[0] if args else None)
+            if not queue_id:
+                self.log("no queue item selected")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay-queue/resume",
+                token=self.state.token or None,
+                method="POST",
+                payload={"queue_id": queue_id},
+            )
+            if code == 200:
+                item = dict(response.get("item") or {})
+                self.state.last_payment_queue_item = item
+                self.log(f"queue resumed: item={item.get('id') or '-'} status={item.get('status') or '-'}")
+            else:
+                self.log(f"queue-resume failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-requeue":
+            queue_id = self._active_queue_id(args[0] if args else None)
+            if not queue_id:
+                self.log("no queue item selected")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay-queue/requeue",
+                token=self.state.token or None,
+                method="POST",
+                payload={"queue_id": queue_id},
+            )
+            if code == 200:
+                item = dict(response.get("item") or {})
+                self.state.last_payment_queue_item = item
+                self.log(f"queue requeued: item={item.get('id') or '-'} status={item.get('status') or '-'}")
+            else:
+                self.log(f"queue-requeue failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-cancel":
+            queue_id = self._active_queue_id(args[0] if args else None)
+            if not queue_id:
+                self.log("no queue item selected")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay-queue/cancel",
+                token=self.state.token or None,
+                method="POST",
+                payload={"queue_id": queue_id},
+            )
+            if code == 200:
+                item = dict(response.get("item") or {})
+                self.state.last_payment_queue_item = item
+                self.log(f"queue cancelled: item={item.get('id') or '-'} status={item.get('status') or '-'}")
+            else:
+                self.log(f"queue-cancel failed: {response.get('error') or code}")
+            return True
+        if verb == "queue-delete":
+            queue_id = self._active_queue_id(args[0] if args else None)
+            if not queue_id:
+                self.log("no queue item selected")
+                return True
+            code, response = http_json(
+                self.state.endpoint,
+                "/v1/payments/receipts/onchain-relay-queue/delete",
+                token=self.state.token or None,
+                method="POST",
+                payload={"queue_id": queue_id},
+            )
+            if code == 200 and bool(response.get("ok")):
+                if str((self.state.last_payment_queue_item or {}).get("id") or "") == queue_id:
+                    self.state.last_payment_queue_item = None
+                self.log(f"queue deleted: item={queue_id}")
+            else:
+                self.log(f"queue-delete failed: {response.get('error') or code}")
             return True
         if verb == "latest-relay":
             active_receipt_id = str(args[0]).strip() if args else self.state.receipt_id
