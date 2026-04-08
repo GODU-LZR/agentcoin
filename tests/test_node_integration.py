@@ -52,6 +52,9 @@ class NodeHarness:
                  payment_required_workflows: list[str] | None = None,
                  services: list[ServiceCapabilityConfig] | None = None,
                  payment_relay_auto_requeue_enabled: bool = False,
+                 payment_relay_auto_requeue_poll_seconds: float = 2.0,
+                 payment_relay_auto_requeue_retry_seconds: float = 30.0,
+                 payment_relay_auto_requeue_max_items: int = 20,
                  payment_relay_auto_requeue_delay_seconds: int = 30,
                  payment_relay_auto_requeue_max_requeues: int = 1,
                  poaw_policy_version: str = "0.2",
@@ -59,7 +62,12 @@ class NodeHarness:
                  bridges: list[str] | None = None,
                  sync_interval_seconds: float = 3600,
                  settlement_relay_poll_seconds: float = 2.0,
-                 settlement_relay_max_in_flight: int = 1) -> None:
+                 settlement_relay_max_in_flight: int = 1,
+                 settlement_relay_reconcile_poll_seconds: float = 0.0,
+                 settlement_relay_reconcile_retry_seconds: float = 30.0,
+                 settlement_relay_reconcile_max_items: int = 20,
+                 payment_relay_poll_seconds: float = 2.0,
+                 payment_relay_max_in_flight: int = 1) -> None:
         self.port = _free_port()
         self.config = NodeConfig(
             node_id=node_id,
@@ -86,6 +94,11 @@ class NodeHarness:
             sync_interval_seconds=sync_interval_seconds,
             settlement_relay_poll_seconds=settlement_relay_poll_seconds,
             settlement_relay_max_in_flight=settlement_relay_max_in_flight,
+            settlement_relay_reconcile_poll_seconds=settlement_relay_reconcile_poll_seconds,
+            settlement_relay_reconcile_retry_seconds=settlement_relay_reconcile_retry_seconds,
+            settlement_relay_reconcile_max_items=settlement_relay_reconcile_max_items,
+            payment_relay_poll_seconds=payment_relay_poll_seconds,
+            payment_relay_max_in_flight=payment_relay_max_in_flight,
             capabilities=capabilities,
             runtimes=runtimes or ["python"],
             bridges=bridges or ["mcp", "a2a"],
@@ -97,6 +110,9 @@ class NodeHarness:
             payment_required_workflows=payment_required_workflows or [],
             services=services or [],
             payment_relay_auto_requeue_enabled=payment_relay_auto_requeue_enabled,
+            payment_relay_auto_requeue_poll_seconds=payment_relay_auto_requeue_poll_seconds,
+            payment_relay_auto_requeue_retry_seconds=payment_relay_auto_requeue_retry_seconds,
+            payment_relay_auto_requeue_max_items=payment_relay_auto_requeue_max_items,
             payment_relay_auto_requeue_delay_seconds=payment_relay_auto_requeue_delay_seconds,
             payment_relay_auto_requeue_max_requeues=payment_relay_auto_requeue_max_requeues,
             challenge_bond_required_wei=challenge_bond_required_wei,
@@ -118,7 +134,8 @@ class NodeHarness:
 
     def stop(self) -> None:
         self.node.shutdown()
-        self.thread.join(timeout=2)
+        if self.thread.ident is not None:
+            self.thread.join(timeout=5)
 
 
 class RpcHarness:
@@ -719,6 +736,25 @@ class NodeIntegrationTests(unittest.TestCase):
         except error.HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def _session_get(
+        self,
+        url: str,
+        *,
+        session_token: str,
+    ) -> tuple[int, dict]:
+        req = request.Request(
+            url,
+            headers={
+                "Authorization": f"Agentcoin-Session {session_token}",
+            },
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=10) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def _wait_for_queue_item_status(
         self,
         node: NodeHarness,
@@ -752,6 +788,18 @@ class NodeIntegrationTests(unittest.TestCase):
                 return last_item
             time.sleep(0.05)
         raise AssertionError(f"payment queue item {queue_id} did not reach status {status!r}; last_item={last_item!r}")
+
+    def _payment_queue_item_with_checked_at(self, node: NodeHarness, queue_id: str) -> dict | None:
+        item = node.node.store.get_payment_relay_queue_item(queue_id)
+        if item and item.get("auto_requeue_checked_at"):
+            return item
+        return None
+
+    def _payment_queue_item_checked_after(self, node: NodeHarness, queue_id: str, checked_at: str) -> dict | None:
+        item = node.node.store.get_payment_relay_queue_item(queue_id)
+        if item and str(item.get("auto_requeue_checked_at") or "") > str(checked_at or ""):
+            return item
+        return None
 
     def _wait_until(self, predicate, *, timeout: float = 5.0, interval: float = 0.05, message: str = "condition not met"):
         deadline = time.monotonic() + timeout
@@ -955,11 +1003,21 @@ class NodeIntegrationTests(unittest.TestCase):
             _, manifest = self._get(f"{node.base_url}/v1/manifest")
             self.assertEqual(manifest["services"][0]["service_id"], "legal-contract-analyzer-v1")
             self.assertEqual(manifest["discovery"]["capabilities_url"], f"{node.base_url}/v1/capabilities")
+            self.assertEqual(
+                manifest["discovery"]["local_agent_acp_session_list_url"],
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/list",
+            )
+            self.assertEqual(
+                manifest["discovery"]["local_agent_acp_session_load_url"],
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/load",
+            )
 
             _, capabilities = self._get(f"{node.base_url}/v1/capabilities")
             self.assertEqual(capabilities["items"][0]["privacy_level"], "opaque")
             self.assertTrue(capabilities["items"][0]["strict_input"])
             self.assertEqual(capabilities["items"][0]["renter_token_max_uses"], 2)
+            self.assertEqual(capabilities["services"][0]["service_id"], "legal-contract-analyzer-v1")
+            self.assertIn("worker", [item["id"] for item in capabilities["capabilities"]])
             self.assertNotIn("executor_runtime", capabilities["items"][0])
             self.assertNotIn("executor_options", capabilities["items"][0])
             self.assertNotIn("executor_prompt_template", capabilities["items"][0])
@@ -967,6 +1025,7 @@ class NodeIntegrationTests(unittest.TestCase):
             _, services = self._get(f"{node.base_url}/v1/services")
             self.assertEqual(services["items"][0]["price_per_call"], 10.5)
             self.assertEqual(services["items"][0]["renter_token_max_uses"], 2)
+            self.assertEqual(services["services"][0]["service_id"], "legal-contract-analyzer-v1")
             self.assertNotIn("executor_runtime", services["items"][0])
             self.assertNotIn("executor_options", services["items"][0])
             self.assertNotIn("executor_prompt_template", services["items"][0])
@@ -1367,6 +1426,44 @@ class NodeIntegrationTests(unittest.TestCase):
         finally:
             node.stop()
 
+    def test_identity_auth_verify_accepts_loopback_body_only_fallback(self) -> None:
+        _, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_auth_body_only", "frontend-local-body-only")
+        node = NodeHarness(
+            node_id="identity-auth-body-only-node",
+            token="token-identity-auth-body-only",
+            db_path=str(Path(self.tempdir.name) / "identity-auth-body-only.db"),
+            capabilities=["worker"],
+        )
+        node.start()
+        try:
+            _, challenge_payload = self._get(f"{node.base_url}/v1/auth/challenge")
+            challenge = challenge_payload["challenge"]
+            status, _, raw_body = self._request_raw(
+                f"{node.base_url}/v1/auth/verify",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=json.dumps(
+                    {
+                        "challenge_id": challenge["challenge_id"],
+                        "principal": "frontend-local-body-only",
+                        "public_key": public_key,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+            )
+            verified = json.loads(raw_body)
+            self.assertEqual(status, HTTPStatus.OK)
+            self.assertTrue(verified["ok"])
+            self.assertEqual(verified["identity"]["principal"], "frontend-local-body-only")
+            self.assertEqual(
+                verified["receipt"]["verification"]["mode"],
+                "loopback-challenge-fallback",
+            )
+            self.assertFalse(verified["receipt"]["verification"]["verified"])
+            self.assertEqual(verified["session"]["scheme"], "Agentcoin-Session")
+        finally:
+            node.stop()
+
     def test_identity_auth_verify_issues_reusable_loopback_session(self) -> None:
         key_path, public_key = self._generate_identity(Path(self.tempdir.name) / "id_client_session", "frontend-local-session")
         node = NodeHarness(
@@ -1433,6 +1530,13 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(executed["payment_required"])
             self.assertFalse(executed["payment_verified"])
             self.assertEqual(executed["task"]["payload"]["workflow_name"], "free-review")
+
+            receipt_status_code, receipt_status_payload = self._session_get(
+                f"{node.base_url}/v1/payments/receipts/status?receipt_id=missing-receipt",
+                session_token=session_token,
+            )
+            self.assertEqual(receipt_status_code, HTTPStatus.BAD_REQUEST)
+            self.assertIn("receipt", receipt_status_payload["error"])
 
             introspect_status, introspected = self._session_post(
                 f"{node.base_url}/v1/payments/receipts/introspect",
@@ -1526,6 +1630,7 @@ class NodeIntegrationTests(unittest.TestCase):
             "frontend-local-discovery",
         )
         local_appdata = Path(self.tempdir.name) / "AppData" / "Local"
+        program_files = Path(self.tempdir.name) / "Program Files"
         home = Path(self.tempdir.name) / "home"
         executable = local_appdata / "GitHub CLI" / "copilot" / "copilot.exe"
         executable.parent.mkdir(parents=True, exist_ok=True)
@@ -1533,6 +1638,9 @@ class NodeIntegrationTests(unittest.TestCase):
         claude_executable = local_appdata / "Programs" / "Claude Code" / "claude.exe"
         claude_executable.parent.mkdir(parents=True, exist_ok=True)
         claude_executable.write_text("", encoding="utf-8")
+        codex_executable = program_files / "nodejs" / "codex.cmd"
+        codex_executable.parent.mkdir(parents=True, exist_ok=True)
+        codex_executable.write_text("", encoding="utf-8")
 
         package_json = local_appdata / "copilot" / "pkg" / "win32-x64" / "1.0.17" / "package.json"
         package_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1579,6 +1687,10 @@ class NodeIntegrationTests(unittest.TestCase):
                 return 0, "Claude Code CLI\n  --mcp  Start Model Context Protocol transport\n", ""
             if command[0] == str(claude_executable) and command[-1] == "--version":
                 return 0, "0.9.3", ""
+            if command[0] == str(codex_executable) and command[-1] == "--help":
+                return 0, "Codex CLI\n  mcp-server  Start Codex as an MCP server (stdio)\n", ""
+            if command[0] == str(codex_executable) and command[-1] == "--version":
+                return 0, "codex-cli 0.118.0", ""
             if command[-1] == "--help":
                 return 0, "GitHub Copilot CLI\n  --acp  Start as Agent Client Protocol server\n", ""
             if command[-1] == "--version":
@@ -1592,10 +1704,14 @@ class NodeIntegrationTests(unittest.TestCase):
             capabilities=["worker"],
         )
         node.node.discovery = LocalAgentDiscovery(
-            env={"LOCALAPPDATA": str(local_appdata)},
+            env={"LOCALAPPDATA": str(local_appdata), "PROGRAMFILES": str(program_files)},
             home=home,
             system_name="Windows",
-            which=lambda name: str(executable) if name == "copilot" else (str(claude_executable) if name == "claude" else None),
+            which=lambda name: (
+                str(executable)
+                if name == "copilot"
+                else (str(claude_executable) if name == "claude" else (str(codex_executable) if name in {"codex", "codex.cmd"} else None))
+            ),
             command_runner=fake_runner,
         )
         node.start()
@@ -1609,6 +1725,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(status, HTTPStatus.OK)
             ids = {item["id"] for item in payload["items"]}
             self.assertIn("github-copilot-cli", ids)
+            self.assertIn("openai-codex-cli", ids)
             self.assertIn("claude-code-cli", ids)
             self.assertIn("github-copilot-chat-vscode", ids)
             self.assertIn("openai-codex-vscode", ids)
@@ -1616,6 +1733,10 @@ class NodeIntegrationTests(unittest.TestCase):
             cli_item = [item for item in payload["items"] if item["id"] == "github-copilot-cli"][0]
             self.assertIn("acp", cli_item["protocols"])
             self.assertEqual(cli_item["agentcoin_compatibility"]["preferred_integration"], "acp-bridge")
+            codex_cli_item = [item for item in payload["items"] if item["id"] == "openai-codex-cli"][0]
+            self.assertEqual(codex_cli_item["publisher"], "OpenAI")
+            self.assertIn("mcp", codex_cli_item["protocols"])
+            self.assertEqual(codex_cli_item["agentcoin_compatibility"]["preferred_integration"], "mcp-host-adapter")
             claude_item = [item for item in payload["items"] if item["id"] == "claude-code-cli"][0]
             self.assertEqual(claude_item["publisher"], "Anthropic")
             self.assertIn("mcp", claude_item["protocols"])
@@ -1803,7 +1924,19 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertTrue(int(session["pid"] or 0) > 0)
             self.assertEqual(session["summary"]["turn_count"], 0)
             self.assertIsNone(session["summary"]["active_turn_id"])
+            self.assertFalse(open_payload["reused_existing_session"])
             self.assertFalse(open_payload["protocol_boundary"]["protocol_messages_implemented"])
+
+            reopen_status, reopen_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp",
+                public_key=public_key,
+            )
+            self.assertEqual(reopen_status, HTTPStatus.OK)
+            self.assertTrue(reopen_payload["reused_existing_session"])
+            self.assertEqual(reopen_payload["session"]["session_id"], session["session_id"])
 
             managed_status, managed_payload = self._identity_signed_get(
                 f"{node.base_url}/v1/discovery/local-agents/managed",
@@ -1950,7 +2083,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(initialize_payload["initialize_intent"]["request"]["method"], "initialize")
             self.assertEqual(
                 initialize_payload["initialize_intent"]["request"]["params"]["protocolVersion"],
-                "0.1-preview",
+                1,
             )
 
             deadline = time.time() + 5
@@ -1959,7 +2092,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertTrue(capture_path.exists())
             captured = json.loads(capture_path.read_text(encoding="utf-8"))
             self.assertEqual(captured["method"], "initialize")
-            self.assertEqual(captured["params"]["protocolVersion"], "0.1-preview")
+            self.assertEqual(captured["params"]["protocolVersion"], 1)
             self.assertEqual(captured["params"]["clientCapabilities"], {"tasks": True})
             self.assertEqual(captured["params"]["clientInfo"]["name"], "agentcoin-test")
 
@@ -2139,7 +2272,7 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(task_request_status, HTTPStatus.OK)
             self.assertTrue(task_request_payload["dispatched"])
-            self.assertEqual(task_request_payload["task_request_intent"]["request"]["method"], "prompt")
+            self.assertEqual(task_request_payload["task_request_intent"]["request"]["method"], "session/prompt")
             self.assertEqual(
                 task_request_payload["task_request_intent"]["request"]["params"]["sessionId"],
                 "server-session-123",
@@ -2151,7 +2284,7 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(task_request_payload["session"]["protocol_state"], "task-response-pending")
             self.assertEqual(
                 task_request_payload["protocol_boundary"]["task_semantics_implemented"],
-                "prompt-request-skeleton-only",
+                "session-prompt-request-mapping-only",
             )
 
             deadline = time.time() + 5
@@ -2159,7 +2292,7 @@ class NodeIntegrationTests(unittest.TestCase):
                 time.sleep(0.1)
             self.assertTrue(task_capture_path.exists())
             captured = json.loads(task_capture_path.read_text(encoding="utf-8"))
-            self.assertEqual(captured["method"], "prompt")
+            self.assertEqual(captured["method"], "session/prompt")
             self.assertEqual(captured["params"]["sessionId"], "server-session-123")
             self.assertEqual(captured["params"]["prompt"][0]["text"], "Review this ACP task request")
 
@@ -2230,6 +2363,412 @@ class NodeIntegrationTests(unittest.TestCase):
             _, audits = self._get(f"{node.base_url}/v1/audits?task_id=acp-task-1")
             self.assertEqual(len(audits["items"]), 1)
             self.assertEqual(audits["items"][0]["event_type"], "external-result")
+        finally:
+            node.stop()
+
+    def test_local_agent_acp_session_list_and_load_dispatch_candidate_frames(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_acp_session_list",
+            "frontend-local-agent-acp-session-list",
+        )
+        initialize_capture_path = Path(self.tempdir.name) / "acp_initialize_capture_list.json"
+        list_capture_path = Path(self.tempdir.name) / "acp_session_list_capture.json"
+        load_capture_path = Path(self.tempdir.name) / "acp_session_load_capture.json"
+        load_cwd = str((Path(self.tempdir.name) / "resume-root").resolve())
+        sleeper = Path(self.tempdir.name) / "fake_acp_agent_session_list.py"
+        sleeper.write_text(
+            "import json, sys, time\n"
+            f"initialize_capture_path = r'''{initialize_capture_path}'''\n"
+            f"list_capture_path = r'''{list_capture_path}'''\n"
+            f"load_capture_path = r'''{load_capture_path}'''\n"
+            "line1 = sys.stdin.readline()\n"
+            "with open(initialize_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line1)\n"
+            "request1 = json.loads(line1)\n"
+            "response1 = {\n"
+            "    'id': request1.get('id'),\n"
+            "    'result': {\n"
+            "        'protocolVersion': request1.get('params', {}).get('protocolVersion'),\n"
+            "        'agentCapabilities': {'loadSession': True, 'sessionCapabilities': {'list': {}}},\n"
+            "        'agentInfo': {'name': 'fake-acp-server', 'version': '0.1-test'},\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response1) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "line2 = sys.stdin.readline()\n"
+            "with open(list_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line2)\n"
+            "request2 = json.loads(line2)\n"
+            "response2 = {\n"
+            "    'id': request2.get('id'),\n"
+            "    'result': {\n"
+            "        'sessions': [\n"
+            "            {\n"
+            "                'sessionId': 'server-session-123',\n"
+            "                'cwd': '/workspace/demo',\n"
+            "                'title': 'Resume Target',\n"
+            "                'updatedAt': '2026-04-07T16:30:00Z'\n"
+            "            }\n"
+            "        ]\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response2) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "line3 = sys.stdin.readline()\n"
+            "with open(load_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line3)\n"
+            "request3 = json.loads(line3)\n"
+            "update = {\n"
+            "    'jsonrpc': '2.0',\n"
+            "    'method': 'session/update',\n"
+            "    'params': {\n"
+            "        'sessionId': request3.get('params', {}).get('sessionId'),\n"
+            "        'update': {\n"
+            "            'sessionUpdate': 'agent_message_chunk',\n"
+            "            'content': {'type': 'text', 'text': 'history-ok'}\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(update) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "response3 = {\n"
+            "    'id': request3.get('id'),\n"
+            "    'result': None,\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response3) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": False,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-acp-session-list-node",
+            token="token-local-agent-acp-session-list",
+            db_path=str(Path(self.tempdir.name) / "local-agent-acp-session-list.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            _, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-session-list",
+                public_key=public_key,
+            )
+            registration = register_payload["item"]
+            _, open_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-session-list",
+                public_key=public_key,
+            )
+            session_id = open_payload["session"]["session_id"]
+            self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/initialize",
+                {
+                    "session_id": session_id,
+                    "protocol_version": 1,
+                    "client_capabilities": {"tasks": True},
+                    "client_info": {"name": "agentcoin-test", "version": "0.1-test"},
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-session-list",
+                public_key=public_key,
+            )
+
+            list_status, list_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/list",
+                {
+                    "session_id": session_id,
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-session-list",
+                public_key=public_key,
+            )
+            self.assertEqual(list_status, HTTPStatus.OK)
+            self.assertTrue(list_payload["dispatched"])
+            self.assertEqual(list_payload["session_list_intent"]["request"]["method"], "session/list")
+            self.assertEqual(list_payload["session_list_intent"]["request"]["params"], {})
+            self.assertEqual(
+                list_payload["protocol_boundary"]["session_listing_implemented"],
+                "session/list-request-dispatch-and-response-capture",
+            )
+
+            deadline = time.time() + 5
+            while time.time() < deadline and not list_capture_path.exists():
+                time.sleep(0.1)
+            self.assertTrue(list_capture_path.exists())
+            list_captured = json.loads(list_capture_path.read_text(encoding="utf-8"))
+            self.assertEqual(list_captured["method"], "session/list")
+            self.assertEqual(list_captured["params"], {})
+
+            poll_deadline = time.time() + 5
+            list_poll_payload: dict[str, object] = {}
+            while time.time() < poll_deadline:
+                _, polled = self._identity_signed_post(
+                    f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                    {"session_id": session_id},
+                    private_key_path=key_path,
+                    principal="frontend-local-agent-acp-session-list",
+                    public_key=public_key,
+                )
+                list_poll_payload = polled
+                listed = polled.get("session", {}).get("listed_server_sessions") if isinstance(polled.get("session"), dict) else None
+                if isinstance(listed, list) and listed:
+                    break
+                time.sleep(0.1)
+            self.assertEqual(list_poll_payload["session"]["protocol_state"], "session-list-response-captured")
+            self.assertEqual(list_poll_payload["session"]["listed_server_sessions"][0]["sessionId"], "server-session-123")
+            self.assertEqual(list_poll_payload["session"]["listed_server_sessions"][0]["title"], "Resume Target")
+
+            load_status, load_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/load",
+                {
+                    "session_id": session_id,
+                    "server_session_id": "server-session-123",
+                    "cwd": load_cwd,
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-session-list",
+                public_key=public_key,
+            )
+            self.assertEqual(load_status, HTTPStatus.OK)
+            self.assertTrue(load_payload["dispatched"])
+            self.assertEqual(load_payload["session_load_intent"]["request"]["method"], "session/load")
+            self.assertEqual(
+                load_payload["session_load_intent"]["request"]["params"]["sessionId"],
+                "server-session-123",
+            )
+            self.assertEqual(load_payload["session_load_intent"]["request"]["params"]["cwd"], load_cwd)
+            self.assertEqual(load_payload["session_load_intent"]["request"]["params"]["mcpServers"], [])
+            self.assertEqual(
+                load_payload["protocol_boundary"]["session_loading_implemented"],
+                "session/load-request-dispatch-and-update-capture",
+            )
+
+            deadline = time.time() + 5
+            while time.time() < deadline and not load_capture_path.exists():
+                time.sleep(0.1)
+            self.assertTrue(load_capture_path.exists())
+            load_captured = json.loads(load_capture_path.read_text(encoding="utf-8"))
+            self.assertEqual(load_captured["method"], "session/load")
+            self.assertEqual(load_captured["params"]["sessionId"], "server-session-123")
+            self.assertEqual(load_captured["params"]["cwd"], load_cwd)
+            self.assertEqual(load_captured["params"]["mcpServers"], [])
+
+            load_poll_deadline = time.time() + 5
+            load_poll_payload: dict[str, object] = {}
+            while time.time() < load_poll_deadline:
+                _, polled = self._identity_signed_post(
+                    f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                    {"session_id": session_id},
+                    private_key_path=key_path,
+                    principal="frontend-local-agent-acp-session-list",
+                    public_key=public_key,
+                )
+                load_poll_payload = polled
+                if polled.get("session", {}).get("loaded_session_update_count"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(load_poll_payload["session"]["loaded_server_session_id"], "server-session-123")
+            self.assertEqual(load_poll_payload["session"]["protocol_state"], "session-load-response-captured")
+            self.assertEqual(load_poll_payload["session"]["loaded_session_update_count"], 1)
+            self.assertEqual(
+                load_poll_payload["session"]["latest_loaded_session_update"]["parsed"]["params"]["sessionId"],
+                "server-session-123",
+            )
+            self.assertEqual(
+                load_poll_payload["session"]["latest_loaded_session_update"]["parsed"]["params"]["update"]["content"]["text"],
+                "history-ok",
+            )
+            self.assertIsNotNone(load_poll_payload["session"]["session_load_response_frame"])
+        finally:
+            node.stop()
+
+    def test_local_agent_acp_task_request_rejects_pending_session_load(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_acp_pending_load",
+            "frontend-local-agent-acp-pending-load",
+        )
+        load_capture_path = Path(self.tempdir.name) / "acp_pending_load_capture.json"
+        task_capture_path = Path(self.tempdir.name) / "acp_pending_task_capture.json"
+        sleeper = Path(self.tempdir.name) / "fake_acp_pending_load.py"
+        sleeper.write_text(
+            "import json, sys, time\n"
+            f"load_capture_path = r'''{load_capture_path}'''\n"
+            f"task_capture_path = r'''{task_capture_path}'''\n"
+            "line1 = sys.stdin.readline()\n"
+            "request1 = json.loads(line1)\n"
+            "response1 = {\n"
+            "    'id': request1.get('id'),\n"
+            "    'result': {\n"
+            "        'protocolVersion': request1.get('params', {}).get('protocolVersion'),\n"
+            "        'agentCapabilities': {'loadSession': True, 'sessionCapabilities': {'list': {}}},\n"
+            "        'agentInfo': {'name': 'pending-load-acp', 'version': '0.1-test'},\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response1) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "line2 = sys.stdin.readline()\n"
+            "with open(load_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "    handle.write(line2)\n"
+            "time.sleep(2)\n"
+            "line3 = sys.stdin.readline()\n"
+            "if line3:\n"
+            "    with open(task_capture_path, 'w', encoding='utf-8') as handle:\n"
+            "        handle.write(line3)\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": True,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-acp-pending-load-node",
+            token="token-local-agent-acp-pending-load",
+            db_path=str(Path(self.tempdir.name) / "local-agent-acp-pending-load.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "acp-pending-load-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "payload": {"input": "This task should wait for session/load"},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            _, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            registration = register_payload["item"]
+            _, open_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            session_id = open_payload["session"]["session_id"]
+            self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/initialize",
+                {
+                    "session_id": session_id,
+                    "protocol_version": 1,
+                    "client_capabilities": {"tasks": True},
+                    "client_info": {"name": "agentcoin-test", "version": "0.1-test"},
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            load_status, load_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/load",
+                {
+                    "session_id": session_id,
+                    "server_session_id": "server-session-pending",
+                    "cwd": str(Path(self.tempdir.name)),
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            self.assertEqual(load_status, HTTPStatus.OK)
+            self.assertTrue(load_payload["dispatched"])
+
+            deadline = time.time() + 5
+            while time.time() < deadline and not load_capture_path.exists():
+                time.sleep(0.1)
+            self.assertTrue(load_capture_path.exists())
+
+            task_request_status, task_request_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/task-request",
+                {
+                    "session_id": session_id,
+                    "task_id": "acp-pending-load-task-1",
+                    "server_session_id": "server-session-pending",
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            self.assertEqual(task_request_status, HTTPStatus.BAD_REQUEST)
+            self.assertIn("session/load response is still pending", task_request_payload["error"])
+
+            _, polled = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                {"session_id": session_id},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-pending-load",
+                public_key=public_key,
+            )
+            self.assertEqual(polled["session"]["protocol_state"], "session-load-response-pending")
+            self.assertFalse(task_capture_path.exists())
         finally:
             node.stop()
 
@@ -2468,6 +3007,20 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(receipt_status_payload["receipt"]["status"], "consumed")
             self.assertEqual(receipt_status_payload["receipt"]["consumed_task_id"], executed["task"]["id"])
 
+            introspect_status_payload_status, introspect_status_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt_status_payload["receipt"],
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-ok",
+                public_key=public_key,
+            )
+            self.assertEqual(introspect_status_payload_status, HTTPStatus.OK)
+            self.assertFalse(introspect_status_payload["introspection"]["active"])
+            self.assertEqual(introspect_status_payload["introspection"]["status"], "consumed")
+
             introspect_after_status, introspect_after = self._identity_signed_post(
                 f"{node.base_url}/v1/payments/receipts/introspect",
                 {
@@ -2537,6 +3090,363 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(replay_status, HTTPStatus.BAD_REQUEST)
             self.assertIn("already been consumed", replay_payload["error"])
+        finally:
+            node.stop()
+
+    def test_local_agent_acp_apply_task_result_uses_session_update_chunks_when_result_has_no_content(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_acp_streamed_task",
+            "frontend-local-agent-acp-streamed-task",
+        )
+        sleeper = Path(self.tempdir.name) / "fake_acp_agent_streamed_task.py"
+        sleeper.write_text(
+            "import json, sys, time\n"
+            "line1 = sys.stdin.readline()\n"
+            "request1 = json.loads(line1)\n"
+            "response1 = {\n"
+            "    'id': request1.get('id'),\n"
+            "    'result': {\n"
+            "        'protocolVersion': request1.get('params', {}).get('protocolVersion'),\n"
+            "        'serverInfo': {'name': 'fake-acp-server', 'version': '0.1-test'},\n"
+            "        'serverCapabilities': {'tasks': True},\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response1) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "line2 = sys.stdin.readline()\n"
+            "request2 = json.loads(line2)\n"
+            "session_id = request2.get('params', {}).get('sessionId')\n"
+            "for text in ['Hello', ' from', ' streamed', ' ACP']:\n"
+            "    update = {\n"
+            "        'jsonrpc': '2.0',\n"
+            "        'method': 'session/update',\n"
+            "        'params': {\n"
+            "            'sessionId': session_id,\n"
+            "            'update': {\n"
+            "                'sessionUpdate': 'agent_message_chunk',\n"
+            "                'content': {'type': 'text', 'text': text}\n"
+            "            }\n"
+            "        },\n"
+            "    }\n"
+            "    sys.stdout.write(json.dumps(update) + '\\n')\n"
+            "    sys.stdout.flush()\n"
+            "response2 = {\n"
+            "    'id': request2.get('id'),\n"
+            "    'result': {'stopReason': 'end_turn'},\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response2) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": True,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-acp-streamed-task-node",
+            token="token-local-agent-acp-streamed-task",
+            db_path=str(Path(self.tempdir.name) / "local-agent-acp-streamed-task.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "acp-streamed-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "payload": {"input": {"prompt": "Stream this ACP task request"}},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-streamed-task",
+                public_key=public_key,
+            )
+            _, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-streamed-task",
+                public_key=public_key,
+            )
+            registration = register_payload["item"]
+            _, open_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-streamed-task",
+                public_key=public_key,
+            )
+            session_id = open_payload["session"]["session_id"]
+            self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/initialize",
+                {
+                    "session_id": session_id,
+                    "protocol_version": 1,
+                    "client_capabilities": {"tasks": True},
+                    "client_info": {"name": "agentcoin-test", "version": "0.1-test"},
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-streamed-task",
+                public_key=public_key,
+            )
+
+            _, task_request_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/task-request",
+                {
+                    "session_id": session_id,
+                    "task_id": "acp-streamed-task-1",
+                    "server_session_id": "server-session-streamed",
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-streamed-task",
+                public_key=public_key,
+            )
+
+            poll_deadline = time.time() + 5
+            poll_payload: dict[str, object] = {}
+            while time.time() < poll_deadline:
+                _, polled = self._identity_signed_post(
+                    f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                    {"session_id": session_id},
+                    private_key_path=key_path,
+                    principal="frontend-local-agent-acp-streamed-task",
+                    public_key=public_key,
+                )
+                poll_payload = polled
+                task_response_frame = polled.get("task_response_frame") or {}
+                parsed = task_response_frame.get("parsed") if isinstance(task_response_frame, dict) else None
+                if isinstance(parsed, dict) and parsed.get("result", {}).get("stopReason") == "end_turn":
+                    break
+                time.sleep(0.1)
+
+            self.assertEqual(poll_payload["session"]["protocol_state"], "task-response-captured")
+            self.assertEqual(
+                poll_payload["task_response_frame"]["parsed"]["id"],
+                task_request_payload["task_request_intent"]["request"]["id"],
+            )
+            self.assertEqual(
+                poll_payload["task_response_frame"]["parsed"]["result"]["stopReason"],
+                "end_turn",
+            )
+
+            apply_status, applied = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/apply-task-result",
+                {"session_id": session_id, "task_id": "acp-streamed-task-1"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-streamed-task",
+                public_key=public_key,
+            )
+            self.assertEqual(apply_status, HTTPStatus.OK)
+            self.assertEqual(applied["task"]["status"], "completed")
+            self.assertEqual(applied["result"]["output_text"], "Hello from streamed ACP")
+            self.assertEqual(
+                applied["result"]["runtime_execution"]["assistant_message"]["content"],
+                "Hello from streamed ACP",
+            )
+            self.assertEqual(
+                applied["result"]["runtime_execution"]["response"]["content"][0]["text"],
+                "Hello",
+            )
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "acp-streamed-task-1"][0]
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(
+                task["result"]["runtime_execution"]["assistant_message"]["content"],
+                "Hello from streamed ACP",
+            )
+        finally:
+            node.stop()
+
+    def test_local_agent_acp_apply_task_result_marks_task_failed_when_server_returns_error(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_local_agent_acp_failed_task",
+            "frontend-local-agent-acp-failed-task",
+        )
+        sleeper = Path(self.tempdir.name) / "fake_acp_agent_failed_task.py"
+        sleeper.write_text(
+            "import json, sys, time\n"
+            "line1 = sys.stdin.readline()\n"
+            "request1 = json.loads(line1)\n"
+            "response1 = {\n"
+            "    'id': request1.get('id'),\n"
+            "    'result': {\n"
+            "        'protocolVersion': request1.get('params', {}).get('protocolVersion'),\n"
+            "        'serverInfo': {'name': 'fake-acp-server', 'version': '0.1-test'},\n"
+            "        'serverCapabilities': {'tasks': True},\n"
+            "    },\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response1) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "line2 = sys.stdin.readline()\n"
+            "request2 = json.loads(line2)\n"
+            "response2 = {\n"
+            "    'id': request2.get('id'),\n"
+            "    'error': {'code': -32601, 'message': 'Method not found'},\n"
+            "}\n"
+            "sys.stdout.write(json.dumps(response2) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "try:\n"
+            "    time.sleep(30)\n"
+            "except KeyboardInterrupt:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        class FakeDiscovery:
+            system_name = "Windows"
+            is_wsl = False
+
+            @staticmethod
+            def discover() -> list[dict[str, object]]:
+                return [
+                    {
+                        "id": "github-copilot-cli",
+                        "family": "github-copilot",
+                        "title": "GitHub Copilot CLI",
+                        "type": "local-cli-agent",
+                        "publisher": "GitHub",
+                        "protocols": ["acp"],
+                        "agentcoin_compatibility": {
+                            "attachable_today": True,
+                            "preferred_integration": "acp-bridge",
+                            "integration_candidates": ["acp-bridge"],
+                            "launch_hint": [sys.executable, str(sleeper)],
+                        },
+                    }
+                ]
+
+        node = NodeHarness(
+            node_id="local-agent-acp-failed-task-node",
+            token="token-local-agent-acp-failed-task",
+            db_path=str(Path(self.tempdir.name) / "local-agent-acp-failed-task.db"),
+            capabilities=["worker"],
+        )
+        node.node.discovery = FakeDiscovery()
+        node.start()
+        try:
+            self._identity_signed_post(
+                f"{node.base_url}/v1/tasks",
+                {
+                    "id": "acp-failed-task-1",
+                    "kind": "review",
+                    "role": "reviewer",
+                    "payload": {"input": {"prompt": "Fail this ACP task request"}},
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-failed-task",
+                public_key=public_key,
+            )
+            _, register_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/register",
+                {"discovered_id": "github-copilot-cli"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-failed-task",
+                public_key=public_key,
+            )
+            registration = register_payload["item"]
+            _, open_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/open",
+                {"registration_id": registration["registration_id"]},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-failed-task",
+                public_key=public_key,
+            )
+            session_id = open_payload["session"]["session_id"]
+            self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/initialize",
+                {
+                    "session_id": session_id,
+                    "protocol_version": 1,
+                    "client_capabilities": {"tasks": True},
+                    "client_info": {"name": "agentcoin-test", "version": "0.1-test"},
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-failed-task",
+                public_key=public_key,
+            )
+
+            _, task_request_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/task-request",
+                {
+                    "session_id": session_id,
+                    "task_id": "acp-failed-task-1",
+                    "server_session_id": "server-session-failed",
+                    "dispatch": True,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-failed-task",
+                public_key=public_key,
+            )
+
+            poll_deadline = time.time() + 5
+            poll_payload: dict[str, object] = {}
+            while time.time() < poll_deadline:
+                _, polled = self._identity_signed_post(
+                    f"{node.base_url}/v1/discovery/local-agents/acp-session/poll",
+                    {"session_id": session_id},
+                    private_key_path=key_path,
+                    principal="frontend-local-agent-acp-failed-task",
+                    public_key=public_key,
+                )
+                poll_payload = polled
+                task_response_frame = polled.get("task_response_frame") or {}
+                parsed = task_response_frame.get("parsed") if isinstance(task_response_frame, dict) else None
+                if isinstance(parsed, dict) and parsed.get("error", {}).get("message") == "Method not found":
+                    break
+                time.sleep(0.1)
+
+            self.assertEqual(
+                poll_payload["task_response_frame"]["parsed"]["id"],
+                task_request_payload["task_request_intent"]["request"]["id"],
+            )
+
+            apply_status, applied = self._identity_signed_post(
+                f"{node.base_url}/v1/discovery/local-agents/acp-session/apply-task-result",
+                {"session_id": session_id, "task_id": "acp-failed-task-1"},
+                private_key_path=key_path,
+                principal="frontend-local-agent-acp-failed-task",
+                public_key=public_key,
+            )
+            self.assertEqual(apply_status, HTTPStatus.OK)
+            self.assertEqual(applied["task"]["status"], "failed")
+            self.assertEqual(applied["result"]["adapter"]["status"], "failed")
+            self.assertEqual(applied["result"]["error"], "Method not found")
+            self.assertEqual(applied["result"]["runtime_execution"]["error"]["code"], -32601)
+
+            _, tasks = self._get(f"{node.base_url}/v1/tasks")
+            task = [item for item in tasks["items"] if item["id"] == "acp-failed-task-1"][0]
+            self.assertEqual(task["status"], "failed")
+            self.assertEqual(task["result"]["error"], "Method not found")
         finally:
             node.stop()
 
@@ -2674,6 +3584,29 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertFalse(token_introspect_after["introspection"]["active"])
             self.assertEqual(token_introspect_after["introspection"]["status"], "consumed")
             self.assertIn("not active", token_introspect_after["introspection"]["reason"])
+
+            token_status_after_code, token_status_after_payload = self._identity_signed_get(
+                f"{node.base_url}/v1/payments/renter-tokens/status?token_id={renter_token['token_id']}",
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(token_status_after_code, HTTPStatus.OK)
+            self.assertEqual(token_status_after_payload["token"]["status"], "consumed")
+
+            token_introspect_status_payload_status, token_introspect_status_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/renter-tokens/introspect",
+                {
+                    "workflow_name": "premium-review",
+                    "renter_token": token_status_after_payload["token"],
+                },
+                private_key_path=key_path,
+                principal="frontend-local-renter-token",
+                public_key=public_key,
+            )
+            self.assertEqual(token_introspect_status_payload_status, HTTPStatus.OK)
+            self.assertFalse(token_introspect_status_payload["introspection"]["active"])
+            self.assertEqual(token_introspect_status_payload["introspection"]["status"], "consumed")
         finally:
             node.stop()
 
@@ -3349,7 +4282,8 @@ class NodeIntegrationTests(unittest.TestCase):
             signing_secret="payment-queue-worker-secret",
             payment_required_workflows=["premium-review"],
             onchain=onchain,
-            settlement_relay_poll_seconds=0.1,
+            settlement_relay_poll_seconds=0,
+            payment_relay_poll_seconds=0.1,
         )
         node.start()
         try:
@@ -3404,6 +4338,107 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(latest_status, HTTPStatus.OK)
             self.assertEqual(latest_payload["id"], completed["last_relay_id"])
             self.assertEqual(latest_payload["final_status"], "completed")
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_external_worker_loop_processes_payment_relay_queue_when_node_polling_is_disabled(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xpaymentqueueexternal1"})
+        rpc.start()
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_queue_external",
+            "frontend-local-payment-queue-external",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-queue-external-worker-node",
+            token="token-payment-queue-external-worker",
+            db_path=str(Path(self.tempdir.name) / "payment-queue-external-worker.db"),
+            capabilities=["worker"],
+            signing_secret="payment-queue-external-worker-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0,
+            payment_relay_poll_seconds=0,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "queue this proof through an external worker"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-queue-external",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-queue-external-worker",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xqueueproofexternal",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xcccc"},
+                    ],
+                    "rpc_url": rpc.url,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-queue-external",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            time.sleep(0.3)
+            pending = node.node.store.get_payment_relay_queue_item(item["id"])
+            assert pending is not None
+            self.assertEqual(pending["status"], "queued")
+            self.assertEqual(len(rpc.calls), 0)
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-payment-queue-external-worker",
+                worker_id="payment-relay-worker-1",
+                capabilities=[],
+                payment_relay_enabled=True,
+                payment_relay_max_items=1,
+            )
+            self.assertTrue(worker.run_once())
+
+            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertTrue(completed["last_relay_id"])
+            self.assertEqual(len(rpc.calls), 1)
+
+            latest_status, latest_payload = self._get_auth(
+                f"{node.base_url}/v1/payments/receipts/onchain-relays/latest?receipt_id={receipt['receipt_id']}",
+                "token-payment-queue-external-worker",
+            )
+            self.assertEqual(latest_status, HTTPStatus.OK)
+            self.assertEqual(latest_payload["id"], completed["last_relay_id"])
+            self.assertEqual(latest_payload["final_status"], "completed")
+            self.assertFalse(worker.run_once())
         finally:
             node.stop()
             rpc.stop()
@@ -3817,8 +4852,11 @@ class NodeIntegrationTests(unittest.TestCase):
             signing_secret="payment-auto-requeue-secret",
             payment_required_workflows=["premium-review"],
             onchain=onchain,
-            settlement_relay_poll_seconds=0.1,
+            settlement_relay_poll_seconds=0,
+            payment_relay_poll_seconds=0.1,
             payment_relay_auto_requeue_enabled=True,
+            payment_relay_auto_requeue_poll_seconds=0.1,
+            payment_relay_auto_requeue_retry_seconds=1.0,
             payment_relay_auto_requeue_delay_seconds=1,
             payment_relay_auto_requeue_max_requeues=1,
         )
@@ -3871,7 +4909,7 @@ class NodeIntegrationTests(unittest.TestCase):
             rpc.start()
             node.node.config.onchain.rpc_url = rpc.url
 
-            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=4.0)
+            completed = self._wait_for_payment_queue_item_status(node, item["id"], status="completed", timeout=6.0)
             self.assertEqual(completed["attempts"], 1)
             self.assertEqual(completed["payload"]["_auto_requeue_count"], 1)
             self.assertTrue(completed["last_relay_id"])
@@ -3885,10 +4923,150 @@ class NodeIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(ops_status, HTTPStatus.OK)
             self.assertTrue(ops_summary["auto_requeue_policy"]["enabled"])
+            self.assertEqual(ops_summary["auto_requeue_policy"]["poll_seconds"], 0.1)
+            self.assertEqual(ops_summary["auto_requeue_policy"]["retry_seconds"], 1.0)
+            self.assertEqual(ops_summary["auto_requeue_policy"]["max_items"], 20)
             self.assertEqual(ops_summary["auto_requeue_policy"]["max_requeues"], 1)
         finally:
             node.stop()
             rpc.stop()
+
+    def test_background_payment_auto_requeue_respects_retry_window(self) -> None:
+        node = NodeHarness(
+            node_id="payment-auto-requeue-retry-window-node",
+            token="token-payment-auto-requeue-retry-window",
+            db_path=str(Path(self.tempdir.name) / "payment-auto-requeue-retry-window.db"),
+            capabilities=["worker"],
+            signing_secret="payment-auto-requeue-retry-window-secret",
+            payment_relay_poll_seconds=0,
+            payment_relay_auto_requeue_enabled=True,
+            payment_relay_auto_requeue_poll_seconds=0.1,
+            payment_relay_auto_requeue_retry_seconds=1.0,
+            payment_relay_auto_requeue_max_items=5,
+            payment_relay_auto_requeue_delay_seconds=0,
+            payment_relay_auto_requeue_max_requeues=1,
+        )
+        node.start()
+        try:
+            queued = node.node.store.enqueue_payment_relay(
+                receipt_id="receipt-payment-auto-requeue-retry-window",
+                workflow_name="premium-review",
+                payload={"payment_receipt": {"receipt_id": "receipt-payment-auto-requeue-retry-window"}},
+                max_attempts=1,
+            )
+            running = node.node.store.claim_next_payment_relay_queue_item()
+            self.assertIsNotNone(running)
+            dead_letter = node.node.store.fail_payment_relay_queue_item(
+                queued["id"],
+                error="invalid relay payload",
+            )
+            self.assertIsNotNone(dead_letter)
+
+            first_checked = self._wait_until(
+                lambda: self._payment_queue_item_with_checked_at(node, queued["id"]),
+                timeout=3.0,
+                message="payment auto-requeue did not record an initial checked_at",
+            )
+            first_checked_at = str(first_checked["auto_requeue_checked_at"])
+            self.assertEqual(first_checked["status"], "dead-letter")
+
+            time.sleep(0.4)
+            stable_item = node.node.store.get_payment_relay_queue_item(queued["id"])
+            self.assertIsNotNone(stable_item)
+            self.assertEqual(stable_item["auto_requeue_checked_at"], first_checked_at)
+
+            refreshed = self._wait_until(
+                lambda: self._payment_queue_item_checked_after(node, queued["id"], first_checked_at),
+                timeout=4.0,
+                message="payment auto-requeue did not respect the retry window",
+            )
+            self.assertEqual(refreshed["status"], "dead-letter")
+        finally:
+            node.stop()
+
+    def test_payment_relay_auto_requeue_runs_when_queue_polling_is_disabled(self) -> None:
+        key_path, public_key = self._generate_identity(
+            Path(self.tempdir.name) / "id_client_payment_auto_requeue_only",
+            "frontend-local-payment-auto-requeue-only",
+        )
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url="http://127.0.0.1:1",
+            explorer_base_url="https://testnet.bscscan.com",
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            local_controller_address="0x3333333333333333333333333333333333333333",
+        )
+        node = NodeHarness(
+            node_id="payment-auto-requeue-only-node",
+            token="token-payment-auto-requeue-only",
+            db_path=str(Path(self.tempdir.name) / "payment-auto-requeue-only.db"),
+            capabilities=["worker"],
+            signing_secret="payment-auto-requeue-only-secret",
+            payment_required_workflows=["premium-review"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0,
+            payment_relay_poll_seconds=0,
+            payment_relay_auto_requeue_enabled=True,
+            payment_relay_auto_requeue_poll_seconds=0.1,
+            payment_relay_auto_requeue_retry_seconds=0.0,
+            payment_relay_auto_requeue_delay_seconds=0,
+            payment_relay_auto_requeue_max_requeues=1,
+        )
+        node.start()
+        try:
+            challenge_status, challenge_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/workflow/execute",
+                {"workflow_name": "premium-review", "input": {"prompt": "auto requeue without queue polling"}},
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-only",
+                public_key=public_key,
+            )
+            self.assertEqual(challenge_status, HTTPStatus.PAYMENT_REQUIRED)
+            challenge_id = challenge_payload["payment"]["challenge"]["challenge_id"]
+
+            issue_status, issued = self._post(
+                f"{node.base_url}/v1/payments/receipts/issue",
+                "token-payment-auto-requeue-only",
+                {
+                    "challenge_id": challenge_id,
+                    "payer": "did:agentcoin:ssh-ed25519:testpayer",
+                    "tx_hash": "0xpaymentautorequeueonly",
+                },
+            )
+            self.assertEqual(issue_status, HTTPStatus.CREATED)
+            receipt = issued["receipt"]
+
+            queued_status, queued_payload = self._identity_signed_post(
+                f"{node.base_url}/v1/payments/receipts/onchain-relay-queue",
+                {
+                    "workflow_name": "premium-review",
+                    "payment_receipt": receipt,
+                    "raw_transactions": [
+                        {"action": "submitPaymentProof", "raw_transaction": "0xaaaa"},
+                    ],
+                    "timeout_seconds": 0.2,
+                    "max_attempts": 1,
+                },
+                private_key_path=key_path,
+                principal="frontend-local-payment-auto-requeue-only",
+                public_key=public_key,
+            )
+            self.assertEqual(queued_status, HTTPStatus.CREATED)
+            item = queued_payload["item"]
+
+            processed = node.node.process_payment_relay_queue(max_items=1)
+            self.assertEqual(len(processed), 1)
+
+            dead_letter = self._wait_for_payment_queue_item_status(node, item["id"], status="dead-letter", timeout=3.0)
+            self.assertEqual(dead_letter["attempts"], 1)
+
+            requeued = self._wait_for_payment_queue_item_status(node, item["id"], status="queued", timeout=3.0)
+            self.assertEqual(requeued["attempts"], 0)
+            self.assertEqual(requeued["payload"]["_auto_requeue_count"], 1)
+        finally:
+            node.stop()
 
     def test_client_can_disable_and_reenable_payment_relay_auto_requeue(self) -> None:
         key_path, public_key = self._generate_identity(
@@ -3913,7 +5091,8 @@ class NodeIntegrationTests(unittest.TestCase):
             signing_secret="payment-auto-requeue-override-secret",
             payment_required_workflows=["premium-review"],
             onchain=onchain,
-            settlement_relay_poll_seconds=0.1,
+            settlement_relay_poll_seconds=0,
+            payment_relay_poll_seconds=0.1,
             payment_relay_auto_requeue_enabled=True,
             payment_relay_auto_requeue_delay_seconds=2,
             payment_relay_auto_requeue_max_requeues=2,
@@ -6196,11 +7375,11 @@ class NodeIntegrationTests(unittest.TestCase):
 
             failed_state = self._wait_until(
                 weak_network_failures_ready,
-                timeout=4.0,
+                timeout=6.0,
                 interval=0.1,
                 message="weak-network failure state did not materialize",
             )
-            self.assertEqual(failed_state["task"]["delivery_status"], "pending")
+            self.assertEqual(failed_state["task"]["delivery_status"], "remote-pending")
             self.assertEqual(failed_state["outbox"]["status"], "retrying")
             self.assertGreaterEqual(int(failed_state["outbox"]["attempts"] or 0), 1)
 
@@ -6509,7 +7688,12 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(finalized["action"]["action_type"], "workflow-finalize")
             self.assertEqual(finalized["action"]["receipt"]["auth_context"]["policy_tier"], "workflow-admin")
 
-            _, workflow_actions = self._get(f"{node.base_url}/v1/governance-actions?actor_id=root-workflow-auth")
+            _, workflow_actions = self._signed_get(
+                f"{node.base_url}/v1/governance-actions?actor_id=root-workflow-auth",
+                "token-workflow-auth",
+                key_id="workflow-admin:ops-1",
+                shared_secret="workflow-operator-secret",
+            )
             action_types = [item["action_type"] for item in workflow_actions["items"][:4]]
             self.assertEqual(
                 action_types,
@@ -6618,7 +7802,12 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(exported["action"]["receipt"]["auth_context"]["policy_tier"], "bridge-admin")
             self.assertEqual(exported["action"]["receipt"]["auth_context"]["mode"], "signed-hmac")
 
-            _, task_actions = self._get(f"{node.base_url}/v1/governance-actions?actor_id=bridge-auth-task")
+            _, task_actions = self._signed_get(
+                f"{node.base_url}/v1/governance-actions?actor_id=bridge-auth-task",
+                "token-bridge-auth",
+                key_id="bridge-admin:ops-1",
+                shared_secret="bridge-operator-secret",
+            )
             action_types = [item["action_type"] for item in task_actions["items"][:2]]
             self.assertEqual(action_types, ["bridge-export", "bridge-import"])
 
@@ -10569,6 +11758,210 @@ class NodeIntegrationTests(unittest.TestCase):
             node.stop()
             rpc.stop()
 
+    def test_background_settlement_reconciliation_runs_when_queue_polling_is_disabled(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        def receipt_response(payload: dict[str, object]) -> dict[str, object]:
+            params = list(payload.get("params") or [])
+            tx_hash = str(params[0] if params else "")
+            return {"transactionHash": tx_hash, "status": "0x1", "blockNumber": "0x24"}
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": receipt_response,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-background-reconcile",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-background-reconcile-node",
+            token="token-settlement-background-reconcile",
+            db_path=str(Path(self.tempdir.name) / "settlement-background-reconcile.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0,
+            settlement_relay_reconcile_poll_seconds=0.1,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-background-reconcile",
+                {
+                    "id": "settlement-background-reconcile-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 106,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-background-reconcile",
+                "settlement-background-reconcile-task-1",
+                "worker-settlement-background-reconcile",
+            )
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-background-reconcile",
+                {
+                    "task_id": "settlement-background-reconcile-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+
+            initial = node.node.store.get_settlement_relay(relay["relay_record_id"])
+            assert initial is not None
+
+            confirmed = self._wait_until(
+                lambda: (
+                    record
+                    if (record := node.node.store.get_settlement_relay(relay["relay_record_id"]))
+                    and record.get("reconciliation_status") == "confirmed"
+                    else None
+                ),
+                timeout=3.0,
+                message="settlement reconciliation did not run in background",
+            )
+            assert confirmed is not None
+            self.assertEqual(confirmed["reconciliation_status"], "confirmed")
+            self.assertIsNotNone(confirmed["reconciliation_checked_at"])
+            self.assertIsNotNone(confirmed["confirmed_at"])
+
+            _, replay = self._get(
+                f"{node.base_url}/v1/tasks/replay-inspect?task_id=settlement-background-reconcile-task-1"
+            )
+            self.assertEqual(replay["settlement_reconciliation"]["status"], "confirmed")
+
+            receipt_calls = [item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]
+            self.assertEqual(len(receipt_calls), 2)
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_background_settlement_reconciliation_respects_retry_window(self) -> None:
+        call_count = {"raw": 0}
+
+        def raw_tx_response(_payload: dict[str, object]) -> str:
+            call_count["raw"] += 1
+            return f"0x{call_count['raw']:064x}"
+
+        rpc = RpcHarness(
+            {
+                "eth_sendRawTransaction": raw_tx_response,
+                "eth_getTransactionReceipt": None,
+            }
+        )
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:relay-retry-window",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-retry-window-node",
+            token="token-settlement-retry-window",
+            db_path=str(Path(self.tempdir.name) / "settlement-retry-window.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0,
+            settlement_relay_reconcile_poll_seconds=0.1,
+            settlement_relay_reconcile_retry_seconds=1.0,
+            settlement_relay_reconcile_max_items=5,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-retry-window",
+                {
+                    "id": "settlement-retry-window-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 107,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-retry-window",
+                "settlement-retry-window-task-1",
+                "worker-settlement-retry-window",
+            )
+
+            _, relay_payload = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay",
+                "token-settlement-retry-window",
+                {
+                    "task_id": "settlement-retry-window-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa", "rpc_url": rpc.url},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb", "rpc_url": rpc.url},
+                    ],
+                },
+            )
+            relay = relay_payload["relay"]
+
+            first_unknown = self._wait_until(
+                lambda: (
+                    record
+                    if (record := node.node.store.get_settlement_relay(relay["relay_record_id"]))
+                    and record.get("reconciliation_status") == "unknown"
+                    and record.get("reconciliation_checked_at")
+                    else None
+                ),
+                timeout=3.0,
+                message="settlement background reconciliation did not produce initial unknown state",
+            )
+            assert first_unknown is not None
+
+            receipt_calls = [item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]
+            self.assertEqual(len(receipt_calls), 2)
+
+            time.sleep(0.35)
+            receipt_calls = [item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]
+            self.assertEqual(len(receipt_calls), 2)
+
+            repeated = self._wait_until(
+                lambda: [item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]
+                if len([item for item in rpc.calls if item.get("method") == "eth_getTransactionReceipt"]) >= 4
+                else None,
+                timeout=2.5,
+                message="settlement reconciliation did not retry after retry window elapsed",
+            )
+            self.assertGreaterEqual(len(repeated), 4)
+        finally:
+            node.stop()
+            rpc.stop()
+
     def test_onchain_settlement_relay_queue_persists_items(self) -> None:
         onchain = OnchainBindings(
             enabled=True,
@@ -10699,6 +12092,94 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(len(relay_history["items"]), 1)
             self.assertEqual(relay_history["items"][0]["id"], completed["last_relay_id"])
             self.assertEqual(relay_history["items"][0]["final_status"], "completed")
+        finally:
+            node.stop()
+            rpc.stop()
+
+    def test_external_worker_loop_processes_settlement_relay_queue_when_node_polling_is_disabled(self) -> None:
+        rpc = RpcHarness({"eth_sendRawTransaction": "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"})
+        rpc.start()
+        onchain = OnchainBindings(
+            enabled=True,
+            chain_id=97,
+            rpc_url=rpc.url,
+            bounty_escrow_address="0x1111111111111111111111111111111111111111",
+            did_registry_address="0x2222222222222222222222222222222222222222",
+            staking_pool_address="0x3333333333333333333333333333333333333333",
+            local_did="did:agentcoin:test:queue-external-worker",
+            local_controller_address="0x4444444444444444444444444444444444444444",
+            receipt_base_uri="ipfs://agentcoin-receipts",
+        )
+        node = NodeHarness(
+            node_id="settlement-external-worker-node",
+            token="token-settlement-external-worker",
+            db_path=str(Path(self.tempdir.name) / "settlement-external-worker.db"),
+            capabilities=["worker"],
+            onchain=onchain,
+            settlement_relay_poll_seconds=0,
+        )
+        node.start()
+        try:
+            self._post(
+                f"{node.base_url}/v1/tasks",
+                "token-settlement-external-worker",
+                {
+                    "id": "settlement-external-worker-task-1",
+                    "kind": "code",
+                    "role": "worker",
+                    "payload": {"x": 1},
+                    "attach_onchain_context": True,
+                    "onchain_job_id": 48,
+                },
+            )
+            self._complete_onchain_task(
+                node,
+                "token-settlement-external-worker",
+                "settlement-external-worker-task-1",
+                "worker-settlement-external-worker",
+            )
+            _, queued = self._post(
+                f"{node.base_url}/v1/onchain/settlement-relay-queue",
+                "token-settlement-external-worker",
+                {
+                    "task_id": "settlement-external-worker-task-1",
+                    "raw_transactions": [
+                        {"action": "submitWork", "raw_transaction": "0xaaaa"},
+                        {"action": "completeJob", "raw_transaction": "0xbbbb"},
+                    ],
+                    "rpc_url": rpc.url,
+                },
+            )
+            item = queued["item"]
+
+            time.sleep(0.3)
+            pending = node.node.store.get_settlement_relay_queue_item(item["id"])
+            assert pending is not None
+            self.assertEqual(pending["status"], "queued")
+            self.assertEqual(len(rpc.calls), 0)
+
+            worker = WorkerLoop(
+                node_url=node.base_url,
+                token="token-settlement-external-worker",
+                worker_id="settlement-relay-worker-1",
+                capabilities=[],
+                settlement_relay_enabled=True,
+                settlement_relay_max_items=1,
+            )
+            self.assertTrue(worker.run_once())
+
+            completed = self._wait_for_queue_item_status(node, item["id"], status="completed", timeout=3.0)
+            self.assertEqual(completed["attempts"], 1)
+            self.assertIsNotNone(completed["last_relay_id"])
+            self.assertEqual(len(rpc.calls), 2)
+
+            _, relay_history = self._get(
+                f"{node.base_url}/v1/onchain/settlement-relays?task_id=settlement-external-worker-task-1"
+            )
+            self.assertEqual(len(relay_history["items"]), 1)
+            self.assertEqual(relay_history["items"][0]["id"], completed["last_relay_id"])
+            self.assertEqual(relay_history["items"][0]["final_status"], "completed")
+            self.assertFalse(worker.run_once())
         finally:
             node.stop()
             rpc.stop()
@@ -12498,6 +13979,29 @@ class NodeIntegrationTests(unittest.TestCase):
                     "auth_token": "abc",
                     "prompt": "review this",
                     "temperature": 0,
+                    "top_p": 0.9,
+                    "presence_penalty": 0.1,
+                    "frequency_penalty": 0.2,
+                    "headers": {"x-openclaw-test": "1"},
+                    "structured_output": {
+                        "name": "openclaw_bind_schema",
+                        "schema": {
+                            "type": "object",
+                            "properties": {"summary": {"type": "string"}},
+                            "required": ["summary"],
+                        },
+                    },
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "openclaw_bind_schema",
+                            "schema": {
+                                "type": "object",
+                                "properties": {"summary": {"type": "string"}},
+                                "required": ["summary"],
+                            },
+                        },
+                    },
                 },
             )
             self.assertEqual(status, 200)
@@ -12506,11 +14010,21 @@ class NodeIntegrationTests(unittest.TestCase):
             self.assertEqual(payload["runtime"]["runtime"], "openai-chat")
             self.assertEqual(payload["runtime"]["endpoint"], "http://127.0.0.1:3000/v1/chat/completions")
             self.assertEqual(payload["runtime"]["model"], "openclaw/gateway")
+            self.assertEqual(payload["runtime"]["top_p"], 0.9)
+            self.assertEqual(payload["runtime"]["presence_penalty"], 0.1)
+            self.assertEqual(payload["runtime"]["frequency_penalty"], 0.2)
+            self.assertEqual(payload["runtime"]["headers"]["x-openclaw-test"], "1")
+            self.assertEqual(payload["runtime"]["structured_output"]["name"], "openclaw_bind_schema")
+            self.assertEqual(payload["runtime"]["response_format"]["type"], "json_schema")
 
             _, tasks = self._get(f"{node.base_url}/v1/tasks")
             task = [item for item in tasks["items"] if item["id"] == "openclaw-bind-task-1"][0]
             self.assertEqual(task["payload"]["_runtime"]["runtime"], "openai-chat")
             self.assertEqual(task["payload"]["_runtime"]["provider"], "openclaw-gateway")
+            self.assertEqual(task["payload"]["_runtime"]["top_p"], 0.9)
+            self.assertEqual(task["payload"]["_runtime"]["headers"]["x-openclaw-test"], "1")
+            self.assertEqual(task["payload"]["_runtime"]["structured_output"]["name"], "openclaw_bind_schema")
+            self.assertEqual(task["payload"]["_runtime"]["response_format"]["type"], "json_schema")
         finally:
             node.stop()
 

@@ -323,6 +323,7 @@ class NodeStore:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    auto_requeue_checked_at TEXT,
                     completed_at TEXT
                 );
                 """
@@ -365,6 +366,7 @@ class NodeStore:
             self._ensure_column(conn, "settlement_relays", "reconciliation_checked_at", "TEXT")
             self._ensure_column(conn, "settlement_relays", "confirmed_at", "TEXT")
             self._ensure_column(conn, "settlement_relays", "chain_receipts_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "payment_relay_queue", "auto_requeue_checked_at", "TEXT")
             self._ensure_column(conn, "peer_health", "sync_successes", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "peer_health", "sync_failures", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "peer_health", "delivery_successes", "INTEGER NOT NULL DEFAULT 0")
@@ -2042,6 +2044,39 @@ class NodeStore:
         items = self.list_settlement_relays(task_id=task_id, limit=1)
         return items[0] if items else None
 
+    def list_pending_settlement_relay_reconciliations(
+        self,
+        *,
+        limit: int = 20,
+        checked_before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, task_id, recommended_resolution, completed_steps, step_count,
+                       stopped_on_error, final_status, last_successful_index, next_index, retry_count,
+                       failure_category, resumed_from_relay_id, reconciliation_status,
+                       reconciliation_checked_at, confirmed_at, chain_receipts_json, relay_json, created_at
+                FROM settlement_relays
+                WHERE reconciliation_status NOT IN ('confirmed', 'reverted')
+                  AND (
+                    ? IS NULL
+                    OR reconciliation_checked_at IS NULL
+                                        OR reconciliation_checked_at < ?
+                  )
+                ORDER BY
+                    CASE WHEN reconciliation_checked_at IS NULL THEN 0 ELSE 1 END,
+                    COALESCE(reconciliation_checked_at, created_at) ASC,
+                    rowid ASC
+                LIMIT ?
+                """,
+                (checked_before, checked_before, max(1, int(limit or 1))),
+            ).fetchall()
+            return [self._settlement_relay_from_row(row) for row in rows]
+        finally:
+            conn.close()
+
     def update_settlement_relay_reconciliation(
         self,
         relay_id: str,
@@ -2633,9 +2668,9 @@ class NodeStore:
                 INSERT INTO payment_relay_queue
                 (
                     id, receipt_id, workflow_name, status, attempts, max_attempts, next_attempt_at,
-                    last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                    last_error, last_relay_id, payload_json, created_at, updated_at, auto_requeue_checked_at, completed_at
                 )
-                VALUES (?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, ?, ?, NULL)
+                VALUES (?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, ?, ?, NULL, NULL)
                 """,
                 (
                     queue_id,
@@ -2662,6 +2697,7 @@ class NodeStore:
                 "payload": payload,
                 "created_at": created_at,
                 "updated_at": created_at,
+                "auto_requeue_checked_at": None,
                 "completed_at": None,
             }
         finally:
@@ -2688,7 +2724,7 @@ class NodeStore:
             rows = conn.execute(
                 f"""
                 SELECT id, receipt_id, workflow_name, status, attempts, max_attempts, next_attempt_at,
-                       last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                      last_error, last_relay_id, payload_json, created_at, updated_at, auto_requeue_checked_at, completed_at
                 FROM payment_relay_queue
                 {where_clause}
                 ORDER BY created_at DESC, rowid DESC
@@ -2710,6 +2746,56 @@ class NodeStore:
                     "payload": json.loads(row["payload_json"] or "{}"),
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
+                    "auto_requeue_checked_at": row["auto_requeue_checked_at"],
+                    "completed_at": row["completed_at"],
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()
+
+    def list_pending_payment_relay_auto_requeues(
+        self,
+        *,
+        limit: int = 20,
+        checked_before: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, receipt_id, workflow_name, status, attempts, max_attempts, next_attempt_at,
+                       last_error, last_relay_id, payload_json, created_at, updated_at, auto_requeue_checked_at, completed_at
+                FROM payment_relay_queue
+                WHERE status = 'dead-letter'
+                  AND (
+                    ? IS NULL
+                    OR auto_requeue_checked_at IS NULL
+                    OR auto_requeue_checked_at < ?
+                  )
+                ORDER BY
+                    CASE WHEN auto_requeue_checked_at IS NULL THEN 0 ELSE 1 END,
+                    COALESCE(auto_requeue_checked_at, updated_at, created_at) ASC,
+                    rowid ASC
+                LIMIT ?
+                """,
+                (checked_before, checked_before, max(1, int(limit or 1))),
+            ).fetchall()
+            return [
+                {
+                    "id": row["id"],
+                    "receipt_id": row["receipt_id"],
+                    "workflow_name": row["workflow_name"],
+                    "status": row["status"],
+                    "attempts": int(row["attempts"] or 0),
+                    "max_attempts": int(row["max_attempts"] or 0),
+                    "next_attempt_at": row["next_attempt_at"],
+                    "last_error": row["last_error"],
+                    "last_relay_id": row["last_relay_id"],
+                    "payload": json.loads(row["payload_json"] or "{}"),
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "auto_requeue_checked_at": row["auto_requeue_checked_at"],
                     "completed_at": row["completed_at"],
                 }
                 for row in rows
@@ -2794,7 +2880,7 @@ class NodeStore:
             row = conn.execute(
                 """
                 SELECT id, receipt_id, workflow_name, status, attempts, max_attempts, next_attempt_at,
-                       last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                      last_error, last_relay_id, payload_json, created_at, updated_at, auto_requeue_checked_at, completed_at
                 FROM payment_relay_queue
                 WHERE id = ?
                 """,
@@ -2815,10 +2901,32 @@ class NodeStore:
                 "payload": json.loads(row["payload_json"] or "{}"),
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
+                "auto_requeue_checked_at": row["auto_requeue_checked_at"],
                 "completed_at": row["completed_at"],
             }
         finally:
             conn.close()
+
+    def update_payment_relay_auto_requeue_checked_at(
+        self,
+        queue_id: str,
+        *,
+        auto_requeue_checked_at: str | None,
+    ) -> dict[str, Any] | None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                UPDATE payment_relay_queue
+                SET auto_requeue_checked_at = ?
+                WHERE id = ?
+                """,
+                (auto_requeue_checked_at, queue_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return self.get_payment_relay_queue_item(queue_id)
 
     def update_payment_relay_queue_payload(self, queue_id: str, *, payload: dict[str, Any]) -> dict[str, Any] | None:
         now = utc_now()
@@ -2874,7 +2982,7 @@ class NodeStore:
             row = conn.execute(
                 """
                 SELECT id, receipt_id, workflow_name, status, attempts, max_attempts, next_attempt_at,
-                       last_error, last_relay_id, payload_json, created_at, updated_at, completed_at
+                                             last_error, last_relay_id, payload_json, created_at, updated_at, auto_requeue_checked_at, completed_at
                 FROM payment_relay_queue
                 WHERE status IN ('queued', 'retrying')
                   AND next_attempt_at <= ?
@@ -2913,6 +3021,7 @@ class NodeStore:
                 "payload": json.loads(row["payload_json"] or "{}"),
                 "created_at": row["created_at"],
                 "updated_at": now,
+                "auto_requeue_checked_at": row["auto_requeue_checked_at"],
                 "completed_at": None,
             }
         except Exception:
@@ -2967,6 +3076,7 @@ class NodeStore:
             status = "dead-letter" if attempts >= max_attempts else "retrying"
             delay_seconds = 0 if status == "dead-letter" else min(2 ** min(attempts, 6), 60)
             next_attempt_at = utc_after(delay_seconds)
+            auto_requeue_checked_at = now if status == "dead-letter" else None
             if payload is not None:
                 merged_payload = json.loads(row["payload_json"] or "{}")
                 merged_payload.update(dict(payload))
@@ -2983,10 +3093,21 @@ class NodeStore:
                     payload_json = ?,
                     next_attempt_at = ?,
                     updated_at = ?,
+                    auto_requeue_checked_at = ?,
                     completed_at = ?
                 WHERE id = ?
                 """,
-                (status, str(error or "")[:500], last_relay_id, payload_json, next_attempt_at, now, completed_at, queue_id),
+                (
+                    status,
+                    str(error or "")[:500],
+                    last_relay_id,
+                    payload_json,
+                    next_attempt_at,
+                    now,
+                    auto_requeue_checked_at,
+                    completed_at,
+                    queue_id,
+                ),
             )
             conn.commit()
         finally:
@@ -3027,6 +3148,7 @@ class NodeStore:
                     last_error = NULL,
                     payload_json = ?,
                     updated_at = ?,
+                    auto_requeue_checked_at = NULL,
                     completed_at = NULL
                 WHERE id = ? AND status = 'dead-letter'
                 """,
@@ -3086,10 +3208,11 @@ class NodeStore:
                 SET status = 'dead-letter',
                     last_error = 'cancelled',
                     updated_at = ?,
+                    auto_requeue_checked_at = ?,
                     completed_at = ?
                 WHERE id = ? AND status IN ('queued', 'paused', 'retrying')
                 """,
-                (now, now, queue_id),
+                (now, now, now, queue_id),
             )
             conn.commit()
         finally:
@@ -4234,6 +4357,100 @@ class NodeStore:
                 delivery_status=str(row["delivery_status"] or "local"),
                 required_capabilities=json.loads(row["required_capabilities_json"] or "[]"),
                 result=result or {},
+            )
+            self._insert_score_event(
+                conn,
+                actor_id=normalized_worker_id,
+                actor_type="worker",
+                task_id=normalized_task_id,
+                event_type=event_type,
+                points=points,
+                payload=event_payload,
+                created_at=now,
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def apply_external_task_failure(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        error_message: str,
+        result: dict[str, Any] | None = None,
+    ) -> bool:
+        normalized_task_id = str(task_id or "").strip()
+        normalized_worker_id = str(worker_id or "").strip()
+        normalized_error_message = str(error_message or "").strip() or "external task failed"
+        if not normalized_task_id or not normalized_worker_id:
+            return False
+        now = utc_now()
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT id, role, kind, workflow_id, branch, delivery_status, required_capabilities_json, status
+                FROM tasks
+                WHERE id = ?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if not row:
+                conn.commit()
+                return False
+            current_status = str(row["status"] or "").strip().lower()
+            if current_status in {"completed", "failed"}:
+                conn.commit()
+                return False
+            failure_result = dict(result or {})
+            if "error" not in failure_result:
+                failure_result["error"] = normalized_error_message
+            updated = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'failed',
+                    result_json = ?,
+                    last_error = ?,
+                    completed_at = ?,
+                    locked_by = NULL,
+                    lease_token = NULL,
+                    lease_expires_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(failure_result, ensure_ascii=False),
+                    normalized_error_message,
+                    now,
+                    now,
+                    normalized_task_id,
+                ),
+            ).rowcount
+            if not updated:
+                conn.commit()
+                return False
+            self._insert_execution_audit(
+                conn,
+                audit_id=str(uuid4()),
+                task_id=normalized_task_id,
+                worker_id=normalized_worker_id,
+                event_type="external-result",
+                status="failed",
+                payload={"result": failure_result, "error": normalized_error_message, "source": "local-acp-session"},
+                created_at=now,
+            )
+            event_type, points, event_payload = self._failure_score_event(
+                task_id=normalized_task_id,
+                worker_id=normalized_worker_id,
+                role=str(row["role"] or "worker"),
+                kind=str(row["kind"] or "generic"),
+                workflow_id=row["workflow_id"],
+                branch=str(row["branch"] or "main"),
+                delivery_status=str(row["delivery_status"] or "local"),
+                required_capabilities=json.loads(row["required_capabilities_json"] or "[]"),
+                error_message=normalized_error_message,
             )
             self._insert_score_event(
                 conn,

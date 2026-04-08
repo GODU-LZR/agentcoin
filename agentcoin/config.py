@@ -27,6 +27,13 @@ DEFAULT_POAW_SCORE_WEIGHTS: dict[str, int] = {
     "merged_bonus": 1,
 }
 
+DEFAULT_CAPABILITY_DESCRIPTIONS: dict[str, str] = {
+    "task-routing": "Routes tasks to available local or remote workers.",
+    "offline-queue": "Queues work and message delivery for offline-first execution.",
+    "agent-card": "Publishes node metadata and discovery endpoints.",
+    "secure-ingress": "Verifies signed requests and enforces loopback-safe local access.",
+}
+
 
 @dataclass(slots=True)
 class PeerConfig:
@@ -236,6 +243,11 @@ class NodeConfig:
     sync_interval_seconds: int = 15
     settlement_relay_poll_seconds: float = 2.0
     settlement_relay_max_in_flight: int = 1
+    settlement_relay_reconcile_poll_seconds: float = 0.0
+    settlement_relay_reconcile_retry_seconds: float = 30.0
+    settlement_relay_reconcile_max_items: int = 20
+    payment_relay_poll_seconds: float = 2.0
+    payment_relay_max_in_flight: int = 1
     max_body_bytes: int = 262144
     outbox_max_attempts: int = 5
     task_retry_limit: int = 3
@@ -249,6 +261,9 @@ class NodeConfig:
     payment_receipt_ttl_seconds: int = 3600
     renter_token_ttl_seconds: int = 1800
     payment_relay_auto_requeue_enabled: bool = False
+    payment_relay_auto_requeue_poll_seconds: float = 2.0
+    payment_relay_auto_requeue_retry_seconds: float = 30.0
+    payment_relay_auto_requeue_max_items: int = 20
     payment_relay_auto_requeue_delay_seconds: int = 30
     payment_relay_auto_requeue_max_requeues: int = 1
     challenge_bond_required_wei: int = 0
@@ -348,6 +363,8 @@ class NodeConfig:
                 "local_agent_acp_session_close": f"{self.base_url}/v1/discovery/local-agents/acp-session/close",
                 "local_agent_acp_session_initialize": f"{self.base_url}/v1/discovery/local-agents/acp-session/initialize",
                 "local_agent_acp_session_poll": f"{self.base_url}/v1/discovery/local-agents/acp-session/poll",
+                "local_agent_acp_session_list": f"{self.base_url}/v1/discovery/local-agents/acp-session/list",
+                "local_agent_acp_session_load": f"{self.base_url}/v1/discovery/local-agents/acp-session/load",
                 "local_agent_acp_session_task_request": f"{self.base_url}/v1/discovery/local-agents/acp-session/task-request",
                 "local_agent_acp_session_apply_task_result": f"{self.base_url}/v1/discovery/local-agents/acp-session/apply-task-result",
                 "auth_challenge": f"{self.base_url}/v1/auth/challenge",
@@ -370,6 +387,7 @@ class NodeConfig:
                 "payment_receipt_onchain_relay_latest_failed": f"{self.base_url}/v1/payments/receipts/onchain-relays/latest-failed",
                 "payment_ops_summary": f"{self.base_url}/v1/payments/ops/summary",
                 "payment_receipt_onchain_relay_queue": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue",
+                "payment_receipt_onchain_relay_queue_process": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/process",
                 "payment_receipt_onchain_relay_queue_summary": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/summary",
                 "payment_receipt_onchain_relay_queue_pause": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/pause",
                 "payment_receipt_onchain_relay_queue_resume": f"{self.base_url}/v1/payments/receipts/onchain-relay-queue/resume",
@@ -418,8 +436,11 @@ class NodeConfig:
                 "onchain_settlement_rpc_plan": f"{self.base_url}/v1/onchain/settlement-rpc-plan" if self.onchain.enabled else "",
                 "onchain_settlement_raw_bundle": f"{self.base_url}/v1/onchain/settlement-raw-bundle" if self.onchain.enabled else "",
                 "onchain_settlement_relay": f"{self.base_url}/v1/onchain/settlement-relay" if self.onchain.enabled else "",
+                "onchain_settlement_relay_queue": f"{self.base_url}/v1/onchain/settlement-relay-queue" if self.onchain.enabled else "",
+                "onchain_settlement_relay_queue_process": f"{self.base_url}/v1/onchain/settlement-relay-queue/process" if self.onchain.enabled else "",
                 "onchain_settlement_relays": f"{self.base_url}/v1/onchain/settlement-relays" if self.onchain.enabled else "",
                 "onchain_settlement_relay_latest": f"{self.base_url}/v1/onchain/settlement-relays/latest" if self.onchain.enabled else "",
+                "onchain_settlement_relay_reconcile": f"{self.base_url}/v1/onchain/settlement-relays/reconcile" if self.onchain.enabled else "",
                 "onchain_settlement_relay_replay": f"{self.base_url}/v1/onchain/settlement-relays/replay" if self.onchain.enabled else "",
                 "onchain_rpc_payload": f"{self.base_url}/v1/onchain/rpc-payload" if self.onchain.enabled else "",
                 "onchain_rpc_plan": f"{self.base_url}/v1/onchain/rpc-plan" if self.onchain.enabled else "",
@@ -471,6 +492,25 @@ class NodeConfig:
 
     def scoped_bearer_tokens_view(self) -> list[dict[str, Any]]:
         return [bearer.to_dict() for bearer in self.scoped_bearer_tokens]
+
+    def capabilities_view(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for capability in self.capabilities:
+            normalized = str(capability or "").strip()
+            if not normalized:
+                continue
+            items.append(
+                {
+                    "id": normalized,
+                    "name": normalized.replace("-", " ").title(),
+                    "description": DEFAULT_CAPABILITY_DESCRIPTIONS.get(
+                        normalized,
+                        f"{normalized.replace('-', ' ')} capability exposed by this node.",
+                    ),
+                    "kind": "node-capability",
+                }
+            )
+        return items
 
     def services_view(self) -> list[dict[str, Any]]:
         return [service.to_public_dict() for service in self.services if service.enabled]

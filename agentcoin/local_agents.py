@@ -51,6 +51,10 @@ class LocalAgentManager:
             return [dict(item) for item in self._acp_stdout_frames.get(registration_id, [])]
 
     @staticmethod
+    def _iso_timestamp_sort_key(value: Any) -> str:
+        return str(value or "").replace("Z", "+00:00")
+
+    @staticmethod
     def _summarize_latest_server_frame(frames: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not frames:
             return None
@@ -77,6 +81,89 @@ class LocalAgentManager:
                 matched["parsed"] = dict(matched_parsed)
             return matched
         return None
+
+    @staticmethod
+    def _notification_frames_for_method(
+        frames: list[dict[str, Any]],
+        method_name: str,
+        *,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_method_name = str(method_name or "").strip()
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_method_name:
+            return []
+        matches: list[dict[str, Any]] = []
+        for frame in frames:
+            parsed = frame.get("parsed")
+            if not isinstance(parsed, dict):
+                continue
+            if str(parsed.get("method") or "").strip() != normalized_method_name:
+                continue
+            if normalized_session_id:
+                params = parsed.get("params")
+                if not isinstance(params, dict):
+                    continue
+                if str(params.get("sessionId") or params.get("session_id") or "").strip() != normalized_session_id:
+                    continue
+            matched = dict(frame)
+            matched_parsed = matched.get("parsed")
+            if isinstance(matched_parsed, dict):
+                matched["parsed"] = dict(matched_parsed)
+            matches.append(matched)
+        return matches
+
+    @staticmethod
+    def _normalize_listed_sessions(frame: dict[str, Any] | None) -> tuple[list[dict[str, Any]], str | None]:
+        if not isinstance(frame, dict):
+            return [], None
+        parsed = frame.get("parsed")
+        if not isinstance(parsed, dict):
+            return [], None
+        result = parsed.get("result")
+        if not isinstance(result, dict):
+            return [], None
+        sessions: list[dict[str, Any]] = []
+        for item in list(result.get("sessions") or []):
+            if not isinstance(item, dict):
+                continue
+            session_id = str(item.get("sessionId") or item.get("session_id") or "").strip()
+            if not session_id:
+                continue
+            normalized_item = dict(item)
+            normalized_item["sessionId"] = session_id
+            cwd = str(item.get("cwd") or "").strip()
+            if cwd:
+                normalized_item["cwd"] = cwd
+            title = str(item.get("title") or "").strip()
+            if title:
+                normalized_item["title"] = title
+            updated_at = str(item.get("updatedAt") or item.get("updated_at") or "").strip()
+            if updated_at:
+                normalized_item["updatedAt"] = updated_at
+            sessions.append(normalized_item)
+        next_cursor = str(result.get("nextCursor") or result.get("next_cursor") or "").strip() or None
+        return sessions, next_cursor
+
+    @staticmethod
+    def _normalize_acp_protocol_version(protocol_version: Any) -> int | float:
+        if isinstance(protocol_version, bool):
+            raise ValueError("protocol_version must be numeric")
+        if isinstance(protocol_version, (int, float)):
+            return protocol_version
+        normalized = str(protocol_version or "").strip()
+        if not normalized:
+            return 1
+        if normalized.lower() == "0.1-preview":
+            return 1
+        try:
+            return int(normalized)
+        except ValueError:
+            pass
+        try:
+            return float(normalized)
+        except ValueError as exc:
+            raise ValueError("protocol_version must be numeric or a supported ACP preview alias") from exc
 
     @staticmethod
     def _turns_with_responses(
@@ -238,8 +325,66 @@ class LocalAgentManager:
                 record["handshake_state"] = "initialize-response-captured"
                 record["protocol_state"] = "server-response-captured"
                 record["initialize_response_captured"] = True
-                if not record.get("initialize_response_received_at"):
-                    record["initialize_response_received_at"] = initialize_response_frame.get("received_at")
+                record["initialize_response_received_at"] = initialize_response_frame.get("received_at")
+        session_list_response_frame = self._frame_for_request_id(frames, record.get("session_list_request_id"))
+        if session_list_response_frame:
+            record["session_list_response_frame"] = session_list_response_frame
+            listed_sessions, next_cursor = self._normalize_listed_sessions(session_list_response_frame)
+            record["listed_server_sessions"] = listed_sessions
+            record["session_list_next_cursor"] = next_cursor
+            if bool(record.get("session_list_sent")):
+                record["protocol_state"] = "session-list-response-captured"
+                record["session_list_response_captured"] = True
+                record["session_list_response_received_at"] = session_list_response_frame.get("received_at")
+        elif bool(record.get("session_list_sent")) and str(record.get("session_list_request_id") or "").strip():
+            record.pop("session_list_response_frame", None)
+            record["session_list_response_captured"] = False
+            record["session_list_response_received_at"] = None
+            record["protocol_state"] = "session-list-response-pending"
+        session_load_response_frame = self._frame_for_request_id(frames, record.get("session_load_request_id"))
+        if session_load_response_frame:
+            record["session_load_response_frame"] = session_load_response_frame
+            if bool(record.get("session_load_sent")):
+                record["protocol_state"] = "session-load-response-captured"
+                record["session_load_response_captured"] = True
+                record["session_load_response_received_at"] = session_load_response_frame.get("received_at")
+        elif bool(record.get("session_load_sent")) and str(record.get("session_load_request_id") or "").strip():
+            record.pop("session_load_response_frame", None)
+            record["session_load_response_captured"] = False
+            record["session_load_response_received_at"] = None
+            record["protocol_state"] = "session-load-response-pending"
+        loaded_server_session_id = str(record.get("loaded_server_session_id") or "").strip()
+        if loaded_server_session_id:
+            loaded_session_updates = self._notification_frames_for_method(
+                frames,
+                "session/update",
+                session_id=loaded_server_session_id,
+            )
+            task_frame_start = max(0, int(record.get("task_request_frame_start") or 0))
+            task_response_frame = self._frame_for_request_id(frames, record.get("task_request_id"))
+            task_response_received_at = ""
+            if task_response_frame:
+                task_response_received_at = str(task_response_frame.get("received_at") or "")
+            relevant_updates: list[dict[str, Any]] = []
+            for update_frame in loaded_session_updates:
+                parsed_update = update_frame.get("parsed")
+                if not isinstance(parsed_update, dict):
+                    continue
+                received_at = str(update_frame.get("received_at") or "")
+                if task_frame_start and self._iso_timestamp_sort_key(received_at) < self._iso_timestamp_sort_key(
+                    record.get("task_request_sent_at")
+                ):
+                    continue
+                if task_response_received_at and self._iso_timestamp_sort_key(received_at) > self._iso_timestamp_sort_key(
+                    task_response_received_at
+                ):
+                    continue
+                relevant_updates.append(update_frame)
+            if not relevant_updates:
+                relevant_updates = loaded_session_updates
+            record["loaded_session_update_count"] = len(relevant_updates)
+            if relevant_updates:
+                record["latest_loaded_session_update"] = relevant_updates[-1]
         task_response_frame = self._frame_for_request_id(frames, record.get("task_request_id"))
         if task_response_frame:
             record["task_response_frame"] = task_response_frame
@@ -247,8 +392,13 @@ class LocalAgentManager:
                 record["protocol_state"] = "task-response-captured"
                 record["task_response_captured"] = True
                 record["latest_task_response_frame"] = task_response_frame
-                if not record.get("task_response_received_at"):
-                    record["task_response_received_at"] = task_response_frame.get("received_at")
+                record["task_response_received_at"] = task_response_frame.get("received_at")
+        elif bool(record.get("task_request_sent")) and str(record.get("task_request_id") or "").strip():
+            record.pop("task_response_frame", None)
+            record.pop("latest_task_response_frame", None)
+            record["task_response_captured"] = False
+            record["task_response_received_at"] = None
+            record["protocol_state"] = "task-response-pending"
         record["summary"] = self._session_summary(record, list(record.get("turns") or []), frames)
         return dict(record)
 
@@ -256,11 +406,12 @@ class LocalAgentManager:
         self,
         session_id: str,
         *,
-        protocol_version: str,
+        protocol_version: Any,
         client_capabilities: dict[str, Any] | None = None,
         client_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         client_capabilities = dict(client_capabilities or {})
+        normalized_protocol_version = self._normalize_acp_protocol_version(protocol_version)
         normalized_client_info = {
             "name": str((client_info or {}).get("name") or "agentcoin").strip() or "agentcoin",
             "title": str((client_info or {}).get("title") or "AgentCoin Local ACP Bridge").strip() or "AgentCoin Local ACP Bridge",
@@ -271,7 +422,7 @@ class LocalAgentManager:
             "id": request_id,
             "method": "initialize",
             "params": {
-                "protocolVersion": protocol_version,
+                "protocolVersion": normalized_protocol_version,
                 "clientCapabilities": client_capabilities,
                 "clientInfo": normalized_client_info,
             },
@@ -281,7 +432,7 @@ class LocalAgentManager:
             "session_id": session_id,
             "transport": "stdio",
             "wire_format": "ndjson-json-candidate",
-            "protocol_version": protocol_version,
+            "protocol_version": normalized_protocol_version,
             "client_capabilities": client_capabilities,
             "client_info": normalized_client_info,
             "request": request,
@@ -296,7 +447,7 @@ class LocalAgentManager:
         self,
         session_id: str,
         *,
-        protocol_version: str = "0.1-preview",
+        protocol_version: Any = 1,
         client_capabilities: dict[str, Any] | None = None,
         client_info: dict[str, Any] | None = None,
         dispatch: bool = False,
@@ -347,6 +498,188 @@ class LocalAgentManager:
         stored["summary"] = self._session_summary(stored, list(stored.get("turns") or []), [])
         return {"session": dict(stored), "initialize_intent": intent, "dispatched": bool(dispatch)}
 
+    def _build_acp_session_list_intent(
+        self,
+        session_id: str,
+        *,
+        cwd: str | None = None,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        request_id = str(uuid4())
+        params: dict[str, Any] = {}
+        normalized_cwd = str(cwd or "").strip()
+        normalized_cursor = str(cursor or "").strip()
+        if normalized_cwd:
+            params["cwd"] = normalized_cwd
+        if normalized_cursor:
+            params["cursor"] = normalized_cursor
+        request = {
+            "id": request_id,
+            "method": "session/list",
+            "params": params,
+        }
+        return {
+            "kind": "agentcoin-acp-session-list-intent",
+            "session_id": session_id,
+            "transport": "stdio",
+            "wire_format": "ndjson-json-candidate",
+            "request": request,
+            "filters": {
+                "cwd": normalized_cwd or None,
+                "cursor": normalized_cursor or None,
+            },
+            "notes": [
+                "AgentCoin requests ACP session discovery over stdio using the session/list method.",
+                "Returned session metadata is captured and surfaced in the local ACP workspace.",
+            ],
+            "generated_at": utc_now(),
+        }
+
+    def prepare_acp_session_list(
+        self,
+        session_id: str,
+        *,
+        cwd: str | None = None,
+        cursor: str | None = None,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        session = self.get_acp_session(session_id)
+        if not session:
+            raise ValueError("acp session not found")
+        if str(session.get("status") or "") != "open":
+            raise ValueError("acp session is not open")
+        registration_id = str(session.get("registration_id") or "")
+        process = self._processes.get(registration_id)
+        if process is None or process.stdin is None:
+            raise ValueError("acp session transport is not writable")
+        intent = self._build_acp_session_list_intent(session_id, cwd=cwd, cursor=cursor)
+        stored = self._acp_sessions[session_id]
+        stored["last_session_list_intent"] = intent
+        stored["session_list_request_id"] = str(intent.get("request", {}).get("id") or "")
+        stored["last_client_frame"] = dict(intent.get("request") or {})
+        stored["updated_at"] = utc_now()
+        turns = list(stored.get("turns") or [])
+        turns.append(
+            {
+                "turn_id": str(uuid4()),
+                "phase": "session-list",
+                "request": dict(intent.get("request") or {}),
+                "request_sent": bool(dispatch),
+                "requested_at": utc_now(),
+            }
+        )
+        stored["turns"] = turns
+        if dispatch:
+            encoded = json.dumps(intent["request"], ensure_ascii=False, separators=(",", ":")) + "\n"
+            process.stdin.write(encoded)
+            process.stdin.flush()
+            stored["session_list_sent"] = True
+            stored["session_list_sent_at"] = utc_now()
+            stored["protocol_state"] = "session-list-response-pending"
+        else:
+            stored["session_list_sent"] = False
+            stored["protocol_state"] = "session-list-dispatch-pending"
+        stored["summary"] = self._session_summary(stored, list(stored.get("turns") or []), [])
+        return {"session": dict(stored), "session_list_intent": intent, "dispatched": bool(dispatch)}
+
+    def _build_acp_session_load_intent(
+        self,
+        session_id: str,
+        *,
+        server_session_id: str,
+        cwd: str,
+        mcp_servers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        request_id = str(uuid4())
+        request = {
+            "id": request_id,
+            "method": "session/load",
+            "params": {
+                "sessionId": server_session_id,
+                "cwd": cwd,
+                "mcpServers": [dict(item) for item in list(mcp_servers or []) if isinstance(item, dict)],
+            },
+        }
+        return {
+            "kind": "agentcoin-acp-session-load-intent",
+            "session_id": session_id,
+            "server_session_id": server_session_id,
+            "transport": "stdio",
+            "wire_format": "ndjson-json-candidate",
+            "request": request,
+            "notes": [
+                "AgentCoin resumes a remote ACP session using the session/load method.",
+                "Conversation replay is captured from session/update notifications on the same server session id.",
+            ],
+            "generated_at": utc_now(),
+        }
+
+    def prepare_acp_session_load(
+        self,
+        session_id: str,
+        *,
+        server_session_id: str,
+        cwd: str,
+        mcp_servers: list[dict[str, Any]] | None = None,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        session = self.get_acp_session(session_id)
+        if not session:
+            raise ValueError("acp session not found")
+        if str(session.get("status") or "") != "open":
+            raise ValueError("acp session is not open")
+        registration_id = str(session.get("registration_id") or "")
+        process = self._processes.get(registration_id)
+        if process is None or process.stdin is None:
+            raise ValueError("acp session transport is not writable")
+        normalized_server_session_id = str(server_session_id or "").strip()
+        if not normalized_server_session_id:
+            raise ValueError("server_session_id is required")
+        normalized_cwd = str(cwd or "").strip()
+        if not normalized_cwd:
+            raise ValueError("cwd is required")
+        intent = self._build_acp_session_load_intent(
+            session_id,
+            server_session_id=normalized_server_session_id,
+            cwd=normalized_cwd,
+            mcp_servers=mcp_servers,
+        )
+        stored = self._acp_sessions[session_id]
+        stored["last_session_load_intent"] = intent
+        stored["session_load_request_id"] = str(intent.get("request", {}).get("id") or "")
+        stored["loaded_server_session_id"] = normalized_server_session_id
+        stored["last_client_frame"] = dict(intent.get("request") or {})
+        stored.pop("session_load_response_frame", None)
+        stored["session_load_response_captured"] = False
+        stored["session_load_response_received_at"] = None
+        stored["loaded_session_update_count"] = 0
+        stored.pop("latest_loaded_session_update", None)
+        stored["updated_at"] = utc_now()
+        turns = list(stored.get("turns") or [])
+        turns.append(
+            {
+                "turn_id": str(uuid4()),
+                "phase": "session-load",
+                "request": dict(intent.get("request") or {}),
+                "request_sent": bool(dispatch),
+                "server_session_id": normalized_server_session_id,
+                "requested_at": utc_now(),
+            }
+        )
+        stored["turns"] = turns
+        if dispatch:
+            encoded = json.dumps(intent["request"], ensure_ascii=False, separators=(",", ":")) + "\n"
+            process.stdin.write(encoded)
+            process.stdin.flush()
+            stored["session_load_sent"] = True
+            stored["session_load_sent_at"] = utc_now()
+            stored["protocol_state"] = "session-load-response-pending"
+        else:
+            stored["session_load_sent"] = False
+            stored["protocol_state"] = "session-load-dispatch-pending"
+        stored["summary"] = self._session_summary(stored, list(stored.get("turns") or []), [])
+        return {"session": dict(stored), "session_load_intent": intent, "dispatched": bool(dispatch)}
+
     def _build_acp_task_request_intent(
         self,
         session_id: str,
@@ -358,7 +691,7 @@ class LocalAgentManager:
         request_id = str(uuid4())
         request = {
             "id": request_id,
-            "method": "prompt",
+            "method": "session/prompt",
             "params": {
                 "sessionId": server_session_id,
                 "prompt": [{"type": "text", "text": prompt_text}],
@@ -379,8 +712,8 @@ class LocalAgentManager:
                 "prompt_text_source": "task",
             },
             "notes": [
-                "AgentCoin currently maps a local task into a best-effort ACP prompt request candidate.",
-                "This is an ACP task-request skeleton and does not yet validate or interpret full ACP task semantics.",
+                "AgentCoin maps a local task into an ACP session/prompt request candidate.",
+                "This is still a thin ACP prompt bridge and does not yet implement client-side ACP tool or permission handlers.",
             ],
             "generated_at": utc_now(),
         }
@@ -409,16 +742,29 @@ class LocalAgentManager:
         normalized_prompt_text = str(prompt_text or "").strip()
         if not normalized_prompt_text:
             raise ValueError("prompt_text is required")
+        stored = self._acp_sessions[session_id]
+        loaded_server_session_id = str(stored.get("loaded_server_session_id") or "").strip()
+        if (
+            loaded_server_session_id
+            and normalized_server_session_id == loaded_server_session_id
+            and bool(stored.get("session_load_sent"))
+            and not bool(stored.get("session_load_response_captured"))
+        ):
+            raise ValueError("acp session/load response is still pending for this server_session_id")
         intent = self._build_acp_task_request_intent(
             session_id,
             server_session_id=normalized_server_session_id,
             prompt_text=normalized_prompt_text,
             task_ref=task_ref,
         )
-        stored = self._acp_sessions[session_id]
         stored["last_task_request_intent"] = intent
         stored["task_request_id"] = str(intent.get("request", {}).get("id") or "")
         stored["last_client_frame"] = dict(intent.get("request") or {})
+        stored["task_request_frame_start"] = len(self._captured_frames_for_registration(registration_id))
+        stored.pop("task_response_frame", None)
+        stored.pop("latest_task_response_frame", None)
+        stored["task_response_captured"] = False
+        stored["task_response_received_at"] = None
         stored["updated_at"] = utc_now()
         turns = list(stored.get("turns") or [])
         turns.append(
@@ -594,7 +940,10 @@ class LocalAgentManager:
             if str(existing.get("registration_id") or "") != registration_id:
                 continue
             if str(existing.get("status") or "") == "open":
-                return existing
+                return {
+                    "session": existing,
+                    "reused_existing_session": True,
+                }
             self._acp_sessions.pop(existing_id, None)
         if str(registration.get("status") or "") != "running":
             registration = self.start_registration(registration_id)
@@ -610,18 +959,21 @@ class LocalAgentManager:
             "handshake_state": "transport-ready",
             "protocol_state": "initialize-pending",
             "initialize_sent": False,
-            "attachable_today": False,
+            "attachable_today": bool(registration.get("attachable_today")),
             "turns": [],
             "notes": [
-                "ACP process transport is ready, but AgentCoin has not yet exchanged ACP protocol messages.",
-                "This session is a transport and lifecycle skeleton, not a full ACP bridge.",
+                "ACP process transport is ready for initialize, session/list, session/load, and session/prompt dispatch.",
+                "AgentCoin still lacks client-side ACP tool, file-system, terminal, and permission handlers.",
             ],
             "opened_at": utc_now(),
             "updated_at": utc_now(),
         }
         session["summary"] = self._session_summary(session, [], [])
         self._acp_sessions[session_id] = session
-        return dict(session)
+        return {
+            "session": dict(session),
+            "reused_existing_session": False,
+        }
 
     def close_acp_session(self, session_id: str) -> dict[str, Any]:
         session = self.get_acp_session(session_id)

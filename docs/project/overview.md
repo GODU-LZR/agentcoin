@@ -17,7 +17,7 @@ The current repository contains:
 - local governance primitives for policy violations, reputation, and quarantine
 - an on-chain scaffold for DID, staking, and bounty escrow on BNB Chain
 - a node-side on-chain integration skeleton for task binding, signed submission receipts, and JSON-RPC payload building
-- a durable background settlement relay worker with queueing persistence and failure reconciliation
+- a durable background settlement relay worker, available as the node loop or external `agentcoin-worker --settlement-relay`, with queueing persistence plus bounded, independently tunable reconciliation polling
 - live JSON-RPC planning and raw transaction relay for external signers and wallets
 - a first runtime-adapter layer for HTTP and CLI agent execution
 - a lightweight semantic layer for cards and task envelopes
@@ -34,6 +34,9 @@ The current repository contains:
 - service-usage reconciliation now compares renter-token consumption against receipt state and payment-proof relay progress
 - service-usage reconciliation now also emits `recommended_actions`, so the frontend can drive CTA buttons from backend state instead of inventing its own transition rules
 - frontend integration guidance is documented in [frontend-copilot-backend-integration.md](C:/Users/Twist/Desktop/agentcoin/docs/project/frontend-copilot-backend-integration.md)
+- current remote deployment readiness and the explicit 2026-04-08 no-go decision are documented in [remote-deployment-readiness.md](C:/Users/Twist/Desktop/agentcoin/docs/project/remote-deployment-readiness.md)
+- the windowed ASCII workbench, locale-purity constraints, preserved ASCII agent art, and unified alerting model are documented in [frontend-ascii-multilingual-plan.md](C:/Users/Twist/Desktop/agentcoin/docs/project/frontend-ascii-multilingual-plan.md)
+- the current frontend execution roadmap after the shell and five-window baseline is documented in [frontend-next-slice-roadmap.md](C:/Users/Twist/Desktop/agentcoin/docs/project/frontend-next-slice-roadmap.md)
 - an ASCII terminal workbench is now available through `agentcoin-ascii`, mirroring the web workspace's attach / discovery / payment / reconciliation flow for local operator testing
 - standardized payment quote and proof fields across 402 challenges, receipts, and introspection
 - signed payment attestations for receipt issue and introspection responses
@@ -41,11 +44,11 @@ The current repository contains:
 - signed payment on-chain RPC plan projection for external signer or wallet handoff
 - payment raw-bundle and relay skeleton for externally signed proof submission
 - persisted payment relay history and latest-relay lookup by receipt id
-- background payment relay queue processing for deferred proof submission and operator replay
+- background payment relay queue processing, available as the node loop or external `agentcoin-worker --payment-relay`, for deferred proof submission and operator replay
 - payment relay queue pause, resume, requeue, cancel, and delete controls for local operator or browser workflows
 - payment relay diagnostics including queue summary, latest failed relay lookup, and signed replay-helper payload generation
 - signed payment ops summary payload for browser or operator dashboards
-- optional background auto-requeue for transient payment proof dead-letter failures
+- optional background auto-requeue for transient payment proof dead-letter failures, with independently tunable poll cadence, retry windows, and candidate batch limits
 - per-item manual disable and re-enable controls for payment relay auto-requeue governance
 - queue and ops summaries now expose suppression reasons plus the latest manual auto-requeue override
 - a loopback-only local agent discovery endpoint can now scan for GitHub Copilot CLI, Claude Code CLI, plus VS Code Codex, GitHub Copilot, and Cline installations
@@ -143,7 +146,7 @@ Configuration defines:
 - optional automatic local identity bootstrap, CORS-friendly local manifest exposure, and derived DID state
 - metered workflow policy and local 402 payment quote settings
 - local payment receipt lifetime and introspection settings
-- optional payment relay auto-requeue settings for transient dead-letter recovery
+- optional payment relay auto-requeue settings for transient dead-letter recovery, including poll cadence, retry windows, and candidate batch limits
 - auth token
 - HMAC signing secret
 - inbound signature requirement

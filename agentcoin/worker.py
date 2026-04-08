@@ -44,6 +44,10 @@ class WorkerLoop:
         adapter_policy: AdapterPolicy | None = None,
         network: OutboundNetworkConfig | None = None,
         request_timeout_seconds: float = 10,
+        settlement_relay_enabled: bool = False,
+        settlement_relay_max_items: int = 1,
+        payment_relay_enabled: bool = False,
+        payment_relay_max_items: int = 1,
     ) -> None:
         self.node_url = node_url.rstrip("/")
         self.token = token
@@ -53,6 +57,10 @@ class WorkerLoop:
         self.transport = OutboundTransport(network)
         self.adapters = ExecutionAdapterRegistry(adapter_policy, transport=self.transport)
         self.request_timeout_seconds = request_timeout_seconds
+        self.settlement_relay_enabled = bool(settlement_relay_enabled)
+        self.settlement_relay_max_items = max(1, int(settlement_relay_max_items or 1))
+        self.payment_relay_enabled = bool(payment_relay_enabled)
+        self.payment_relay_max_items = max(1, int(payment_relay_max_items or 1))
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
         try:
@@ -67,38 +75,84 @@ class WorkerLoop:
             LOG.warning("request failed path=%s worker_id=%s error=%s", path, self.worker_id, exc)
             return None
 
-    def run_once(self) -> bool:
-        claimed = self._post_json(
-            "/v1/tasks/claim",
+    def _process_settlement_relay_queue_once(self) -> bool:
+        if not self.settlement_relay_enabled:
+            return False
+        response = self._post_json(
+            "/v1/onchain/settlement-relay-queue/process",
             {
                 "worker_id": self.worker_id,
-                "worker_capabilities": self.capabilities,
-                "lease_seconds": self.lease_seconds,
+                "max_items": self.settlement_relay_max_items,
             },
         )
-        if claimed is None:
+        if response is None:
             return False
-        task = claimed.get("task")
-        if not task:
+        processed = list(response.get("processed") or [])
+        if not processed:
             return False
-
-        LOG.info("claimed task %s kind=%s", task["id"], task["kind"])
-        result = self.execute_task(task)
-        ack = self._post_json(
-            "/v1/tasks/ack",
-            {
-                "task_id": task["id"],
-                "worker_id": self.worker_id,
-                "lease_token": task["lease_token"],
-                "success": True,
-                "result": result,
-            },
-        )
-        if ack is None:
-            LOG.warning("ack failed for task %s; lease will expire and task may be retried", task["id"])
-            return False
-        LOG.info("acked task %s ok=%s", task["id"], ack.get("ok"))
+        LOG.info("processed %s settlement relay queue item(s) worker_id=%s", len(processed), self.worker_id)
         return True
+
+    def _process_payment_relay_queue_once(self) -> bool:
+        if not self.payment_relay_enabled:
+            return False
+        response = self._post_json(
+            "/v1/payments/receipts/onchain-relay-queue/process",
+            {
+                "worker_id": self.worker_id,
+                "max_items": self.payment_relay_max_items,
+            },
+        )
+        if response is None:
+            return False
+        processed = list(response.get("processed") or [])
+        if not processed:
+            return False
+        LOG.info("processed %s payment relay queue item(s) worker_id=%s", len(processed), self.worker_id)
+        return True
+
+    def _process_enabled_relay_queues_once(self) -> bool:
+        handled = False
+        if self.payment_relay_enabled:
+            handled = self._process_payment_relay_queue_once() or handled
+        if self.settlement_relay_enabled:
+            handled = self._process_settlement_relay_queue_once() or handled
+        return handled
+
+    def run_once(self) -> bool:
+        should_claim_tasks = bool(self.capabilities) or not (self.settlement_relay_enabled or self.payment_relay_enabled)
+        if should_claim_tasks:
+            claimed = self._post_json(
+                "/v1/tasks/claim",
+                {
+                    "worker_id": self.worker_id,
+                    "worker_capabilities": self.capabilities,
+                    "lease_seconds": self.lease_seconds,
+                },
+            )
+            if claimed is None:
+                return False
+            task = claimed.get("task")
+            if task:
+                LOG.info("claimed task %s kind=%s", task["id"], task["kind"])
+                result = self.execute_task(task)
+                ack = self._post_json(
+                    "/v1/tasks/ack",
+                    {
+                        "task_id": task["id"],
+                        "worker_id": self.worker_id,
+                        "lease_token": task["lease_token"],
+                        "success": True,
+                        "result": result,
+                    },
+                )
+                if ack is None:
+                    LOG.warning("ack failed for task %s; lease will expire and task may be retried", task["id"])
+                    return False
+                LOG.info("acked task %s ok=%s", task["id"], ack.get("ok"))
+                return True
+
+        return self._process_enabled_relay_queues_once()
 
     @staticmethod
     def _json_schema_type_matches(value: Any, expected_type: str) -> bool:
@@ -435,7 +489,7 @@ class WorkerLoop:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run an AgentCoin worker loop skeleton.")
+    parser = argparse.ArgumentParser(description="Run an AgentCoin worker loop.")
     parser.add_argument("--node-url", required=True, help="Base URL of the AgentCoin node.")
     parser.add_argument("--token", required=True, help="Bearer token for the node.")
     parser.add_argument("--worker-id", required=True, help="Stable worker identifier.")
@@ -501,6 +555,28 @@ def main() -> None:
         help="Ignore environment HTTP(S)_PROXY values for worker-to-node requests.",
     )
     parser.add_argument("--request-timeout-seconds", type=float, default=10, help="Timeout for worker-to-node API requests.")
+    parser.add_argument(
+        "--payment-relay",
+        action="store_true",
+        help="Poll and process queued payment relay jobs after empty task claims.",
+    )
+    parser.add_argument(
+        "--payment-relay-max-items",
+        type=int,
+        default=1,
+        help="Maximum payment relay queue items to process per poll.",
+    )
+    parser.add_argument(
+        "--settlement-relay",
+        action="store_true",
+        help="Poll and process queued settlement relay jobs after empty task claims.",
+    )
+    parser.add_argument(
+        "--settlement-relay-max-items",
+        type=int,
+        default=1,
+        help="Maximum settlement relay queue items to process per poll.",
+    )
     parser.add_argument("--once", action="store_true", help="Claim at most one task and exit.")
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     args = parser.parse_args()
@@ -533,6 +609,10 @@ def main() -> None:
             use_environment_proxies=not args.disable_env_proxy,
         ),
         request_timeout_seconds=args.request_timeout_seconds,
+        payment_relay_enabled=args.payment_relay,
+        payment_relay_max_items=args.payment_relay_max_items,
+        settlement_relay_enabled=args.settlement_relay,
+        settlement_relay_max_items=args.settlement_relay_max_items,
     )
 
     while True:

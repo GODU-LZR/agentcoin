@@ -107,7 +107,9 @@ Status legend:
 ## Phase 10
 
 - `[x]` relay queue persistence
-- `[x]` background settlement relay worker
+- `[x]` background settlement relay worker, including external `agentcoin-worker --settlement-relay` polling
+- `[x]` background payment relay worker, including external `agentcoin-worker --payment-relay` polling
+- `[x]` payment auto-requeue retry window and bounded candidate polling
 - `[x]` relay queue pause / resume
 - `[x]` relay queue max in-flight
 - `[x]` relay queue dead-letter
@@ -119,6 +121,7 @@ Status legend:
 - `[x]` on-chain event reconciliation skeleton
 - `[x]` local relay vs chain tx comparison
 - `[x]` tx receipt fetch
+- `[x]` background settlement reconciliation polling cadence split
 - `[x]` confirmed / reverted / unknown
 - `[x]` replay-inspect reconciliation state
 - `[x]` relay history `confirmed_at`

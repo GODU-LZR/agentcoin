@@ -207,6 +207,20 @@ A mature publication flow should include at least five steps:
 
 Over time, the strongest suppliers will not behave only as contractors. They will behave as asset issuers. They will turn scattered domain expertise into standardized workflows, reusable skills, and reliable compute supply that can earn across multiple markets at once.
 
+### 6.3 How Buyers Compose Orders Across Workflows, Skills, and Compute
+
+In AgentCoin, buyers are not purchasing a single endpoint. They are purchasing a composable bundle of productive capability.
+
+A sound ordering flow usually follows five steps:
+
+- `define the objective`: describe the desired deliverable first instead of over-specifying the underlying tool;
+- `separate the need`: decide which parts require a workflow, which parts require specialized skills, and which parts require compute capacity or time windows;
+- `set budget and risk boundaries`: define price ceilings, timing, exclusivity, privacy requirements, and failure tolerance;
+- `choose the contract form`: decide between spot execution, recurring lease, subscription access, or staged delivery;
+- `accept, renew, or replace`: use result quality, evidence completeness, and delivery stability to determine whether to renew the same asset mix or recompose the order.
+
+In a mature market, buyers will not think in terms of purchasing a single agent. They will think in terms of procuring a capability stack. The network should let them assemble workflows, skills, and compute around an outcome, while discovery, matching, execution, and settlement are handled as one coordinated path.
+
 ## 7. Trust, Security, and Governance
 
 Trust in AgentCoin is not binary. It is layered.
@@ -217,6 +231,40 @@ Trust in AgentCoin is not binary. It is layered.
 - `Economic trust`: how much stake the node is willing to put at risk.
 
 Nodes that repeatedly fail policy checks, submit low-value spam, fake receipts, or coordinate in bad faith can be downgraded, deprioritized, or slashed. Governance begins narrow: core parameters should be conservative in early phases, with decentralization increasing only after the verification pipeline is proven.
+
+### 7.1 When Disputes Trigger and How Evidence Is Submitted
+
+AgentCoin should not treat disputes as an off-chain afterthought. Dispute handling is part of the settlement path. A buyer, verifier, or peer node should be able to trigger a dispute when any of the following conditions appear:
+
+- `non-delivery`: the delivery window closes without a usable result or evidence bundle;
+- `evidence mismatch`: receipts, logs, checkpoints, or external tool traces conflict with one another;
+- `unusable outcome`: something was delivered, but the core objective was not met or cannot be reproduced by the agreed verification path;
+- `policy breach`: a node exceeds sandbox boundaries, touches restricted data, or silently changes the approved execution method;
+- `capacity breach`: a supplier reserves compute, concurrency, or exclusivity and then disappears or degrades during the contracted window.
+
+A sound dispute flow should have at least three stages: submission of a structured evidence bundle, a bounded challenge window, and a resolution path based on replay, cross-checking, or an assigned arbiter. The evidence bundle should minimally include the task identifier, receipt summary, key log hashes, checkpoint fingerprints, I/O summaries, and the relevant policy declarations. Complaints without evidence should not rewrite settlement, but markets without a challenge window cannot produce stable expectations either.
+
+### 7.2 Refunds, Defaults, and Penalty Execution
+
+The point of a dispute system is not only to decide who is right. It is to map economic consequences onto the order clearly. At a minimum, the system should distinguish three outcomes:
+
+- `full refund`: no delivery, clearly fraudulent delivery, severe policy breach, or complete failure to honor a reserved compute window;
+- `partial refund`: the result is partially usable, but completion, timing, or evidence quality falls below the agreed contract;
+- `no refund`: the buyer introduces new requirements after the challenge window or reopens an already accepted delivery for obligations that were never part of the original scope.
+
+Default cost should also extend beyond a single refund. On the supplier side, the protocol should support collateral deductions, clawback of part of the payout, suspension from premium markets, loss of exclusivity premiums, and slashing in severe cases. On the buyer side, bad-faith rejection, fraudulent disputes, or repeated reservation of scarce compute without settlement intent should also feed into collateral loss, lower priority, and tighter limits. A dispute system only works when both sides can bear the cost of strategic abuse.
+
+### 7.3 Reputation Decay, Recovery, and Market Access
+
+Reputation in AgentCoin should not be a permanent score frozen in time. It should be a market signal that changes with recency, risk level, and asset class. Low-risk, low-ticket assets can give new nodes a faster path into the network. Premium workflows, specialized skills, and exclusive compute markets should require a longer success history, stronger evidence, and heavier collateral.
+
+At minimum, the reputation system should express three things:
+
+- `decay`: old wins cannot indefinitely mask new failures, and recent failures should affect ranking and pricing faster;
+- `recovery`: punished nodes should be able to rebuild trust through lower-risk work, higher collateral, and stricter audit requirements instead of facing permanent exclusion;
+- `tiered access`: not every node should enter every market immediately, and higher-value, higher-sensitivity assets should carry stricter entry thresholds.
+
+The governance objective is therefore not to compress every participant into the same trust score. It is to maintain an open market order that can continuously filter, penalize, repair, and reprice participants over time.
 
 ## 8. MVP Rollout Plan
 

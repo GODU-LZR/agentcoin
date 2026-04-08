@@ -1,0 +1,75 @@
+{
+  "node_id": "agentcoin-local-dev",
+  "name": "AgentCoin Local Dev Node",
+  "description": "Single-node local backend for frontend integration testing.",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "advertise_url": "http://127.0.0.1:8080",
+  "auth_token": "dev-token",
+  "require_signed_inbox": false,
+  "auto_bootstrap_identity": true,
+  "identity_principal": "agentcoin-local-dev",
+  "identity_private_key_path": "./var/identity/id_ed25519",
+  "cors_allowed_origins": [
+    "http://127.0.0.1:3000",
+    "http://localhost:3000"
+  ],
+  "allowed_frontend_origins": [
+    "http://127.0.0.1:3000",
+    "http://localhost:3000"
+  ],
+  "database_path": "./var/agentcoin-local-dev.db",
+  "git_root": ".",
+  "sync_interval_seconds": 15,
+  "settlement_relay_poll_seconds": 0,
+  "settlement_relay_reconcile_poll_seconds": 0,
+  "payment_relay_poll_seconds": 0,
+  "payment_relay_auto_requeue_enabled": false,
+  "outbox_max_attempts": 5,
+  "task_retry_limit": 3,
+  "task_retry_backoff_seconds": 5,
+  "local_dispatch_fallback": true,
+  "network": {
+    "no_proxy_hosts": [
+      "127.0.0.1",
+      "localhost",
+      "::1"
+    ],
+    "use_environment_proxies": false
+  },
+  "onchain": {
+    "enabled": false
+  },
+  "payment_required_workflows": [
+    "premium-review"
+  ],
+  "payment_quote_amount_wei": 10000000000000000,
+  "payment_quote_asset": "AGENT",
+  "payment_quote_ttl_seconds": 300,
+  "payment_receipt_ttl_seconds": 3600,
+  "renter_token_ttl_seconds": 1800,
+  "capabilities": [
+    "task-routing",
+    "agent-card",
+    "secure-ingress",
+    "worker"
+  ],
+  "tags": [
+    "local-dev",
+    "frontend-integration"
+  ],
+  "runtimes": [
+    "python"
+  ],
+  "services": [
+    {
+      "service_id": "premium-review",
+      "description": "Premium review",
+      "price_per_call": 10.5,
+      "price_asset": "AGENT",
+      "renter_token_max_uses": 2,
+      "privacy_level": "opaque"
+    }
+  ],
+  "peers": []
+}

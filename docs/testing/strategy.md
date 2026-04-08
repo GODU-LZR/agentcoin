@@ -107,6 +107,8 @@ The repository now contains an initial automated test suite using Python `unitte
 Current automated checks include:
 
 - store-level lifecycle tests
+- store-level settlement relay queue lifecycle tests covering recovery, pause/resume, requeue, cancel/delete, and max-in-flight gating
+- store-level payment relay queue lifecycle tests covering recovery, pause/resume, requeue, cancel/delete, and max-in-flight gating
 - in-process node integration tests
 - `python -m py_compile` syntax checks
 - GitHub Actions CI on macOS, Linux, and Windows
@@ -172,11 +174,15 @@ The following behaviors are now covered either by automated tests or previously 
 - background sync loop tolerates a temporarily offline peer and eventually delivers queued remote work after the peer returns
 - delayed retry and task dead-letter after retry exhaustion
 - queued settlement relay jobs run in the background and persist completed relay ids
+- external `agentcoin-worker --settlement-relay` loops can also drain queued settlement relay jobs when node polling is disabled
+- external `agentcoin-worker --payment-relay` loops can also drain queued payment relay jobs when node polling is disabled
+- settlement relay queue store lifecycle transitions now also have direct unit coverage for running-item recovery, pause/resume, dead-letter requeue, cancel/delete, and max-in-flight claim gating
 - settlement relay queue max-in-flight now blocks additional claims while another relay item is already running
 - settlement relay queue respects initial delay and retries failed jobs before dead-lettering them
 - operators can pause queued settlement relay jobs, resume them later, and requeue dead-lettered jobs with updated relay parameters
 - settlement ledger receipts are signed, exposed through the node API, reflected in replay-inspect, and attached to settlement plans, raw bundles, and relay receipts
 - persisted settlement relay history can now reconcile chain receipts into `confirmed`, `reverted`, or `unknown`
+- settlement reconciliation polling can now run on its own cadence even when settlement queue draining is disabled, with retry-window and max-items controls to avoid rechecking the whole relay history every cycle
 - dispute responses and replay-inspect now expose contract alignment for dispute-driven `challengeJob` / `slashJob` settlement, challenger bond custody gaps, and committee escalation handoff
 - confirmed final settlement relays can now auto-finalize an associated workflow state, while `challengeJob` relays remain non-final and do not auto-finalize
 - replay-inspect now exposes the latest settlement reconciliation status and receipt count for a task
@@ -187,10 +193,12 @@ The following behaviors are now covered either by automated tests or previously 
 - metered workflow execution now returns `402 Payment Required` plus a challenge, and accepts a signed local payment receipt after operator-side receipt issue
 - metered workflow receipts now transition to `consumed`, can be inspected by receipt id, and reject second-use replay
 - payment proof relays now persist history by receipt id, and queued payment relays can be processed in the background
+- payment relay queue store lifecycle transitions now have direct unit coverage for running-item recovery, pause/resume, dead-letter requeue, cancel/delete, and max-in-flight claim gating
 - payment relay queue control endpoints now cover pause, resume, dead-letter replay via requeue, cancel, and delete
 - payment relay diagnostics now expose latest failed relay state, queue summaries, and a signed replay-helper request body
 - payment ops summary now aggregates recent relays, queue counts, quote defaults, and latest failed relay state
 - payment relay background worker can now auto-requeue transient dead-letter items under explicit config
+- payment relay auto-requeue polling can now run on its own cadence even when ordinary payment queue polling is disabled, and now respects bounded candidate batches plus retry windows
 - payment relay auto-requeue now supports per-item manual disable and re-enable governance
 - payment queue and ops summaries now surface current suppression reasons and the latest manual override state
 - worker loop tolerance of temporary node connectivity failure

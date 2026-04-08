@@ -218,11 +218,12 @@ It can now also relay that bundle sequentially:
 - relay receipts are now persisted and exposed for replay / audit
 - `POST /v1/onchain/settlement-relay-queue` persists relay jobs for later execution
 - `GET /v1/onchain/settlement-relay-queue` lists persisted relay queue items
-- a background worker now drains queued relay jobs and moves them through `queued`, `running`, `retrying`, `completed`, and `dead-letter`
+- the node background loop or an external `agentcoin-worker --settlement-relay` worker now drains queued relay jobs and moves them through `queued`, `running`, `retrying`, `completed`, and `dead-letter`
 - relay queue workers now honor a configurable `settlement_relay_max_in_flight` cap before claiming more jobs from the shared queue
 - operators can now pause queued relay jobs, resume them later, and requeue dead-lettered jobs with updated relay parameters
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` returns the latest persisted relay state for a task
 - `POST /v1/onchain/settlement-relays/reconcile` now fetches `eth_getTransactionReceipt` for submitted tx hashes and marks persisted relay history as `confirmed`, `reverted`, or `unknown`
+- optional background reconciliation can now poll persisted settlement relays on its own cadence via `settlement_relay_reconcile_poll_seconds`, with bounded candidate batches and a retry window via `settlement_relay_reconcile_max_items` and `settlement_relay_reconcile_retry_seconds`
 - confirmed relay reconciliation can now auto-finalize a linked workflow once the relay represents a final settlement action such as `completeJob`, `rejectJob`, or `slashJob`
 - replay-inspect now includes the latest settlement reconciliation state plus per-step receipt snapshots
 - `POST /v1/onchain/settlement-relays/replay` can resume a failed settlement relay from the stored failure index
@@ -486,6 +487,28 @@ agentcoin-worker \
   --allow-command python \
   --workspace-root .
 ```
+
+For a dedicated settlement relay queue worker, especially when the node runs with `settlement_relay_poll_seconds = 0`:
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id settlement-relay-1 \
+  --settlement-relay
+```
+
+For a dedicated payment relay queue worker, especially when the node runs with `payment_relay_poll_seconds = 0`:
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id payment-relay-1 \
+  --payment-relay
+```
+
+Background payment auto-requeue can now be tuned independently with `payment_relay_auto_requeue_poll_seconds`, `payment_relay_auto_requeue_retry_seconds`, and `payment_relay_auto_requeue_max_items`.
 
 Tasks now also carry Git-like workflow traits:
 

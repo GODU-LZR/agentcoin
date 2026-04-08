@@ -208,11 +208,12 @@ worker 运行时现在也有了第一版 Agent 适配层：
 - `GET /v1/onchain/settlement-relays` 可查看持久化 relay 历史
 - `POST /v1/onchain/settlement-relay-queue` 可把 relay 作业持久化到队列，供后续执行
 - `GET /v1/onchain/settlement-relay-queue` 可查看持久化 relay 队列项
-- 后台 worker 现在会自动消费这些 relay 队列项，并在 `queued`、`running`、`retrying`、`completed`、`dead-letter` 之间推进状态
+- 节点内部后台循环，或外部的 `agentcoin-worker --settlement-relay` worker，现在会自动消费这些 relay 队列项，并在 `queued`、`running`、`retrying`、`completed`、`dead-letter` 之间推进状态
 - relay queue worker 现在也会遵守可配置的 `settlement_relay_max_in_flight` 上限，避免在共享队列里过量领取作业
 - 运营侧现在也可以暂停队列中的 relay 作业、稍后恢复执行，或把 dead-letter 项带着更新后的 relay 参数重新入队
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` 可查看某个任务的最新 relay 状态
 - `POST /v1/onchain/settlement-relays/reconcile` 现在会为已提交的 tx hash 拉取 `eth_getTransactionReceipt`，并把持久化 relay 历史标记为 `confirmed`、`reverted` 或 `unknown`
+- 现在也可以通过 `settlement_relay_reconcile_poll_seconds` 为后台 reconciliation 配置独立轮询节奏，并通过 `settlement_relay_reconcile_max_items` 与 `settlement_relay_reconcile_retry_seconds` 限制每轮候选量和重复检查窗口
 - 当确认后的 relay 属于 `completeJob`、`rejectJob` 或 `slashJob` 这类最终结算动作时，reconciliation 现在也会自动持久化关联 workflow 的终态
 - replay-inspect 现在也会展示任务最新的 settlement reconciliation 状态以及逐步 receipt 快照
 - `POST /v1/onchain/settlement-relays/replay` 可从已记录的失败步继续重放
@@ -473,6 +474,28 @@ agentcoin-worker \
   --allow-command python \
   --workspace-root .
 ```
+
+如果想把链上 settlement relay queue 交给独立 worker 驱动，尤其是在节点把 `settlement_relay_poll_seconds` 设为 `0` 时，可以这样启动：
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id settlement-relay-1 \
+  --settlement-relay
+```
+
+如果想把 payment relay queue 也交给独立 worker 驱动，尤其是在节点把 `payment_relay_poll_seconds` 设为 `0` 时，可以这样启动：
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id payment-relay-1 \
+  --payment-relay
+```
+
+后台 payment auto-requeue 现在也可以独立调节 `payment_relay_auto_requeue_poll_seconds`、`payment_relay_auto_requeue_retry_seconds` 和 `payment_relay_auto_requeue_max_items`。
 
 任务现在也具备 Git-like 特性：
 

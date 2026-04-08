@@ -201,11 +201,12 @@ on-chain settlement relay も復旧可能な記録として扱えるようにな
 - `GET /v1/onchain/settlement-relays` は永続化された relay history を返します
 - `POST /v1/onchain/settlement-relay-queue` は relay job を後続実行用に永続キューへ保存します
 - `GET /v1/onchain/settlement-relay-queue` は永続化された relay queue item を返します
-- background worker が queued relay job を自動で処理し、`queued`、`running`、`retrying`、`completed`、`dead-letter` を遷移させます
+- node 内部の background loop、または外部の `agentcoin-worker --settlement-relay` worker が queued relay job を処理し、`queued`、`running`、`retrying`、`completed`、`dead-letter` を遷移させます
 - relay queue worker は共有 queue から追加 job を claim する前に、設定可能な `settlement_relay_max_in_flight` 上限も尊重します
 - operator は queued relay job を pause / resume でき、dead-letter item を更新済み relay parameter 付きで requeue できます
 - `GET /v1/onchain/settlement-relays/latest?task_id=...` は task ごとの最新 relay state を返します
 - `POST /v1/onchain/settlement-relays/reconcile` は送信済み tx hash に対して `eth_getTransactionReceipt` を取得し、永続 relay history を `confirmed`、`reverted`、`unknown` に更新します
+- `settlement_relay_reconcile_poll_seconds` に加えて `settlement_relay_reconcile_max_items` と `settlement_relay_reconcile_retry_seconds` を使うことで、background reconciliation の cadence、1 回あたりの候補数、再照会ウィンドウを個別に調整できます
 - 確認済み relay が `completeJob`、`rejectJob`、`slashJob` のような最終 settlement action を表す場合は、reconciliation が関連 workflow の終端 state も自動で永続化します
 - replay-inspect は task の最新 settlement reconciliation state と各 step の receipt snapshot を返します
 - `POST /v1/onchain/settlement-relays/replay` は記録済み failure index から relay を再開できます
@@ -460,6 +461,28 @@ agentcoin-worker \
   --allow-command python \
   --workspace-root .
 ```
+
+node 側で `settlement_relay_poll_seconds = 0` を使う場合でも、dedicated settlement relay queue worker を次のように起動できます。
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id settlement-relay-1 \
+  --settlement-relay
+```
+
+node 側で `payment_relay_poll_seconds = 0` を使う場合でも、dedicated payment relay queue worker を次のように起動できます。
+
+```bash
+agentcoin-worker \
+  --node-url http://127.0.0.1:8080 \
+  --token change-me \
+  --worker-id payment-relay-1 \
+  --payment-relay
+```
+
+background payment auto-requeue は `payment_relay_auto_requeue_poll_seconds`、`payment_relay_auto_requeue_retry_seconds`、`payment_relay_auto_requeue_max_items` で独立に調整できます。
 
 task には Git-like な workflow traits も追加しました。
 

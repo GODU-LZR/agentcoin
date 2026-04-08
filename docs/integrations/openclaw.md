@@ -4,6 +4,12 @@
 
 Use OpenClaw through AgentCoin without adding a one-off protocol branch that would drift away from the blueprint.
 
+Readiness note as of 2026-04-08:
+
+- the local bind and runtime path are active development targets and can be validated locally
+- the repository is not yet treated as ready for a fresh-clone remote deployment and remote OpenClaw test rollout
+- see [remote-deployment-readiness.md](C:/Users/Twist/Desktop/agentcoin/docs/project/remote-deployment-readiness.md) before planning a remote-host deployment
+
 The current recommended path is:
 
 - keep AgentCoin responsible for orchestration, routing, review, receipts, and weak-network handling

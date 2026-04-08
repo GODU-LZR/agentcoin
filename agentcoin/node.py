@@ -5,9 +5,10 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -78,7 +79,11 @@ class AgentCoinNode:
         self.discovery = LocalAgentDiscovery()
         self.local_agents = LocalAgentManager()
         self._server = ThreadingHTTPServer((self.config.host, self.config.port), self._build_handler())
+        self._server.daemon_threads = True
+        self._server.block_on_close = False
         self._sync_stop = threading.Event()
+        self._serve_started = threading.Event()
+        self._serve_exited = threading.Event()
         self._sync_thread = threading.Thread(target=self._sync_loop, name="agentcoin-outbox", daemon=True)
         self._settlement_relay_thread = threading.Thread(
             target=self._settlement_relay_loop,
@@ -144,6 +149,8 @@ class AgentCoinNode:
                 "local_agent_acp_session_close_url": card.get("endpoints", {}).get("local_agent_acp_session_close"),
                 "local_agent_acp_session_initialize_url": card.get("endpoints", {}).get("local_agent_acp_session_initialize"),
                 "local_agent_acp_session_poll_url": card.get("endpoints", {}).get("local_agent_acp_session_poll"),
+                "local_agent_acp_session_list_url": card.get("endpoints", {}).get("local_agent_acp_session_list"),
+                "local_agent_acp_session_load_url": card.get("endpoints", {}).get("local_agent_acp_session_load"),
                 "local_agent_acp_session_task_request_url": card.get("endpoints", {}).get("local_agent_acp_session_task_request"),
                 "local_agent_acp_session_apply_task_result_url": card.get("endpoints", {}).get("local_agent_acp_session_apply_task_result"),
                 "auth_challenge_url": card.get("endpoints", {}).get("auth_challenge"),
@@ -961,13 +968,19 @@ class AgentCoinNode:
             remaining_uses = int(token.get("remaining_uses") or 0)
             if str(token.get("status") or "").strip() != "issued" or remaining_uses <= 0:
                 raise SignatureError("renter token has already been consumed")
-            token["remaining_uses"] = max(0, remaining_uses - 1)
-            token["usage_count"] = int(token.get("usage_count") or 0) + 1
-            token["status"] = "consumed" if int(token["remaining_uses"]) <= 0 else "issued"
-            token["consumed_at"] = utc_now()
-            token["consumed_task_id"] = task_id
-            self._renter_tokens[normalized_token_id] = token
-        return dict(token)
+            updated_token = dict(token)
+            updated_token["remaining_uses"] = max(0, remaining_uses - 1)
+            updated_token["usage_count"] = int(updated_token.get("usage_count") or 0) + 1
+            updated_token["status"] = "consumed" if int(updated_token["remaining_uses"]) <= 0 else "issued"
+            updated_token["consumed_at"] = utc_now()
+            updated_token["consumed_task_id"] = task_id
+            signed_token = self._sign_document(
+                updated_token,
+                hmac_scope="renter-token",
+                identity_namespace="agentcoin-renter-token",
+            )
+            self._renter_tokens[normalized_token_id] = signed_token
+        return dict(signed_token)
 
     def build_payment_onchain_proof(
         self,
@@ -1225,7 +1238,7 @@ class AgentCoinNode:
 
     def process_payment_relay_queue(self, *, max_items: int | None = None) -> list[dict[str, Any]]:
         processed: list[dict[str, Any]] = []
-        max_in_flight = int(self.config.settlement_relay_max_in_flight or 0)
+        max_in_flight = int(self.config.payment_relay_max_in_flight or 0)
         claim_limit = max_in_flight if max_in_flight > 0 else None
         while max_items is None or len(processed) < max_items:
             item = self.store.claim_next_payment_relay_queue_item(max_in_flight=claim_limit)
@@ -1281,28 +1294,55 @@ class AgentCoinNode:
             return []
         processed: list[dict[str, Any]] = []
         max_requeues = max(0, int(self.config.payment_relay_auto_requeue_max_requeues or 0))
+        effective_max_items = max(
+            1,
+            int(max_items if max_items is not None else self.config.payment_relay_auto_requeue_max_items or 1),
+        )
+        effective_retry_seconds = max(0.0, float(self.config.payment_relay_auto_requeue_retry_seconds or 0))
         delay_seconds = max(0, int(self.config.payment_relay_auto_requeue_delay_seconds or 0))
         if max_requeues <= 0:
             return []
-        items = self.store.list_payment_relay_queue(status="dead-letter", limit=200)
+        checked_before = None
+        if effective_retry_seconds > 0:
+            checked_before = (
+                datetime.now(timezone.utc) - timedelta(seconds=effective_retry_seconds)
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        items = self.store.list_pending_payment_relay_auto_requeues(
+            limit=effective_max_items,
+            checked_before=checked_before,
+        )
         retryable_categories = {"network", "transport", "rpc"}
         for item in items:
-            if max_items is not None and len(processed) >= max_items:
-                break
+            queue_id = str(item.get("id") or "").strip()
+            if not queue_id:
+                continue
             payload = dict(item.get("payload") or {})
+            checked_at = utc_now()
             if bool(payload.get("_auto_requeue_disabled")):
+                self.store.update_payment_relay_auto_requeue_checked_at(
+                    queue_id,
+                    auto_requeue_checked_at=checked_at,
+                )
                 continue
             auto_requeue_count = int(payload.get("_auto_requeue_count") or 0)
             if auto_requeue_count >= max_requeues:
+                self.store.update_payment_relay_auto_requeue_checked_at(
+                    queue_id,
+                    auto_requeue_checked_at=checked_at,
+                )
                 continue
             failure_category = self._classify_relay_failure(str(item.get("last_error") or ""))
             if failure_category not in retryable_categories:
+                self.store.update_payment_relay_auto_requeue_checked_at(
+                    queue_id,
+                    auto_requeue_checked_at=checked_at,
+                )
                 continue
             updated_payload = dict(payload)
             updated_payload["_auto_requeue_count"] = auto_requeue_count + 1
             updated_payload["_auto_requeue_reason"] = "transient-payment-relay-failure"
             queue_item = self.store.requeue_payment_relay_queue_item(
-                str(item.get("id") or ""),
+                queue_id,
                 delay_seconds=delay_seconds,
                 payload=updated_payload,
             )
@@ -1314,6 +1354,11 @@ class AgentCoinNode:
                         "failure_category": failure_category,
                     }
                 )
+                continue
+            self.store.update_payment_relay_auto_requeue_checked_at(
+                queue_id,
+                auto_requeue_checked_at=checked_at,
+            )
         return processed
 
     @staticmethod
@@ -1464,6 +1509,13 @@ class AgentCoinNode:
         updated = self.store.update_payment_relay_queue_payload(queue_id, payload=payload)
         if not updated:
             raise ValueError("payment relay queue item not found")
+        if not disabled:
+            refreshed = self.store.update_payment_relay_auto_requeue_checked_at(
+                queue_id,
+                auto_requeue_checked_at=None,
+            )
+            if refreshed:
+                updated = refreshed
         return updated
 
     def register_local_discovered_agent(self, discovered_id: str) -> dict[str, Any]:
@@ -1483,6 +1535,9 @@ class AgentCoinNode:
     def _acp_prompt_text_from_task(task: dict[str, Any]) -> str:
         payload = dict(task.get("payload") or {})
         runtime = dict(payload.get("_runtime") or {})
+        runtime_acp_prompt = runtime.get("acp_prompt")
+        if isinstance(runtime_acp_prompt, str) and runtime_acp_prompt.strip():
+            return runtime_acp_prompt.strip()
         input_value = payload.get("input")
         if isinstance(input_value, str) and input_value.strip():
             return input_value.strip()
@@ -1536,6 +1591,113 @@ class AgentCoinNode:
             dispatch=dispatch,
         )
 
+    def prepare_local_acp_session_list(
+        self,
+        *,
+        session_id: str,
+        cwd: str | None = None,
+        cursor: str | None = None,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        return self.local_agents.prepare_acp_session_list(
+            session_id,
+            cwd=str(cwd or "").strip() or None,
+            cursor=str(cursor or "").strip() or None,
+            dispatch=dispatch,
+        )
+
+    def prepare_local_acp_session_load(
+        self,
+        *,
+        session_id: str,
+        server_session_id: str,
+        cwd: str | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
+        dispatch: bool = False,
+    ) -> dict[str, Any]:
+        normalized_cwd = str(cwd or self.config.git_root or os.getcwd()).strip()
+        if not normalized_cwd:
+            raise ValueError("cwd is required")
+        if not os.path.isabs(normalized_cwd):
+            normalized_cwd = os.path.abspath(normalized_cwd)
+        normalized_mcp_servers = [dict(item) for item in list(mcp_servers or []) if isinstance(item, dict)]
+        return self.local_agents.prepare_acp_session_load(
+            session_id,
+            server_session_id=server_session_id,
+            cwd=normalized_cwd,
+            mcp_servers=normalized_mcp_servers,
+            dispatch=dispatch,
+        )
+
+    @staticmethod
+    def _normalize_acp_content_items(payload: Any) -> list[dict[str, Any]]:
+        if isinstance(payload, list):
+            items: list[dict[str, Any]] = []
+            for item in payload:
+                items.extend(AgentCoinNode._normalize_acp_content_items(item))
+            return items
+        if not isinstance(payload, dict):
+            return []
+        normalized = dict(payload)
+        item_type = str(normalized.get("type") or "").strip()
+        if item_type:
+            return [normalized]
+        nested_payload = normalized.get("content")
+        if nested_payload is not None:
+            return AgentCoinNode._normalize_acp_content_items(nested_payload)
+        return []
+
+    @staticmethod
+    def _extract_acp_text_parts(content_items: list[dict[str, Any]]) -> list[str]:
+        text_parts: list[str] = []
+        for item in content_items:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip().lower() != "text":
+                continue
+            if "text" not in item or item.get("text") is None:
+                continue
+            text_value = str(item.get("text"))
+            if text_value:
+                text_parts.append(text_value)
+        return text_parts
+
+    def _collect_acp_task_update_content(
+        self,
+        frames: list[dict[str, Any]],
+        *,
+        server_session_id: str | None,
+        start_index: int,
+        stop_request_id: str | None,
+    ) -> list[dict[str, Any]]:
+        normalized_session_id = str(server_session_id or "").strip()
+        normalized_stop_request_id = str(stop_request_id or "").strip()
+        collected: list[dict[str, Any]] = []
+        for frame in list(frames[max(0, int(start_index or 0)) :]):
+            parsed = frame.get("parsed")
+            if not isinstance(parsed, dict):
+                continue
+            parsed_id = str(parsed.get("id") or "").strip()
+            if normalized_stop_request_id and parsed_id == normalized_stop_request_id:
+                result_block = parsed.get("result")
+                if isinstance(result_block, dict):
+                    collected.extend(self._normalize_acp_content_items(result_block.get("content")))
+                break
+            if str(parsed.get("method") or "").strip() != "session/update":
+                continue
+            params = parsed.get("params")
+            if not isinstance(params, dict):
+                continue
+            if normalized_session_id:
+                frame_session_id = str(params.get("sessionId") or params.get("session_id") or "").strip()
+                if frame_session_id != normalized_session_id:
+                    continue
+            update_payload = params.get("update")
+            if not isinstance(update_payload, dict):
+                continue
+            collected.extend(self._normalize_acp_content_items(update_payload.get("content")))
+        return collected
+
     def apply_local_acp_task_result(
         self,
         *,
@@ -1551,32 +1713,95 @@ class AgentCoinNode:
             raise ValueError("task not found")
         polled = self.local_agents.poll_acp_session(session_id)
         session = dict(polled.get("session") or {})
+        captured_frames = [dict(frame) for frame in list(polled.get("captured_frames") or [])]
         task_response_frame = dict(polled.get("task_response_frame") or {})
-        latest_frame = task_response_frame or dict(polled.get("latest_server_frame") or {})
+        if not task_response_frame:
+            raise ValueError("acp task response has not been captured yet")
+        expected_request_id = str(session.get("task_request_id") or "").strip()
+        latest_frame = task_response_frame
         parsed = latest_frame.get("parsed")
         if not isinstance(parsed, dict):
             raise ValueError("acp session has not captured a parseable server frame")
-        result_block = parsed.get("result")
-        if not isinstance(result_block, dict):
+        actual_request_id = str(parsed.get("id") or "").strip()
+        if expected_request_id and actual_request_id and actual_request_id != expected_request_id:
+            raise ValueError("acp task response does not match the current task request")
+        error_block = parsed.get("error")
+        if isinstance(error_block, dict):
+            error_message = str(error_block.get("message") or "acp task request failed")
+            normalized_worker_id = str(worker_id or session.get("registration_id") or "").strip()
+            if not normalized_worker_id:
+                raise ValueError("worker_id is required")
+            failure_result = self._attach_result_receipts(
+                task,
+                {
+                    "worker_id": normalized_worker_id,
+                    "adapter": {
+                        "protocol": "acp",
+                        "status": "failed",
+                        "runtime": "managed-local-acp",
+                        "mode": "session-apply",
+                        "registration_id": session.get("registration_id"),
+                    },
+                    "runtime_execution": {
+                        "runtime": "managed-local-acp",
+                        "session_id": session.get("session_id"),
+                        "server_session_id": session.get("last_task_request_intent", {}).get("server_session_id"),
+                        "error": dict(error_block),
+                    },
+                    "acp_execution": {
+                        "session_id": session.get("session_id"),
+                        "registration_id": session.get("registration_id"),
+                        "latest_server_frame": latest_frame,
+                        "captured_frames_seen": int(session.get("server_frames_seen") or 0),
+                        "response_content": [],
+                        "error": dict(error_block),
+                    },
+                    "error": error_message,
+                },
+            )
+            applied = self.store.apply_external_task_failure(
+                normalized_task_id,
+                normalized_worker_id,
+                error_message=error_message,
+                result=failure_result,
+            )
+            if not applied:
+                raise ValueError("task failure could not be applied")
+            stored_task = self.store.get_task(normalized_task_id)
+            return {
+                "task": stored_task,
+                "result": failure_result,
+                "session": session,
+                "latest_server_frame": latest_frame,
+            }
+        raw_result_block = parsed.get("result")
+        if raw_result_block is None:
+            result_block: dict[str, Any] = {}
+        elif isinstance(raw_result_block, dict):
+            result_block = dict(raw_result_block)
+        else:
             raise ValueError("acp response does not include a result object")
         normalized_worker_id = str(worker_id or session.get("registration_id") or "").strip()
         if not normalized_worker_id:
             raise ValueError("worker_id is required")
-        content_items = list(result_block.get("content") or [])
-        text_parts: list[str] = []
-        normalized_content: list[dict[str, Any]] = []
-        for item in content_items:
-            if not isinstance(item, dict):
-                continue
-            normalized_item = dict(item)
-            normalized_content.append(normalized_item)
-            if str(item.get("type") or "").strip().lower() == "text":
-                text_value = str(item.get("text") or "").strip()
-                if text_value:
-                    text_parts.append(text_value)
+        normalized_content = self._normalize_acp_content_items(result_block.get("content"))
+        if not normalized_content:
+            normalized_content = self._collect_acp_task_update_content(
+                captured_frames,
+                server_session_id=(
+                    session.get("last_task_request_intent", {}).get("server_session_id")
+                    or session.get("loaded_server_session_id")
+                ),
+                start_index=int(session.get("task_request_frame_start") or 0),
+                stop_request_id=expected_request_id or actual_request_id,
+            )
+        text_parts = self._extract_acp_text_parts(normalized_content)
+        runtime_response = dict(result_block)
+        if normalized_content and "content" not in runtime_response:
+            runtime_response["content"] = [dict(item) for item in normalized_content]
         assistant_message = {
             "role": "assistant",
-            "content": "\n".join(part for part in text_parts if part).strip(),
+            "content": "".join(part for part in text_parts if part).strip(),
         }
         raw_result = {
             "worker_id": normalized_worker_id,
@@ -1592,7 +1817,7 @@ class AgentCoinNode:
                 "session_id": session.get("session_id"),
                 "server_session_id": session.get("last_task_request_intent", {}).get("server_session_id"),
                 "assistant_message": assistant_message,
-                "response": dict(result_block),
+                "response": runtime_response,
             },
             "acp_execution": {
                 "session_id": session.get("session_id"),
@@ -1639,6 +1864,9 @@ class AgentCoinNode:
             "quote_template": quote_template,
             "auto_requeue_policy": {
                 "enabled": bool(self.config.payment_relay_auto_requeue_enabled),
+                "poll_seconds": float(self.config.payment_relay_auto_requeue_poll_seconds or 0),
+                "retry_seconds": float(self.config.payment_relay_auto_requeue_retry_seconds or 0),
+                "max_items": int(self.config.payment_relay_auto_requeue_max_items or 0),
                 "delay_seconds": int(self.config.payment_relay_auto_requeue_delay_seconds or 0),
                 "max_requeues": int(self.config.payment_relay_auto_requeue_max_requeues or 0),
             },
@@ -1677,11 +1905,17 @@ class AgentCoinNode:
                 raise SignatureError("payment receipt workflow does not match request")
             if str(receipt.get("status") or "").strip() != "issued":
                 raise SignatureError("payment receipt has already been consumed")
-            receipt["status"] = "consumed"
-            receipt["consumed_at"] = utc_now()
-            receipt["consumed_task_id"] = task_id
-            self._payment_receipts[normalized_receipt_id] = receipt
-        return dict(receipt)
+            updated_receipt = dict(receipt)
+            updated_receipt["status"] = "consumed"
+            updated_receipt["consumed_at"] = utc_now()
+            updated_receipt["consumed_task_id"] = task_id
+            signed_receipt = self._sign_document(
+                updated_receipt,
+                hmac_scope="payment-receipt",
+                identity_namespace="agentcoin-payment",
+            )
+            self._payment_receipts[normalized_receipt_id] = signed_receipt
+        return dict(signed_receipt)
 
     def _verify_local_signed_document(
         self,
@@ -1910,22 +2144,23 @@ class AgentCoinNode:
             return None
 
         principal_match = configured_principal == advertised_principal if configured_principal or advertised_principal else True
+        tracks_identity_keys = bool(configured_trusted_public_keys or configured_revoked_public_keys)
         pending_trust_public_keys = [
             key
             for key in advertised_active_public_keys
-            if key not in configured_trusted_public_keys and key not in configured_revoked_public_keys
+            if tracks_identity_keys and key not in configured_trusted_public_keys and key not in configured_revoked_public_keys
         ]
         pending_revocation_public_keys = [
-            key for key in advertised_revoked_public_keys if key not in configured_revoked_public_keys
+            key for key in advertised_revoked_public_keys if tracks_identity_keys and key not in configured_revoked_public_keys
         ]
         stale_trusted_public_keys = [
-            key for key in configured_trusted_public_keys if key not in advertised_active_public_keys
+            key for key in configured_trusted_public_keys if tracks_identity_keys and key not in advertised_active_public_keys
         ]
         local_only_revoked_public_keys = [
-            key for key in configured_revoked_public_keys if key not in advertised_revoked_public_keys
+            key for key in configured_revoked_public_keys if tracks_identity_keys and key not in advertised_revoked_public_keys
         ]
         revoked_still_advertised_public_keys = [
-            key for key in advertised_public_keys if key in configured_revoked_public_keys
+            key for key in advertised_public_keys if tracks_identity_keys and key in configured_revoked_public_keys
         ]
         requires_review = bool(
             not principal_match
@@ -1953,6 +2188,7 @@ class AgentCoinNode:
             "principal_match": principal_match,
             "configured_trusted_public_keys": configured_trusted_public_keys,
             "configured_revoked_public_keys": configured_revoked_public_keys,
+            "tracks_identity_keys": tracks_identity_keys,
             "advertised_public_keys": advertised_public_keys,
             "advertised_active_public_keys": advertised_active_public_keys,
             "advertised_revoked_public_keys": advertised_revoked_public_keys,
@@ -2449,7 +2685,7 @@ class AgentCoinNode:
             except KeyError:
                 peer = None
 
-        requires_signature = self.config.require_signed_inbox or self._peer_trust_required(peer) or "_signature" in payload or "_identity_signature" in payload
+        requires_signature = self.config.require_signed_inbox or self._peer_trust_required(peer)
         return self._verify_signed_document(
             payload,
             peer=peer,
@@ -2459,7 +2695,7 @@ class AgentCoinNode:
         )
 
     def _verify_receipt_payload(self, peer: PeerConfig | None, payload: dict) -> dict | None:
-        requires_signature = self._peer_trust_required(peer) or "_signature" in payload or "_identity_signature" in payload
+        requires_signature = self._peer_trust_required(peer)
         return self._verify_signed_document(
             payload,
             peer=peer,
@@ -2501,7 +2737,7 @@ class AgentCoinNode:
                     source_url,
                     method="GET",
                     headers={"Accept": "application/json"},
-                    timeout=5,
+                    timeout=self._peer_request_timeout_seconds(source_url),
                 )
                 latency_ms = int((time.monotonic() - started_at) * 1000)
                 verification = self._verify_peer_card(peer, card)
@@ -2523,7 +2759,7 @@ class AgentCoinNode:
                         "peer_health": peer_health,
                     }
                 )
-            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError, SignatureError) as exc:
+            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError, SignatureError, OSError) as exc:
                 latency_ms = int((time.monotonic() - started_at) * 1000)
                 peer_health = self.store.record_peer_health(
                     peer.peer_id,
@@ -2537,6 +2773,21 @@ class AgentCoinNode:
                 )
                 synced.append({"peer_id": peer.peer_id, "status": "error", "error": str(exc), "peer_health": peer_health})
         return synced
+
+    def _peer_request_timeout_seconds(self, url: str, *, default_seconds: float = 5.0) -> float:
+        timeout_seconds = max(0.1, float(default_seconds or 5.0))
+        parsed = urlparse(url)
+        hostname = str(parsed.hostname or "").strip().lower()
+        if not hostname:
+            return timeout_seconds
+        if hostname == "localhost":
+            return min(timeout_seconds, 1.0)
+        try:
+            if ipaddress.ip_address(hostname).is_loopback:
+                return min(timeout_seconds, 1.0)
+        except ValueError:
+            pass
+        return timeout_seconds
 
     def _supports_capabilities(self, capabilities: list[str]) -> bool:
         if not capabilities:
@@ -3463,6 +3714,63 @@ class AgentCoinNode:
         updated["auto_finalize"] = self._auto_finalize_reconciled_workflow(updated)
         return updated
 
+    def reconcile_pending_settlement_relays(
+        self,
+        *,
+        max_items: int | None = None,
+        timeout: float = 10,
+        retry_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
+        processed: list[dict[str, Any]] = []
+        effective_max_items = max(1, int(max_items if max_items is not None else self.config.settlement_relay_reconcile_max_items or 1))
+        effective_retry_seconds = max(
+            0.0,
+            float(
+                self.config.settlement_relay_reconcile_retry_seconds
+                if retry_seconds is None
+                else retry_seconds
+            ),
+        )
+        checked_before = None
+        if effective_retry_seconds > 0:
+            checked_before = (
+                datetime.now(timezone.utc) - timedelta(seconds=effective_retry_seconds)
+            ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        for relay_record in self.store.list_pending_settlement_relay_reconciliations(
+            limit=effective_max_items,
+            checked_before=checked_before,
+        ):
+            relay_payload = dict(relay_record.get("relay") or {})
+            submitted_steps = list(relay_payload.get("submitted_steps") or [])
+            if not submitted_steps:
+                continue
+            if not any(
+                str(step.get("tx_hash") or step.get("response", {}).get("result") or "").strip()
+                for step in submitted_steps
+            ):
+                continue
+            relay_id = str(relay_record.get("id") or "").strip()
+            if not relay_id:
+                continue
+            try:
+                item = self.reconcile_settlement_relay(relay_id, timeout=timeout)
+                processed.append({"item": item})
+            except Exception as exc:
+                LOG.warning(
+                    "settlement relay reconciliation failed relay_id=%s task_id=%s error=%s",
+                    relay_record.get("id"),
+                    relay_record.get("task_id"),
+                    exc,
+                )
+                processed.append(
+                    {
+                        "relay_id": relay_record.get("id"),
+                        "task_id": relay_record.get("task_id"),
+                        "error": str(exc),
+                    }
+                )
+        return processed
+
     def _task_settlement_reconciliation(self, task_id: str) -> dict[str, Any] | None:
         latest = self.store.get_latest_settlement_relay(task_id)
         if not latest:
@@ -4117,19 +4425,26 @@ class AgentCoinNode:
 
             def _json_response(self, status: int, payload: dict, *, extra_headers: dict[str, str] | None = None) -> None:
                 body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.close_connection = True
                 self.send_response(status)
                 self._send_cors_headers()
                 for key, value in dict(extra_headers or {}).items():
                     self.send_header(str(key), str(value))
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except OSError:
+                    LOG.debug("client disconnected before response body was fully written", exc_info=True)
 
             def do_OPTIONS(self) -> None:
+                self.close_connection = True
                 self.send_response(HTTPStatus.NO_CONTENT)
                 self._send_cors_headers()
                 self.send_header("Content-Length", "0")
+                self.send_header("Connection", "close")
                 self.end_headers()
 
             def _read_body_bytes(self) -> bytes:
@@ -4983,22 +5298,27 @@ class AgentCoinNode:
                     self._json_response(HTTPStatus.OK, node.manifest())
                     return
                 if path == "/v1/capabilities":
+                    service_items = node.config.services_view()
                     self._json_response(
                         HTTPStatus.OK,
                         {
                             "generated_at": utc_now(),
                             "node_id": node.config.node_id,
-                            "items": node.config.services_view(),
+                            "items": service_items,
+                            "capabilities": node.config.capabilities_view(),
+                            "services": service_items,
                         },
                     )
                     return
                 if path == "/v1/services":
+                    service_items = node.config.services_view()
                     self._json_response(
                         HTTPStatus.OK,
                         {
                             "generated_at": utc_now(),
                             "node_id": node.config.node_id,
-                            "items": node.config.services_view(),
+                            "items": service_items,
+                            "services": service_items,
                         },
                     )
                     return
@@ -5044,8 +5364,8 @@ class AgentCoinNode:
                                 "transport_ready": True,
                                 "protocol_messages_implemented": False,
                                 "notes": [
-                                    "ACP transport sessions are tracked, but AgentCoin does not yet exchange ACP protocol messages.",
-                                    "Use these endpoints to manage local ACP process lifecycles and pending session handshakes.",
+                                    "ACP transport sessions are tracked and can dispatch initialize, session/list, session/load, and session/prompt requests.",
+                                    "AgentCoin does not yet implement ACP client-side file, terminal, permission, or tool callbacks.",
                                 ],
                             },
                         },
@@ -5055,7 +5375,8 @@ class AgentCoinNode:
                     self._json_response(HTTPStatus.OK, {"challenge": node.issue_identity_auth_challenge()})
                     return
                 if path == "/v1/payments/receipts/status":
-                    auth_context = self._require_auth(
+                    auth_context = self._require_local_client_or_auth(
+                        allow_endpoints={"/v1/payments/receipts/status"},
                         policy_tier="local-admin",
                         policy_level=1,
                         required_scopes=["local-admin"],
@@ -5066,7 +5387,11 @@ class AgentCoinNode:
                     if not receipt_id:
                         self._json_response(HTTPStatus.BAD_REQUEST, {"error": "receipt_id is required"})
                         return
-                    receipt = node.get_payment_receipt(receipt_id)
+                    try:
+                        receipt = node.get_payment_receipt(receipt_id)
+                    except ValueError as exc:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                        return
                     self._json_response(HTTPStatus.OK, {"receipt": receipt})
                     return
                 if path == "/v1/payments/renter-tokens/status":
@@ -5078,7 +5403,11 @@ class AgentCoinNode:
                     if not token_id:
                         self._json_response(HTTPStatus.BAD_REQUEST, {"error": "token_id is required"})
                         return
-                    token = node.get_renter_token(token_id)
+                    try:
+                        token = node.get_renter_token(token_id)
+                    except ValueError as exc:
+                        self._json_response(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                        return
                     self._json_response(HTTPStatus.OK, {"token": token})
                     return
                 if path == "/v1/payments/renter-tokens/summary":
@@ -5595,10 +5924,19 @@ class AgentCoinNode:
                         if not challenge_id or not principal or not public_key:
                             raise ValueError("challenge_id, principal, and public_key are required")
                         challenge = node.get_identity_auth_challenge(challenge_id)
-                        verification = self._identity_request_verification(
-                            principal=principal,
-                            public_key=public_key,
-                        )
+                        try:
+                            verification = self._identity_request_verification(
+                                principal=principal,
+                                public_key=public_key,
+                            )
+                        except SignatureError as exc:
+                            if not self._is_loopback_request() or "incomplete" not in str(exc).lower():
+                                raise
+                            verification = {
+                                "verified": False,
+                                "mode": "loopback-challenge-fallback",
+                                "reason": "accepted loopback auth verify request without signature headers",
+                            }
                         node.finalize_identity_auth_challenge(challenge_id)
                         identity = {
                             "principal": principal,
@@ -5624,10 +5962,13 @@ class AgentCoinNode:
                                 "/v1/discovery/local-agents/acp-session/close",
                                 "/v1/discovery/local-agents/acp-session/initialize",
                                 "/v1/discovery/local-agents/acp-session/poll",
+                                "/v1/discovery/local-agents/acp-session/list",
+                                "/v1/discovery/local-agents/acp-session/load",
                                 "/v1/discovery/local-agents/acp-session/task-request",
                                 "/v1/discovery/local-agents/acp-session/apply-task-result",
                                 "/v1/workflow/execute",
                                 "/v1/payments/ops/summary",
+                                "/v1/payments/receipts/status",
                                 "/v1/payments/receipts/introspect",
                                 "/v1/payments/renter-tokens/issue",
                                 "/v1/payments/renter-tokens/introspect",
@@ -5891,6 +6232,8 @@ class AgentCoinNode:
                             allow_endpoints={"/v1/payments/receipts/onchain-relay-queue"},
                         ):
                             return
+                        if not node.onchain.enabled:
+                            raise ValueError("onchain payment relay queue requires onchain bindings to be enabled")
                         payload = self._read_json()
                         payment_receipt = dict(payload.get("payment_receipt") or {})
                         if not payment_receipt:
@@ -5923,6 +6266,27 @@ class AgentCoinNode:
                             delay_seconds=int(payload.get("delay_seconds") or 0),
                         )
                         self._json_response(HTTPStatus.CREATED, {"item": item})
+                        return
+                    if self.path == "/v1/payments/receipts/onchain-relay-queue/process":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/payments/receipts/onchain-relay-queue/process"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        worker_id = str(payload.get("worker_id") or "").strip()
+                        if not worker_id:
+                            raise ValueError("worker_id is required")
+                        raw_max_items = payload.get("max_items")
+                        max_items = int(raw_max_items) if raw_max_items is not None else 1
+                        processed = node.process_payment_relay_queue(max_items=max_items)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "worker_id": worker_id,
+                                "handled": bool(processed),
+                                "processed": processed,
+                            },
+                        )
                         return
                     if self.path == "/v1/discovery/local-agents/register":
                         if not self._require_local_client_or_auth(
@@ -5966,12 +6330,13 @@ class AgentCoinNode:
                         registration_id = str(payload.get("registration_id") or "").strip()
                         if not registration_id:
                             raise ValueError("registration_id is required")
-                        session = node.local_agents.open_acp_session(registration_id)
+                        opened = node.local_agents.open_acp_session(registration_id)
                         self._json_response(
                             HTTPStatus.OK,
                             {
                                 "ok": True,
-                                "session": session,
+                                "session": opened["session"],
+                                "reused_existing_session": bool(opened.get("reused_existing_session")),
                                 "protocol_boundary": {
                                     "transport_ready": True,
                                     "protocol_messages_implemented": False,
@@ -6002,7 +6367,7 @@ class AgentCoinNode:
                             raise ValueError("session_id is required")
                         prepared = node.local_agents.prepare_acp_initialize(
                             session_id,
-                            protocol_version=str(payload.get("protocol_version") or "0.1-preview").strip() or "0.1-preview",
+                            protocol_version=payload.get("protocol_version", 1),
                             client_capabilities=dict(payload.get("client_capabilities") or {}),
                             client_info=dict(payload.get("client_info") or {}),
                             dispatch=bool(payload.get("dispatch")),
@@ -6043,6 +6408,71 @@ class AgentCoinNode:
                             },
                         )
                         return
+                    if self.path == "/v1/discovery/local-agents/acp-session/list":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/list"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        session_id = str(payload.get("session_id") or "").strip()
+                        if not session_id:
+                            raise ValueError("session_id is required")
+                        prepared = node.prepare_local_acp_session_list(
+                            session_id=session_id,
+                            cwd=str(payload.get("cwd") or "").strip() or None,
+                            cursor=str(payload.get("cursor") or "").strip() or None,
+                            dispatch=bool(payload.get("dispatch")),
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                **prepared,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                    "session_listing_implemented": "session/list-request-dispatch-and-response-capture",
+                                },
+                            },
+                        )
+                        return
+                    if self.path == "/v1/discovery/local-agents/acp-session/load":
+                        if not self._require_local_client_or_auth(
+                            allow_endpoints={"/v1/discovery/local-agents/acp-session/load"},
+                        ):
+                            return
+                        payload = self._read_json()
+                        session_id = str(payload.get("session_id") or "").strip()
+                        if not session_id:
+                            raise ValueError("session_id is required")
+                        server_session_id = str(
+                            payload.get("server_session_id")
+                            or payload.get("remote_session_id")
+                            or payload.get("sessionId")
+                            or ""
+                        ).strip()
+                        if not server_session_id:
+                            raise ValueError("server_session_id is required")
+                        prepared = node.prepare_local_acp_session_load(
+                            session_id=session_id,
+                            server_session_id=server_session_id,
+                            cwd=str(payload.get("cwd") or "").strip() or None,
+                            mcp_servers=list(payload.get("mcp_servers") or []),
+                            dispatch=bool(payload.get("dispatch")),
+                        )
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "ok": True,
+                                **prepared,
+                                "protocol_boundary": {
+                                    "transport_ready": True,
+                                    "protocol_messages_implemented": False,
+                                    "session_loading_implemented": "session/load-request-dispatch-and-update-capture",
+                                },
+                            },
+                        )
+                        return
                     if self.path == "/v1/discovery/local-agents/acp-session/task-request":
                         if not self._require_local_client_or_auth(
                             allow_endpoints={"/v1/discovery/local-agents/acp-session/task-request"},
@@ -6066,7 +6496,7 @@ class AgentCoinNode:
                                 "protocol_boundary": {
                                     "transport_ready": True,
                                     "protocol_messages_implemented": False,
-                                    "task_semantics_implemented": "prompt-request-skeleton-only",
+                                    "task_semantics_implemented": "session-prompt-request-mapping-only",
                                 },
                             },
                         )
@@ -6477,10 +6907,20 @@ class AgentCoinNode:
                             "prompt": payload.get("prompt"),
                             "messages": payload.get("messages"),
                             "temperature": payload.get("temperature"),
+                            "top_p": payload.get("top_p"),
                             "max_tokens": payload.get("max_tokens"),
+                            "presence_penalty": payload.get("presence_penalty"),
+                            "frequency_penalty": payload.get("frequency_penalty"),
+                            "stream": payload.get("stream"),
                             "timeout_seconds": int(payload.get("timeout_seconds") or 60),
                             "provider": "openclaw-gateway",
                         }
+                        if isinstance(payload.get("structured_output"), dict):
+                            runtime_options["structured_output"] = dict(payload.get("structured_output") or {})
+                        if isinstance(payload.get("response_format"), dict):
+                            runtime_options["response_format"] = dict(payload.get("response_format") or {})
+                        if isinstance(payload.get("headers"), dict):
+                            runtime_options["headers"] = dict(payload.get("headers") or {})
                         merged_payload = dict(task["payload"])
                         merged_payload["_runtime"] = node.runtimes.normalize_binding(
                             "openai-chat",
@@ -7185,6 +7625,25 @@ class AgentCoinNode:
                             delay_seconds=int(payload.get("delay_seconds") or 0),
                         )
                         self._json_response(HTTPStatus.CREATED, {"item": item})
+                        return
+                    if self.path == "/v1/onchain/settlement-relay-queue/process":
+                        if not self._require_auth():
+                            return
+                        payload = self._read_json()
+                        worker_id = str(payload.get("worker_id") or "").strip()
+                        if not worker_id:
+                            raise ValueError("worker_id is required")
+                        raw_max_items = payload.get("max_items")
+                        max_items = int(raw_max_items) if raw_max_items is not None else 1
+                        processed = node.process_settlement_relay_queue(max_items=max_items)
+                        self._json_response(
+                            HTTPStatus.OK,
+                            {
+                                "worker_id": worker_id,
+                                "handled": bool(processed),
+                                "processed": processed,
+                            },
+                        )
                         return
                     if self.path == "/v1/onchain/settlement-relay-queue/pause":
                         if not self._require_auth():
@@ -8344,7 +8803,7 @@ class AgentCoinNode:
                     method="POST",
                     payload=json.loads(item["payload_json"]),
                     headers=headers,
-                    timeout=5,
+                    timeout=self._peer_request_timeout_seconds(item["target_url"]),
                 )
                 if response_payload.get("ack", {}).get("message_id") != item["id"]:
                     raise ValueError("missing or invalid message ack")
@@ -8362,7 +8821,7 @@ class AgentCoinNode:
                         },
                     )
                 delivered += 1
-            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+            except (error.URLError, TimeoutError, ValueError, json.JSONDecodeError, OSError) as exc:
                 receipt_peer = self._resolve_outbox_peer(item)
                 if receipt_peer:
                     self.store.record_peer_health(
@@ -8395,36 +8854,83 @@ class AgentCoinNode:
 
     def _sync_loop(self) -> None:
         while not self._sync_stop.wait(self.config.sync_interval_seconds):
-            self.sync_peer_cards()
-            self.flush_outbox()
+            try:
+                self.sync_peer_cards()
+            except Exception:
+                LOG.exception("peer sync loop failed")
+            try:
+                self.flush_outbox()
+            except Exception:
+                LOG.exception("outbox flush loop failed")
 
     def _settlement_relay_loop(self) -> None:
-        poll_seconds = float(self.config.settlement_relay_poll_seconds or 0)
-        if poll_seconds <= 0:
+        queue_poll_seconds = float(self.config.settlement_relay_poll_seconds or 0)
+        reconcile_poll_seconds = float(self.config.settlement_relay_reconcile_poll_seconds or 0)
+        reconcile_enabled = reconcile_poll_seconds > 0
+        if queue_poll_seconds <= 0 and not reconcile_enabled:
             return
+        next_queue_run_at = time.monotonic()
+        next_reconcile_run_at = time.monotonic()
         while not self._sync_stop.is_set():
-            try:
-                self.process_settlement_relay_queue()
-            except Exception:
-                LOG.exception("settlement relay queue loop failed")
-            if self._sync_stop.wait(poll_seconds):
+            now = time.monotonic()
+            if queue_poll_seconds > 0 and now >= next_queue_run_at:
+                try:
+                    self.process_settlement_relay_queue()
+                except Exception:
+                    LOG.exception("settlement relay queue loop failed")
+                next_queue_run_at = time.monotonic() + queue_poll_seconds
+            if reconcile_enabled and now >= next_reconcile_run_at:
+                try:
+                    self.reconcile_pending_settlement_relays()
+                except Exception:
+                    LOG.exception("settlement relay reconcile loop failed")
+                next_reconcile_run_at = time.monotonic() + reconcile_poll_seconds
+
+            wait_candidates: list[float] = []
+            if queue_poll_seconds > 0:
+                wait_candidates.append(max(0.0, next_queue_run_at - time.monotonic()))
+            if reconcile_enabled:
+                wait_candidates.append(max(0.0, next_reconcile_run_at - time.monotonic()))
+            wait_seconds = min(wait_candidates) if wait_candidates else 0.1
+            if self._sync_stop.wait(wait_seconds):
                 break
 
     def _payment_relay_loop(self) -> None:
-        poll_seconds = float(self.config.settlement_relay_poll_seconds or 0)
-        if poll_seconds <= 0:
+        queue_poll_seconds = float(self.config.payment_relay_poll_seconds or 0)
+        auto_requeue_poll_seconds = float(self.config.payment_relay_auto_requeue_poll_seconds or 0)
+        auto_requeue_enabled = bool(self.config.payment_relay_auto_requeue_enabled) and auto_requeue_poll_seconds > 0
+        if queue_poll_seconds <= 0 and not auto_requeue_enabled:
             return
+        next_queue_run_at = time.monotonic()
+        next_auto_requeue_run_at = time.monotonic()
         while not self._sync_stop.is_set():
-            try:
-                self.auto_requeue_dead_letter_payment_relays()
-                self.process_payment_relay_queue()
-            except Exception:
-                LOG.exception("payment relay queue loop failed")
-            if self._sync_stop.wait(poll_seconds):
+            now = time.monotonic()
+            if auto_requeue_enabled and now >= next_auto_requeue_run_at:
+                try:
+                    self.auto_requeue_dead_letter_payment_relays()
+                except Exception:
+                    LOG.exception("payment relay auto-requeue loop failed")
+                next_auto_requeue_run_at = time.monotonic() + auto_requeue_poll_seconds
+            if queue_poll_seconds > 0 and now >= next_queue_run_at:
+                try:
+                    self.process_payment_relay_queue()
+                except Exception:
+                    LOG.exception("payment relay queue loop failed")
+                next_queue_run_at = time.monotonic() + queue_poll_seconds
+
+            wait_candidates: list[float] = []
+            if auto_requeue_enabled:
+                wait_candidates.append(max(0.0, next_auto_requeue_run_at - time.monotonic()))
+            if queue_poll_seconds > 0:
+                wait_candidates.append(max(0.0, next_queue_run_at - time.monotonic()))
+            wait_seconds = min(wait_candidates) if wait_candidates else 0.1
+            if self._sync_stop.wait(wait_seconds):
                 break
 
     def serve_forever(self) -> None:
         LOG.info("starting AgentCoin node on %s:%s", self.config.host, self.config.port)
+        self._serve_exited.clear()
+        self._serve_started.set()
         recovered = self.store.recover_running_settlement_relay_queue_items()
         if recovered:
             LOG.info("recovered %s running settlement relay queue item(s)", recovered)
@@ -8432,8 +8938,18 @@ class AgentCoinNode:
         if recovered_payment:
             LOG.info("recovered %s running payment relay queue item(s)", recovered_payment)
         self._sync_thread.start()
-        if float(self.config.settlement_relay_poll_seconds or 0) > 0:
+        if (
+            float(self.config.settlement_relay_poll_seconds or 0) > 0
+            or float(self.config.settlement_relay_reconcile_poll_seconds or 0) > 0
+        ):
             self._settlement_relay_thread.start()
+        if (
+            float(self.config.payment_relay_poll_seconds or 0) > 0
+            or (
+                bool(self.config.payment_relay_auto_requeue_enabled)
+                and float(self.config.payment_relay_auto_requeue_poll_seconds or 0) > 0
+            )
+        ):
             self._payment_relay_thread.start()
         try:
             self._server.serve_forever()
@@ -8449,9 +8965,12 @@ class AgentCoinNode:
                 self._settlement_relay_thread.join(timeout=2)
             if self._payment_relay_thread.is_alive():
                 self._payment_relay_thread.join(timeout=2)
+            self._serve_exited.set()
 
     def shutdown(self) -> None:
         self._sync_stop.set()
         self.local_agents.shutdown()
-        self._server.shutdown()
+        if self._serve_started.is_set() and not self._serve_exited.is_set():
+            self._server.shutdown()
         self._server.server_close()
+        self._serve_exited.set()

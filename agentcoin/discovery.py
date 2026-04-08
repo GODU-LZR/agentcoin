@@ -55,10 +55,39 @@ class LocalAgentDiscovery:
     def discover(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
         items.extend(self._discover_copilot_cli())
+        items.extend(self._discover_codex_cli())
         items.extend(self._discover_claude_code_cli())
         items.extend(self._discover_vscode_agent_extensions())
         items.sort(key=lambda item: (str(item.get("family") or ""), str(item.get("title") or ""), str(item.get("id") or "")))
         return items
+
+    @staticmethod
+    def _preferred_launch_path(evidence: list[dict[str, Any]]) -> str:
+        wrapper_suffixes = {".bat", ".cmd", ".ps1", ".sh"}
+        candidates = [
+            str(item.get("path") or "").strip()
+            for item in evidence
+            if str(item.get("path") or "").strip()
+        ]
+        if not candidates:
+            return ""
+
+        def is_wrapper(path: str) -> bool:
+            return Path(path).suffix.lower() in wrapper_suffixes
+
+        direct_path_candidates = [
+            str(item.get("path") or "").strip()
+            for item in evidence
+            if item.get("kind") == "path" and str(item.get("path") or "").strip() and not is_wrapper(str(item.get("path") or "").strip())
+        ]
+        if direct_path_candidates:
+            return direct_path_candidates[0]
+
+        non_wrapper_candidates = [path for path in candidates if not is_wrapper(path)]
+        if non_wrapper_candidates:
+            return non_wrapper_candidates[0]
+
+        return candidates[0]
 
     def _discover_copilot_cli(self) -> list[dict[str, Any]]:
         evidence: list[dict[str, Any]] = []
@@ -89,7 +118,7 @@ class LocalAgentDiscovery:
         if not evidence:
             return []
 
-        resolved_executable = next((str(item.get("path") or "").strip() for item in evidence if item.get("kind") in {"which", "path"}), "")
+        resolved_executable = self._preferred_launch_path(evidence)
         help_text = ""
         version_text = package_version
         supports_acp = False
@@ -130,14 +159,21 @@ class LocalAgentDiscovery:
                 ],
                 "agentcoin_compatibility": {
                     "discovered": True,
-                    "attachable_today": False,
+                    "attachable_today": bool(supports_acp),
                     "preferred_integration": "acp-bridge" if supports_acp else "cli-wrapper",
                     "integration_candidates": ["acp-bridge", "cli-wrapper"] if supports_acp else ["cli-wrapper"],
                     "launch_hint": [resolved_executable, "--acp"] if resolved_executable and supports_acp else [],
-                    "notes": [
-                        "Detected locally, but AgentCoin does not yet expose a first-class ACP bridge runtime.",
-                        "ACP is the cleanest future join path for Copilot CLI if a bridge is added.",
-                    ],
+                    "notes": (
+                        [
+                            "Detected locally and attachable through AgentCoin's ACP bridge endpoints.",
+                            "ACP currently supports initialize, session discovery/loading, and prompt dispatch.",
+                        ]
+                        if supports_acp
+                        else [
+                            "Detected locally, but ACP support was not confirmed from the installed CLI.",
+                            "CLI-wrapper integration remains the fallback path until ACP is available.",
+                        ]
+                    ),
                 },
                 "evidence": evidence,
                 "help_summary": "GitHub Copilot CLI with ACP support detected." if supports_acp else "GitHub Copilot CLI detected.",
@@ -157,7 +193,7 @@ class LocalAgentDiscovery:
         if not evidence:
             return []
 
-        resolved_executable = next((str(item.get("path") or "").strip() for item in evidence if str(item.get("path") or "").strip()), "")
+        resolved_executable = self._preferred_launch_path(evidence)
         version_text = ""
         help_text = ""
         supports_mcp = False
@@ -217,6 +253,85 @@ class LocalAgentDiscovery:
                 },
                 "evidence": evidence,
                 "help_summary": "Claude Code CLI with MCP hints detected." if supports_mcp else "Claude Code CLI detected.",
+            }
+        ]
+
+    def _discover_codex_cli(self) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        for command_name in ("codex", "codex.cmd"):
+            executable_path = self.which(command_name)
+            if executable_path:
+                evidence.append({"kind": "which", "path": executable_path, "command": command_name})
+        for candidate in self._codex_cli_candidates():
+            normalized = str(candidate).strip()
+            if normalized and Path(normalized).is_file() and not any(item.get("path") == normalized for item in evidence):
+                evidence.append({"kind": "path", "path": normalized})
+        if not evidence:
+            return []
+
+        resolved_executable = self._preferred_launch_path(evidence)
+        version_text = ""
+        help_text = ""
+        supports_mcp = False
+        if resolved_executable:
+            return_code, stdout, stderr = self._safe_run([resolved_executable, "--help"])
+            help_text = f"{stdout}\n{stderr}".strip()
+            lowered_help = help_text.lower()
+            supports_mcp = "mcp-server" in lowered_help or " model context protocol" in lowered_help or " mcp " in lowered_help
+            version_code, version_stdout, version_stderr = self._safe_run([resolved_executable, "--version"])
+            if version_code == 0:
+                version_text = str(version_stdout or version_stderr).strip()
+            evidence.append(
+                {
+                    "kind": "probe",
+                    "path": resolved_executable,
+                    "supports_mcp": supports_mcp,
+                    "probe_ok": return_code == 0,
+                }
+            )
+
+        integration_candidates = ["cli-wrapper"]
+        preferred_integration = "cli-wrapper"
+        launch_hint = [resolved_executable] if resolved_executable else []
+        notes = [
+            "Detected locally as the OpenAI Codex CLI, not as a standalone AgentCoin node.",
+            "AgentCoin can discover it today, but direct task execution still needs a Codex-specific host adapter.",
+        ]
+        if supports_mcp:
+            preferred_integration = "mcp-host-adapter"
+            integration_candidates = ["mcp-host-adapter", "cli-wrapper"]
+            launch_hint = [resolved_executable, "mcp-server"] if resolved_executable else []
+            notes.append("The local help output advertises an MCP server mode, so an MCP host adapter is the cleanest future path.")
+
+        return [
+            {
+                "id": "openai-codex-cli",
+                "family": "openai-codex",
+                "title": "OpenAI Codex CLI",
+                "type": "local-cli-agent",
+                "publisher": "OpenAI",
+                "discovery_platform": self.system_name.lower(),
+                "wsl": self.is_wsl,
+                "version": version_text,
+                "executable_path": resolved_executable or None,
+                "protocols": ["mcp"] if supports_mcp else [],
+                "capabilities": [
+                    "interactive-chat",
+                    "non-interactive-prompt",
+                    "code-editing",
+                    "workspace-tools",
+                    "mcp-tools",
+                ],
+                "agentcoin_compatibility": {
+                    "discovered": True,
+                    "attachable_today": False,
+                    "preferred_integration": preferred_integration,
+                    "integration_candidates": integration_candidates,
+                    "launch_hint": launch_hint,
+                    "notes": notes,
+                },
+                "evidence": evidence,
+                "help_summary": "OpenAI Codex CLI with MCP server support detected." if supports_mcp else "OpenAI Codex CLI detected.",
             }
         ]
 
@@ -417,6 +532,39 @@ class LocalAgentDiscovery:
                     str(self.home / ".claude" / "bin" / "claude"),
                     "/usr/local/bin/claude",
                     "/usr/bin/claude",
+                ]
+            )
+        return [candidate for candidate in candidates if candidate]
+
+    def _codex_cli_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        system = self.system_name.lower()
+        if system == "windows":
+            program_files = Path(str(self.env.get("PROGRAMFILES") or "").strip() or "C:/Program Files")
+            local_appdata = Path(str(self.env.get("LOCALAPPDATA") or "").strip() or self.home / "AppData" / "Local")
+            candidates.extend(
+                [
+                    str(program_files / "nodejs" / "codex.cmd"),
+                    str(local_appdata / "Programs" / "Codex" / "codex.exe"),
+                    str(self.home / ".npm-global" / "bin" / "codex.cmd"),
+                ]
+            )
+        elif system == "darwin":
+            candidates.extend(
+                [
+                    str(self.home / ".local" / "bin" / "codex"),
+                    str(self.home / ".npm-global" / "bin" / "codex"),
+                    "/usr/local/bin/codex",
+                    "/opt/homebrew/bin/codex",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    str(self.home / ".local" / "bin" / "codex"),
+                    str(self.home / ".npm-global" / "bin" / "codex"),
+                    "/usr/local/bin/codex",
+                    "/usr/bin/codex",
                 ]
             )
         return [candidate for candidate in candidates if candidate]

@@ -63,6 +63,383 @@ class NodeStoreTests(unittest.TestCase):
         self.assertEqual(task["status"], "dead-letter")
         self.assertEqual(task["last_error"], "retry budget exhausted")
 
+    def test_payment_relay_queue_lifecycle_and_recovery(self) -> None:
+        payload = {
+            "payment_receipt": {"receipt_id": "receipt-1"},
+            "rpc_url": "http://127.0.0.1:8545",
+            "raw_transactions": [{"action": "submitPaymentProof", "raw_transaction": "0xabc"}],
+        }
+        queued = self.store.enqueue_payment_relay(
+            receipt_id="receipt-1",
+            workflow_name="premium-review",
+            payload=payload,
+            max_attempts=3,
+        )
+        self.assertEqual(queued["status"], "queued")
+        self.assertEqual(queued["attempts"], 0)
+
+        running = self.store.claim_next_payment_relay_queue_item()
+        self.assertIsNotNone(running)
+        assert running is not None
+        self.assertEqual(running["id"], queued["id"])
+        self.assertEqual(running["status"], "running")
+        self.assertEqual(running["attempts"], 1)
+
+        recovered = self.store.recover_running_payment_relay_queue_items(delay_seconds=0)
+        self.assertEqual(recovered, 1)
+        retrying = self.store.get_payment_relay_queue_item(queued["id"])
+        assert retrying is not None
+        self.assertEqual(retrying["status"], "retrying")
+        self.assertEqual(retrying["attempts"], 1)
+
+        paused = self.store.pause_payment_relay_queue_item(queued["id"])
+        assert paused is not None
+        self.assertEqual(paused["status"], "paused")
+
+        resumed = self.store.resume_payment_relay_queue_item(queued["id"], delay_seconds=0)
+        assert resumed is not None
+        self.assertEqual(resumed["status"], "queued")
+        self.assertIsNone(resumed["completed_at"])
+
+        rerun = self.store.claim_next_payment_relay_queue_item()
+        self.assertIsNotNone(rerun)
+        assert rerun is not None
+        self.assertEqual(rerun["status"], "running")
+        self.assertEqual(rerun["attempts"], 2)
+
+        completed = self.store.complete_payment_relay_queue_item(queued["id"], last_relay_id="relay-1")
+        assert completed is not None
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["last_relay_id"], "relay-1")
+        self.assertIsNotNone(completed["completed_at"])
+
+        summary = self.store.summarize_payment_relay_queue(receipt_id="receipt-1")
+        self.assertEqual(summary["counts"]["completed"], 1)
+        self.assertEqual(summary["counts"]["running"], 0)
+        self.assertEqual(summary["latest_item"]["id"], queued["id"])
+
+    def test_payment_relay_queue_dead_letter_requeue_cancel_and_delete(self) -> None:
+        payload = {
+            "payment_receipt": {"receipt_id": "receipt-dead-letter"},
+            "rpc_url": "http://127.0.0.1:1",
+        }
+        queued = self.store.enqueue_payment_relay(
+            receipt_id="receipt-dead-letter",
+            workflow_name="premium-review",
+            payload=payload,
+            max_attempts=1,
+        )
+
+        running = self.store.claim_next_payment_relay_queue_item()
+        self.assertIsNotNone(running)
+        assert running is not None
+
+        dead_letter = self.store.fail_payment_relay_queue_item(
+            queued["id"],
+            error="rpc timeout",
+            last_relay_id="relay-failed-1",
+            payload={
+                "rpc_url": "http://127.0.0.1:1",
+                "_auto_requeue_disabled": True,
+                "_auto_requeue_disabled_reason": "manual-review-pending",
+                "_auto_requeue_disabled_at": "2026-04-04T00:00:00Z",
+            },
+        )
+        assert dead_letter is not None
+        self.assertEqual(dead_letter["status"], "dead-letter")
+        self.assertEqual(dead_letter["last_relay_id"], "relay-failed-1")
+        self.assertEqual(dead_letter["last_error"], "rpc timeout")
+        self.assertTrue(dead_letter["payload"]["_auto_requeue_disabled"])
+
+        summary = self.store.summarize_payment_relay_queue(receipt_id="receipt-dead-letter")
+        self.assertEqual(summary["counts"]["dead-letter"], 1)
+        self.assertEqual(summary["auto_requeue_disabled_count"], 1)
+        self.assertEqual(summary["latest_failed_item"]["id"], queued["id"])
+        self.assertEqual(summary["latest_auto_requeue_override"]["state"], "disabled")
+
+        requeued = self.store.requeue_payment_relay_queue_item(
+            queued["id"],
+            delay_seconds=0,
+            payload={
+                "payment_receipt": {"receipt_id": "receipt-dead-letter"},
+                "rpc_url": "http://127.0.0.1:8545",
+                "_auto_requeue_reenabled_at": "2026-04-04T00:01:00Z",
+            },
+            max_attempts=2,
+        )
+        assert requeued is not None
+        self.assertEqual(requeued["status"], "queued")
+        self.assertEqual(requeued["attempts"], 0)
+        self.assertEqual(requeued["max_attempts"], 2)
+        self.assertEqual(requeued["payload"]["rpc_url"], "http://127.0.0.1:8545")
+        self.assertIsNone(requeued["completed_at"])
+
+        paused = self.store.pause_payment_relay_queue_item(queued["id"])
+        assert paused is not None
+        self.assertEqual(paused["status"], "paused")
+
+        cancelled = self.store.cancel_payment_relay_queue_item(queued["id"])
+        assert cancelled is not None
+        self.assertEqual(cancelled["status"], "dead-letter")
+        self.assertEqual(cancelled["last_error"], "cancelled")
+
+        self.assertTrue(self.store.delete_payment_relay_queue_item(queued["id"]))
+        self.assertIsNone(self.store.get_payment_relay_queue_item(queued["id"]))
+
+    def test_payment_relay_queue_claim_respects_max_in_flight(self) -> None:
+        first = self.store.enqueue_payment_relay(
+            receipt_id="receipt-a",
+            workflow_name="premium-review",
+            payload={"payment_receipt": {"receipt_id": "receipt-a"}},
+        )
+        second = self.store.enqueue_payment_relay(
+            receipt_id="receipt-b",
+            workflow_name="premium-review",
+            payload={"payment_receipt": {"receipt_id": "receipt-b"}},
+        )
+
+        claimed_first = self.store.claim_next_payment_relay_queue_item(max_in_flight=1)
+        self.assertIsNotNone(claimed_first)
+        assert claimed_first is not None
+        self.assertEqual(claimed_first["id"], first["id"])
+
+        blocked = self.store.claim_next_payment_relay_queue_item(max_in_flight=1)
+        self.assertIsNone(blocked)
+
+        completed = self.store.complete_payment_relay_queue_item(first["id"], last_relay_id="relay-a")
+        self.assertIsNotNone(completed)
+
+        claimed_second = self.store.claim_next_payment_relay_queue_item(max_in_flight=1)
+        self.assertIsNotNone(claimed_second)
+        assert claimed_second is not None
+        self.assertEqual(claimed_second["id"], second["id"])
+
+    def test_list_pending_payment_relay_auto_requeues_filters_by_status_and_retry_window(self) -> None:
+        def create_dead_letter(receipt_id: str) -> dict:
+            queued = self.store.enqueue_payment_relay(
+                receipt_id=receipt_id,
+                workflow_name="premium-review",
+                payload={"payment_receipt": {"receipt_id": receipt_id}},
+                max_attempts=1,
+            )
+            running = self.store.claim_next_payment_relay_queue_item()
+            self.assertIsNotNone(running)
+            dead_letter = self.store.fail_payment_relay_queue_item(
+                queued["id"],
+                error="invalid relay payload",
+            )
+            self.assertIsNotNone(dead_letter)
+            assert dead_letter is not None
+            return dead_letter
+
+        unchecked = create_dead_letter("receipt-payment-unchecked")
+        eligible = create_dead_letter("receipt-payment-eligible")
+        recent = create_dead_letter("receipt-payment-recent")
+        queued = self.store.enqueue_payment_relay(
+            receipt_id="receipt-payment-queued",
+            workflow_name="premium-review",
+            payload={"payment_receipt": {"receipt_id": "receipt-payment-queued"}},
+            max_attempts=1,
+        )
+
+        self.store.update_payment_relay_auto_requeue_checked_at(
+            unchecked["id"],
+            auto_requeue_checked_at=None,
+        )
+        self.store.update_payment_relay_auto_requeue_checked_at(
+            eligible["id"],
+            auto_requeue_checked_at="2030-01-01T00:00:00Z",
+        )
+        self.store.update_payment_relay_auto_requeue_checked_at(
+            recent["id"],
+            auto_requeue_checked_at="2030-01-01T00:00:59Z",
+        )
+        self.store.update_payment_relay_auto_requeue_checked_at(
+            queued["id"],
+            auto_requeue_checked_at="2030-01-01T00:00:00Z",
+        )
+
+        items = self.store.list_pending_payment_relay_auto_requeues(
+            limit=5,
+            checked_before="2030-01-01T00:00:30Z",
+        )
+
+        ids = [item["id"] for item in items]
+        self.assertEqual(ids, [unchecked["id"], eligible["id"]])
+
+    def test_settlement_relay_queue_lifecycle_and_recovery(self) -> None:
+        payload = {
+            "rpc_url": "http://127.0.0.1:8545",
+            "raw_transactions": [{"action": "submitSettlementProof", "raw_transaction": "0xdef"}],
+        }
+        queued = self.store.enqueue_settlement_relay(
+            task_id="task-settlement-1",
+            payload=payload,
+            max_attempts=3,
+        )
+        self.assertEqual(queued["status"], "queued")
+        self.assertEqual(queued["attempts"], 0)
+
+        running = self.store.claim_next_settlement_relay_queue_item()
+        self.assertIsNotNone(running)
+        assert running is not None
+        self.assertEqual(running["id"], queued["id"])
+        self.assertEqual(running["status"], "running")
+        self.assertEqual(running["attempts"], 1)
+
+        recovered = self.store.recover_running_settlement_relay_queue_items(delay_seconds=0)
+        self.assertEqual(recovered, 1)
+        retrying = self.store.get_settlement_relay_queue_item(queued["id"])
+        assert retrying is not None
+        self.assertEqual(retrying["status"], "retrying")
+        self.assertEqual(retrying["attempts"], 1)
+
+        paused = self.store.pause_settlement_relay_queue_item(queued["id"])
+        assert paused is not None
+        self.assertEqual(paused["status"], "paused")
+
+        resumed = self.store.resume_settlement_relay_queue_item(queued["id"], delay_seconds=0)
+        assert resumed is not None
+        self.assertEqual(resumed["status"], "queued")
+        self.assertIsNone(resumed["completed_at"])
+
+        rerun = self.store.claim_next_settlement_relay_queue_item()
+        self.assertIsNotNone(rerun)
+        assert rerun is not None
+        self.assertEqual(rerun["status"], "running")
+        self.assertEqual(rerun["attempts"], 2)
+
+        completed = self.store.complete_settlement_relay_queue_item(queued["id"], last_relay_id="settlement-relay-1")
+        assert completed is not None
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["last_relay_id"], "settlement-relay-1")
+        self.assertIsNotNone(completed["completed_at"])
+
+    def test_settlement_relay_queue_dead_letter_requeue_cancel_and_delete(self) -> None:
+        queued = self.store.enqueue_settlement_relay(
+            task_id="task-settlement-dead-letter",
+            payload={"rpc_url": "http://127.0.0.1:1"},
+            max_attempts=1,
+        )
+
+        running = self.store.claim_next_settlement_relay_queue_item()
+        self.assertIsNotNone(running)
+        assert running is not None
+
+        dead_letter = self.store.fail_settlement_relay_queue_item(
+            queued["id"],
+            error="rpc timeout",
+            last_relay_id="settlement-relay-failed-1",
+            payload={"rpc_url": "http://127.0.0.1:1", "note": "failed-once"},
+        )
+        assert dead_letter is not None
+        self.assertEqual(dead_letter["status"], "dead-letter")
+        self.assertEqual(dead_letter["last_relay_id"], "settlement-relay-failed-1")
+        self.assertEqual(dead_letter["last_error"], "rpc timeout")
+
+        requeued = self.store.requeue_settlement_relay_queue_item(
+            queued["id"],
+            delay_seconds=0,
+            payload={"rpc_url": "http://127.0.0.1:8545", "note": "retried"},
+            max_attempts=2,
+        )
+        assert requeued is not None
+        self.assertEqual(requeued["status"], "queued")
+        self.assertEqual(requeued["attempts"], 0)
+        self.assertEqual(requeued["max_attempts"], 2)
+        self.assertEqual(requeued["payload"]["rpc_url"], "http://127.0.0.1:8545")
+        self.assertIsNone(requeued["completed_at"])
+
+        paused = self.store.pause_settlement_relay_queue_item(queued["id"])
+        assert paused is not None
+        self.assertEqual(paused["status"], "paused")
+
+        cancelled = self.store.cancel_settlement_relay_queue_item(queued["id"])
+        assert cancelled is not None
+        self.assertEqual(cancelled["status"], "dead-letter")
+        self.assertEqual(cancelled["last_error"], "cancelled")
+
+        self.assertTrue(self.store.delete_settlement_relay_queue_item(queued["id"]))
+        self.assertIsNone(self.store.get_settlement_relay_queue_item(queued["id"]))
+
+    def test_settlement_relay_queue_claim_respects_max_in_flight(self) -> None:
+        first = self.store.enqueue_settlement_relay(
+            task_id="task-settlement-a",
+            payload={"rpc_url": "http://127.0.0.1:8545"},
+        )
+        second = self.store.enqueue_settlement_relay(
+            task_id="task-settlement-b",
+            payload={"rpc_url": "http://127.0.0.1:8545"},
+        )
+
+        claimed_first = self.store.claim_next_settlement_relay_queue_item(max_in_flight=1)
+        self.assertIsNotNone(claimed_first)
+        assert claimed_first is not None
+        self.assertEqual(claimed_first["id"], first["id"])
+
+        blocked = self.store.claim_next_settlement_relay_queue_item(max_in_flight=1)
+        self.assertIsNone(blocked)
+
+        completed = self.store.complete_settlement_relay_queue_item(first["id"], last_relay_id="settlement-relay-a")
+        self.assertIsNotNone(completed)
+
+        claimed_second = self.store.claim_next_settlement_relay_queue_item(max_in_flight=1)
+        self.assertIsNotNone(claimed_second)
+        assert claimed_second is not None
+        self.assertEqual(claimed_second["id"], second["id"])
+
+    def test_list_pending_settlement_relay_reconciliations_filters_by_status_and_retry_window(self) -> None:
+        base_relay = {
+            "task_id": "task-settlement-reconcile",
+            "recommended_resolution": "completeJob",
+            "completed_steps": 1,
+            "step_count": 1,
+            "submitted_steps": [
+                {
+                    "index": 0,
+                    "action": "completeJob",
+                    "tx_hash": "0xabc",
+                    "response": {"result": "0xabc"},
+                }
+            ],
+            "final_status": "completed",
+        }
+
+        unchecked = self.store.save_settlement_relay(dict(base_relay, task_id="task-settlement-unchecked"))
+        eligible = self.store.save_settlement_relay(dict(base_relay, task_id="task-settlement-eligible"))
+        recent = self.store.save_settlement_relay(dict(base_relay, task_id="task-settlement-recent"))
+        confirmed = self.store.save_settlement_relay(dict(base_relay, task_id="task-settlement-confirmed"))
+
+        self.store.update_settlement_relay_reconciliation(
+            eligible["id"],
+            reconciliation_status="unknown",
+            reconciliation_checked_at="2030-01-01T00:00:00Z",
+            confirmed_at=None,
+            chain_receipts=[],
+        )
+        self.store.update_settlement_relay_reconciliation(
+            recent["id"],
+            reconciliation_status="unknown",
+            reconciliation_checked_at="2030-01-01T00:00:59Z",
+            confirmed_at=None,
+            chain_receipts=[],
+        )
+        self.store.update_settlement_relay_reconciliation(
+            confirmed["id"],
+            reconciliation_status="confirmed",
+            reconciliation_checked_at="2030-01-01T00:00:00Z",
+            confirmed_at="2030-01-01T00:00:00Z",
+            chain_receipts=[{"status": "confirmed"}],
+        )
+
+        items = self.store.list_pending_settlement_relay_reconciliations(
+            limit=5,
+            checked_before="2030-01-01T00:00:30Z",
+        )
+
+        ids = [item["id"] for item in items]
+        self.assertEqual(ids, [unchecked["id"], eligible["id"]])
+
     def test_semantic_capability_aliases_match_worker_claims(self) -> None:
         self.store.add_task(
             TaskEnvelope(
